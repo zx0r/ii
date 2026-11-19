@@ -20,8 +20,31 @@ name = "ii"
 path = "src/main.rs"
 
 [dependencies]
-memchr = "2"
-rustix = { version = "1", features = ["fs", "mm", "net", "event", "process", "termios", "shm"] }
+blake3 = "1.8.7"
+lz4_flex = { version = "0.14.2", default-features = false, features = [
+  "frame",
+] }
+memchr = "2.8.3"
+mermaid-svg = "0.7.0"
+png = "0.18.1"
+ratex-layout = "0.1.16"
+ratex-parser = "0.1.16"
+ratex-svg = "0.1.16"
+resvg = { version = "0.50.0", default-features = false }
+rustix = { version = "1.1.6", features = [
+  "fs",
+  "mm",
+  "net",
+  "event",
+  "process",
+  "termios",
+  "shm",
+] }
+tiny-skia = "0.12.0"
+
+[dev-dependencies]
+divan = "0.1.21"
+proptest = "1.12"
 
 [profile.release]
 opt-level = 3

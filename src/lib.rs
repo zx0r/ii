@@ -11,6 +11,8 @@ pub mod heal;
 pub mod ipynb;
 pub mod ir;
 pub mod json;
+pub mod kgp;
+pub mod raster;
 pub mod scan;
 pub mod style;
 pub mod svg;

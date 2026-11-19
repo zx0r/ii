@@ -1,8 +1,5 @@
 //! Terminal geometry. Probing lands in the I/O boundary phase.
 
-const FLAG_REMOTE: u16 = 1;
-const FLAG_TMUX: u16 = 2;
-
 /// Cell/pixel geometry. 16 B, no padding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(C)]
@@ -13,8 +10,9 @@ pub struct Metrics {
     pub cell_h: u16,
     pub px_w: u16,
     pub px_h: u16,
-    pub flags: u16,
-    pub dpr_q8: u16,
+    pub is_remote: u8,
+    pub is_tmux: u8,
+    pub _pad: [u8; 2],
 }
 
 const _: () = assert!(size_of::<Metrics>() == 16);
@@ -28,26 +26,16 @@ impl Metrics {
         cell_h: 16,
         px_w: 640,
         px_h: 384,
-        flags: 0,
-        dpr_q8: 256,
+        is_remote: 0,
+        is_tmux: 0,
+        _pad: [0; 2],
     };
 
     #[inline]
     #[must_use]
-    pub const fn is_remote(self) -> bool {
-        self.flags & FLAG_REMOTE != 0
-    }
-
-    #[inline]
-    #[must_use]
-    pub const fn is_tmux(self) -> bool {
-        self.flags & FLAG_TMUX != 0
-    }
-
-    #[inline]
-    #[must_use]
     pub const fn with_env(mut self, remote: bool, tmux: bool) -> Self {
-        self.flags = (remote as u16 * FLAG_REMOTE) | (tmux as u16 * FLAG_TMUX);
+        self.is_remote = remote as u8;
+        self.is_tmux = tmux as u8;
         self
     }
 }
@@ -59,8 +47,8 @@ mod tests {
     #[test]
     fn flags_roundtrip() {
         let m = Metrics::FALLBACK.with_env(true, false);
-        assert!(m.is_remote() && !m.is_tmux());
+        assert_eq!((m.is_remote, m.is_tmux), (1, 0));
         let m = m.with_env(false, true);
-        assert!(!m.is_remote() && m.is_tmux());
+        assert_eq!((m.is_remote, m.is_tmux), (0, 1));
     }
 }

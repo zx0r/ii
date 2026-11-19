@@ -147,8 +147,24 @@ const fn build(rgb: [u32; N_TOKENS], is_dark: bool) -> Palette {
 /// Catppuccin Mocha.
 pub static DARK: Palette = build(
     [
-        0xcdd6f4, 0xa6adc8, 0x1e1e2e, 0x313244, 0xcba6f7, 0x89b4fa, 0x74c7ec, 0xa6e3a1, 0xf38ba8,
-        0x45475a, 0x89b4fa, 0xa6e3a1, 0xfab387, 0xcba6f7, 0xf9e2af, 0x94e2d5, 0xf5c2e7, 0xf38ba8,
+        0x00cd_d6f4,
+        0x00a6_adc8,
+        0x001e_1e2e,
+        0x0031_3244,
+        0x00cb_a6f7,
+        0x0089_b4fa,
+        0x0074_c7ec,
+        0x00a6_e3a1,
+        0x00f3_8ba8,
+        0x0045_475a,
+        0x0089_b4fa,
+        0x00a6_e3a1,
+        0x00fa_b387,
+        0x00cb_a6f7,
+        0x00f9_e2af,
+        0x0094_e2d5,
+        0x00f5_c2e7,
+        0x00f3_8ba8,
     ],
     true,
 );
@@ -156,8 +172,24 @@ pub static DARK: Palette = build(
 /// Catppuccin Latte.
 pub static LIGHT: Palette = build(
     [
-        0x4c4f69, 0x6c6f85, 0xeff1f5, 0xccd0da, 0x8839ef, 0x1e66f5, 0x209fb5, 0x40a02b, 0xd20f39,
-        0xbcc0cc, 0x1e66f5, 0x40a02b, 0xfe640b, 0x8839ef, 0xdf8e1d, 0x179299, 0xea76cb, 0xd20f39,
+        0x004c_4f69,
+        0x006c_6f85,
+        0x00ef_f1f5,
+        0x00cc_d0da,
+        0x0088_39ef,
+        0x001e_66f5,
+        0x0020_9fb5,
+        0x0040_a02b,
+        0x00d2_0f39,
+        0x00bc_c0cc,
+        0x001e_66f5,
+        0x0040_a02b,
+        0x00fe_640b,
+        0x0088_39ef,
+        0x00df_8e1d,
+        0x0017_9299,
+        0x00ea_76cb,
+        0x00d2_0f39,
     ],
     false,
 );

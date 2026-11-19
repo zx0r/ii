@@ -1,0 +1,64 @@
+[package]
+name = "ii"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.99"
+resolver = "3"
+description = "Terminal graphical coprocessor: math, diagrams and charts over the Kitty graphics protocol"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/zx0r/ii"
+readme = "README.md"
+keywords = ["terminal", "kitty", "latex", "svg", "tui"]
+categories = ["command-line-utilities", "graphics"]
+
+[lib]
+name = "ii"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ii"
+path = "src/main.rs"
+
+[dependencies]
+memchr = "2"
+rustix = { version = "1", features = ["fs", "mm", "net", "event", "process", "termios", "shm"] }
+
+[profile.release]
+opt-level = 3
+codegen-units = 1
+incremental = false
+lto = "fat"
+panic = "abort"
+strip = "symbols"
+
+[profile.release-small]
+inherits = "release"
+opt-level = "z"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unfulfilled_lint_expectations = "warn"
+unreachable_pub = "warn"
+unused_qualifications = "warn"
+unused_lifetimes = "warn"
+trivial_casts = "warn"
+trivial_numeric_casts = "warn"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+multiple_unsafe_ops_per_block = "deny"
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
+undocumented_unsafe_blocks = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+dbg_macro = "deny"
+unimplemented = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+inline_always = "warn"
+needless_pass_by_value = "warn"

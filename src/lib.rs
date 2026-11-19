@@ -1,5 +1,6 @@
 //! `ii` — terminal graphical coprocessor. See `ARCHITECTURE_PRINCIPAL.md`.
 
+pub mod cache;
 pub mod cfg;
 pub mod chart;
 pub mod chem;

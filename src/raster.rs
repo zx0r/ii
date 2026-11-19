@@ -1,13 +1,10 @@
-//! SVG → cell-snapped RGBA rasterizer, PNG decoder, and Q24 fixed-point alpha unpremultiplier.
+//! SVG & Scene IR → cell-snapped RGBA rasterizer, PNG decoder, and Q24 fixed-point alpha unpremultiplier.
 
-#![expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_precision_loss,
-    clippy::cast_sign_loss,
-    reason = "bounded pixel dimensions (<= 4096) and Q24 fixed-point unpremultiply arithmetic"
-)]
-
-use crate::err::Error;
+use crate::{
+    err::Error,
+    scene::{Scene, Verb},
+    theme::{ColorToken, resolve_color},
+};
 
 const MAX_DIM: u32 = 4096;
 
@@ -25,8 +22,12 @@ const UNPREMUL_LUT: [u32; 256] = {
 /// In-place Q24 fixed-point unpremultiplication of premultiplied RGBA8 pixels.
 /// Zero integer division on the hot loop.
 #[inline]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "Q24 fixed-point product clamped to .min(255) fits in u8"
+)]
 pub fn unpremultiply(rgba: &mut [u8]) {
-    for px in rgba.chunks_exact_mut(4) {
+    for px in rgba.as_chunks_mut::<4>().0 {
         let a = px[3];
         if a == 0 {
             px[0] = 0;
@@ -104,10 +105,87 @@ pub fn rasterize(
     Ok((snap_w as u16, snap_h as u16, cols as u16, rows as u16))
 }
 
-/// Decode a PNG byte slice `src` (or base64-encoded PNG) into `rgba` (RGBA8).
-/// Returns `(width, height)`.
+/// Rasterize `Scene` directly into cell-snapped RGBA8 using tiny-skia.
+pub fn rasterize_scene(
+    scene: &Scene,
+    cell_w: u16,
+    cell_h: u16,
+    max_width_px: u16,
+    rgba: &mut Vec<u8>,
+) -> Result<(u16, u16, u16, u16), Error> {
+    let cw = u32::from(cell_w.max(1));
+    let ch = u32::from(cell_h.max(1));
+    let w_px = (scene.width.ceil() as u32).clamp(1, u32::from(max_width_px.max(cell_w)));
+    let h_px = (scene.height.ceil() as u32).clamp(1, MAX_DIM);
+
+    let cols = w_px.div_ceil(cw).max(1);
+    let rows = h_px.div_ceil(ch).max(1);
+    let snap_w = cols.saturating_mul(cw);
+    let snap_h = rows.saturating_mul(ch);
+
+    let total_bytes = (snap_w as usize) * (snap_h as usize) * 4;
+    rgba.clear();
+    rgba.resize(total_bytes, 0);
+
+    let mut pixmap =
+        tiny_skia::PixmapMut::from_bytes(rgba.as_mut_slice(), snap_w, snap_h).ok_or(Error::SvgParse)?;
+
+    // 1. Draw Rects
+    for r in &scene.rects {
+        let color = resolve_color(r.color, true);
+        let mut paint = tiny_skia::Paint::default();
+        paint.set_color_rgba8(color.r(), color.g(), color.b(), color.a());
+        if let Some(skia_rect) = tiny_skia::Rect::from_xywh(r.x, r.y, r.w, r.h) {
+            pixmap.fill_rect(skia_rect, &paint, tiny_skia::Transform::identity(), None);
+        }
+    }
+
+    // 2. Draw Paths
+    for p in &scene.paths {
+        let color = resolve_color(p.color, true);
+        let mut paint = tiny_skia::Paint::default();
+        paint.set_color_rgba8(color.r(), color.g(), color.b(), color.a());
+
+        let mut pb = tiny_skia::PathBuilder::new();
+        let pt_slice = &scene.points[p.pt_start as usize..(p.pt_start + p.pt_count) as usize];
+        let verb_slice = &scene.verbs[p.verb_start as usize..(p.verb_start + p.verb_count) as usize];
+
+        let mut pt_idx = 0;
+        for &v in verb_slice {
+            match v {
+                0 => { // MoveTo
+                    if pt_idx < pt_slice.len() {
+                        pb.move_to(pt_slice[pt_idx][0], pt_slice[pt_idx][1]);
+                        pt_idx += 1;
+                    }
+                }
+                1 => { // LineTo
+                    if pt_idx < pt_slice.len() {
+                        pb.line_to(pt_slice[pt_idx][0], pt_slice[pt_idx][1]);
+                        pt_idx += 1;
+                    }
+                }
+                4 => pb.close(),
+                _ => {}
+            }
+        }
+
+        if let Some(path) = pb.finish() {
+            let stroke = tiny_skia::Stroke {
+                width: (p.stroke_width as f32).max(1.0),
+                ..tiny_skia::Stroke::default()
+            };
+            pixmap.stroke_path(&path, &paint, &stroke, tiny_skia::Transform::identity(), None);
+        }
+    }
+
+    unpremultiply(rgba.as_mut_slice());
+    Ok((snap_w as u16, snap_h as u16, cols as u16, rows as u16))
+}
+
+/// Decode a PNG byte slice `src` into `rgba` (RGBA8).
 pub fn decode_png(src: &[u8], rgba: &mut Vec<u8>) -> Result<(u32, u32), Error> {
-    let mut decoder = png::Decoder::new(core::io::BorrowedBuf::from(src).into_reader());
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(src));
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info().map_err(|_| Error::PngDecode)?;
     let info = reader.info();
@@ -123,48 +201,9 @@ pub fn decode_png(src: &[u8], rgba: &mut Vec<u8>) -> Result<(u32, u32), Error> {
         .next_frame(rgba.as_mut_slice())
         .map_err(|_| Error::PngDecode)?;
 
-    match frame.color_type {
-        png::ColorType::Rgba => {
-            rgba.truncate(frame.buffer_size());
-        }
-        png::ColorType::Rgb => {
-            let n_px = (w as usize) * (h as usize);
-            rgba.resize(n_px * 4, 255);
-            for i in (0..n_px).rev() {
-                let r = rgba[i * 3];
-                let g = rgba[i * 3 + 1];
-                let b = rgba[i * 3 + 2];
-                rgba[i * 4] = r;
-                rgba[i * 4 + 1] = g;
-                rgba[i * 4 + 2] = b;
-                rgba[i * 4 + 3] = 255;
-            }
-        }
-        png::ColorType::Grayscale => {
-            let n_px = (w as usize) * (h as usize);
-            rgba.resize(n_px * 4, 255);
-            for i in (0..n_px).rev() {
-                let y = rgba[i];
-                rgba[i * 4] = y;
-                rgba[i * 4 + 1] = y;
-                rgba[i * 4 + 2] = y;
-                rgba[i * 4 + 3] = 255;
-            }
-        }
-        png::ColorType::GrayscaleAlpha => {
-            let n_px = (w as usize) * (h as usize);
-            rgba.resize(n_px * 4, 255);
-            for i in (0..n_px).rev() {
-                let y = rgba[i * 2];
-                let a = rgba[i * 2 + 1];
-                rgba[i * 4] = y;
-                rgba[i * 4 + 1] = y;
-                rgba[i * 4 + 2] = y;
-                rgba[i * 4 + 3] = a;
-            }
-        }
-        png::ColorType::Indexed => return Err(Error::PngDecode),
+    if frame.color_type != png::ColorType::Rgba {
+        return Err(Error::PngDecode);
     }
-
+    rgba.truncate(frame.buffer_size());
     Ok((w, h))
 }

@@ -1,31 +1,93 @@
 //! Kitty Graphics Protocol (KGP) encoder: POSIX SHM fast-path, Base64 chunked fallback,
 //! and `U+10EEEE` Unicode placeholder grid emission with 297-entry diacritic LUT.
 
-#![expect(
-    clippy::cast_possible_truncation,
-    reason = "bounded 24-bit image_id, u16 grid coordinates, and decimal formatting"
-)]
-
 use rustix::{
     fs::{Mode, ftruncate},
     io::Errno,
     mm::{MapFlags, ProtFlags, mmap, munmap},
-    shm::{OFlags, shm_open},
+    shm::{self, OFlags},
 };
 
 use crate::err::Error;
 
+/// Transport parameters for staging a KGP image into APC output.
+#[derive(Clone, Copy, Debug)]
+pub struct StageParams {
+    pub w: u16,
+    pub h: u16,
+    pub image_id: u32,
+    pub cols: u16,
+    pub rows: u16,
+    pub is_tmux: bool,
+}
+
 /// Canonical 297-entry Kitty row/column diacritic table (combining marks mapping indices 0..297).
 /// Stored as pre-encoded 2-byte UTF-8 sequences for zero-branch memcpy emission.
 const DIACRITICS_UTF8: [[u8; 2]; 64] = [
-    [0xCC, 0x85], [0xCC, 0x8D], [0xCC, 0x8E], [0xCC, 0x90], [0xCC, 0x92], [0xCC, 0xBB], [0xCC, 0xBF], [0xCD, 0x86],
-    [0xCD, 0x91], [0xCD, 0x92], [0xCD, 0x93], [0xCD, 0x97], [0xCD, 0x9B], [0xCD, 0xA3], [0xCD, 0xA4], [0xCD, 0xA5],
-    [0xCD, 0xA6], [0xCD, 0xA7], [0xCD, 0xA8], [0xCD, 0xA9], [0xCD, 0xAA], [0xCD, 0xAB], [0xCD, 0xAC], [0xCD, 0xAD],
-    [0xCD, 0xAE], [0xCD, 0xAF], [0xCE, 0x94], [0xDF, 0xAB], [0xDF, 0xAD], [0xDF, 0xAE], [0xDF, 0xAF], [0xDF, 0xB0],
-    [0xCC, 0x80], [0xCC, 0x81], [0xCC, 0x82], [0xCC, 0x83], [0xCC, 0x84], [0xCC, 0x86], [0xCC, 0x87], [0xCC, 0x88],
-    [0xCC, 0x89], [0xCC, 0x8A], [0xCC, 0x8B], [0xCC, 0x8C], [0xCC, 0x8F], [0xCC, 0x91], [0xCC, 0x93], [0xCC, 0x94],
-    [0xCC, 0x95], [0xCC, 0x9A], [0xCC, 0x9C], [0xCC, 0x9D], [0xCC, 0x9E], [0xCC, 0x9F], [0xCC, 0xA0], [0xCC, 0xA4],
-    [0xCC, 0xA5], [0xCC, 0xA6], [0xCC, 0xA9], [0xCC, 0xAA], [0xCC, 0xAB], [0xCC, 0xAC], [0xCC, 0xAD], [0xCC, 0xAE],
+    [0xCC, 0x85],
+    [0xCC, 0x8D],
+    [0xCC, 0x8E],
+    [0xCC, 0x90],
+    [0xCC, 0x92],
+    [0xCC, 0xBB],
+    [0xCC, 0xBF],
+    [0xCD, 0x86],
+    [0xCD, 0x91],
+    [0xCD, 0x92],
+    [0xCD, 0x93],
+    [0xCD, 0x97],
+    [0xCD, 0x9B],
+    [0xCD, 0xA3],
+    [0xCD, 0xA4],
+    [0xCD, 0xA5],
+    [0xCD, 0xA6],
+    [0xCD, 0xA7],
+    [0xCD, 0xA8],
+    [0xCD, 0xA9],
+    [0xCD, 0xAA],
+    [0xCD, 0xAB],
+    [0xCD, 0xAC],
+    [0xCD, 0xAD],
+    [0xCD, 0xAE],
+    [0xCD, 0xAF],
+    [0xCE, 0x94],
+    [0xDF, 0xAB],
+    [0xDF, 0xAD],
+    [0xDF, 0xAE],
+    [0xDF, 0xAF],
+    [0xDF, 0xB0],
+    [0xCC, 0x80],
+    [0xCC, 0x81],
+    [0xCC, 0x82],
+    [0xCC, 0x83],
+    [0xCC, 0x84],
+    [0xCC, 0x86],
+    [0xCC, 0x87],
+    [0xCC, 0x88],
+    [0xCC, 0x89],
+    [0xCC, 0x8A],
+    [0xCC, 0x8B],
+    [0xCC, 0x8C],
+    [0xCC, 0x8F],
+    [0xCC, 0x91],
+    [0xCC, 0x93],
+    [0xCC, 0x94],
+    [0xCC, 0x95],
+    [0xCC, 0x9A],
+    [0xCC, 0x9C],
+    [0xCC, 0x9D],
+    [0xCC, 0x9E],
+    [0xCC, 0x9F],
+    [0xCC, 0xA0],
+    [0xCC, 0xA4],
+    [0xCC, 0xA5],
+    [0xCC, 0xA6],
+    [0xCC, 0xA9],
+    [0xCC, 0xAA],
+    [0xCC, 0xAB],
+    [0xCC, 0xAC],
+    [0xCC, 0xAD],
+    [0xCC, 0xAE],
 ];
 
 const B64_TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -53,15 +115,14 @@ fn push_u32_dec(mut n: u32, out: &mut Vec<u8>) {
 fn base64_encode(src: &[u8], out: &mut Vec<u8>) {
     out.clear();
     out.reserve(src.len().div_ceil(3) * 4);
-    let mut chunks = src.chunks_exact(3);
-    for c in &mut chunks {
+    let (chunks, rem) = src.as_chunks::<3>();
+    for c in chunks {
         let n = (u32::from(c[0]) << 16) | (u32::from(c[1]) << 8) | u32::from(c[2]);
         out.push(B64_TABLE[((n >> 18) & 63) as usize]);
         out.push(B64_TABLE[((n >> 12) & 63) as usize]);
         out.push(B64_TABLE[((n >> 6) & 63) as usize]);
         out.push(B64_TABLE[(n & 63) as usize]);
     }
-    let rem = chunks.remainder();
     if rem.len() == 1 {
         let n = u32::from(rem[0]) << 16;
         out.push(B64_TABLE[((n >> 18) & 63) as usize]);
@@ -96,15 +157,15 @@ fn end_apc(is_tmux: bool, apc: &mut Vec<u8>) {
 }
 
 #[inline]
-fn emit_virtual_placement(image_id: u32, cols: u16, rows: u16, is_tmux: bool, apc: &mut Vec<u8>) {
-    begin_apc(is_tmux, apc);
+fn emit_virtual_placement(p: StageParams, apc: &mut Vec<u8>) {
+    begin_apc(p.is_tmux, apc);
     apc.extend_from_slice(b"a=p,U=1,q=2,i=");
-    push_u32_dec(image_id, apc);
+    push_u32_dec(p.image_id, apc);
     apc.extend_from_slice(b",c=");
-    push_u32_dec(u32::from(cols), apc);
+    push_u32_dec(u32::from(p.cols), apc);
     apc.extend_from_slice(b",r=");
-    push_u32_dec(u32::from(rows), apc);
-    end_apc(is_tmux, apc);
+    push_u32_dec(u32::from(p.rows), apc);
+    end_apc(p.is_tmux, apc);
 }
 
 #[inline]
@@ -125,14 +186,13 @@ fn format_shm_name(pid: u32, seq: u32, buf: &mut [u8; 32]) -> &[u8] {
 }
 
 /// Stage local POSIX SHM KGP transmission (`t=s`) + virtual placement (`a=p,U=1`) into `apc`.
+///
+/// # Errors
+///
+/// Returns `Error::ShmExhausted` if segment creation fails after retries, or `Error::Io` on syscall error.
 pub fn stage_shm(
     rgba: &[u8],
-    w: u16,
-    h: u16,
-    image_id: u32,
-    cols: u16,
-    rows: u16,
-    is_tmux: bool,
+    p: StageParams,
     seq: &mut u32,
     pid: u32,
     apc: &mut Vec<u8>,
@@ -147,7 +207,7 @@ pub fn stage_shm(
         *seq = seq.wrapping_add(1);
         let name = format_shm_name(pid, *seq, &mut name_buf);
         let name_str = core::str::from_utf8(name).unwrap_or("/ii-0");
-        match shm_open(
+        match shm::open(
             name_str,
             OFlags::CREATE | OFlags::EXCL | OFlags::RDWR,
             Mode::RUSR | Mode::WUSR,
@@ -165,51 +225,47 @@ pub fn stage_shm(
     let size = rgba.len();
     ftruncate(&fd, size as u64)?;
 
-    // SAFETY: `fd` is a newly created, exclusively owned POSIX shared memory segment truncated to `size` bytes.
-    // We map it `PROT_READ | PROT_WRITE`, copy `rgba` into the mapping, and immediately `munmap` before returning.
-    unsafe {
-        let ptr = mmap(
+    // SAFETY: `fd` is a newly created, exclusively owned POSIX shared memory segment
+    // truncated to `size` bytes. We map it PROT_READ | PROT_WRITE.
+    let ptr = unsafe {
+        mmap(
             core::ptr::null_mut(),
             size,
             ProtFlags::READ | ProtFlags::WRITE,
             MapFlags::SHARED,
             &fd,
             0,
-        )?;
+        )?
+    };
+    // SAFETY: `ptr` is a valid mapping of `size` bytes and `rgba` is at least `size` bytes.
+    unsafe {
         core::ptr::copy_nonoverlapping(rgba.as_ptr(), ptr.cast::<u8>(), size);
+    }
+    // SAFETY: `ptr` was obtained from `mmap` with the given `size` and has not been unmapped.
+    unsafe {
         munmap(ptr, size)?;
     }
 
     let mut b64_name = Vec::with_capacity(32);
     base64_encode(&name_buf[..name_len], &mut b64_name);
 
-    begin_apc(is_tmux, apc);
+    begin_apc(p.is_tmux, apc);
     apc.extend_from_slice(b"a=t,t=s,f=32,q=2,i=");
-    push_u32_dec(image_id, apc);
+    push_u32_dec(p.image_id, apc);
     apc.extend_from_slice(b",s=");
-    push_u32_dec(u32::from(w), apc);
+    push_u32_dec(u32::from(p.w), apc);
     apc.extend_from_slice(b",v=");
-    push_u32_dec(u32::from(h), apc);
+    push_u32_dec(u32::from(p.h), apc);
     apc.push(b';');
     apc.extend_from_slice(&b64_name);
-    end_apc(is_tmux, apc);
+    end_apc(p.is_tmux, apc);
 
-    emit_virtual_placement(image_id, cols, rows, is_tmux, apc);
+    emit_virtual_placement(p, apc);
     Ok(())
 }
 
 /// Stage chunked Base64 KGP transmission (`t=d`, 4096 B chunks) + virtual placement (`a=p,U=1`) into `apc`.
-pub fn stage_base64(
-    rgba: &[u8],
-    w: u16,
-    h: u16,
-    image_id: u32,
-    cols: u16,
-    rows: u16,
-    is_tmux: bool,
-    apc: &mut Vec<u8>,
-    b64: &mut Vec<u8>,
-) {
+pub fn stage_base64(rgba: &[u8], p: StageParams, apc: &mut Vec<u8>, b64: &mut Vec<u8>) {
     base64_encode(rgba, b64);
     let total = b64.len();
     let chunk_size = 4096usize;
@@ -219,30 +275,29 @@ pub fn stage_base64(
     while offset < total || first {
         let end = (offset + chunk_size).min(total);
         let more = u8::from(end < total);
-        begin_apc(is_tmux, apc);
+        begin_apc(p.is_tmux, apc);
         if first {
             apc.extend_from_slice(b"a=t,t=d,f=32,q=2,i=");
-            push_u32_dec(image_id, apc);
+            push_u32_dec(p.image_id, apc);
             apc.extend_from_slice(b",s=");
-            push_u32_dec(u32::from(w), apc);
+            push_u32_dec(u32::from(p.w), apc);
             apc.extend_from_slice(b",v=");
-            push_u32_dec(u32::from(h), apc);
+            push_u32_dec(u32::from(p.h), apc);
             apc.extend_from_slice(b",m=");
-            apc.push(b'0' + more);
         } else {
             apc.extend_from_slice(b"m=");
-            apc.push(b'0' + more);
         }
+        apc.push(b'0' + more);
         if end > offset {
             apc.push(b';');
             apc.extend_from_slice(&b64[offset..end]);
         }
-        end_apc(is_tmux, apc);
+        end_apc(p.is_tmux, apc);
         offset = end;
         first = false;
     }
 
-    emit_virtual_placement(image_id, cols, rows, is_tmux, apc);
+    emit_virtual_placement(p, apc);
 }
 
 /// Emit `U+10EEEE` virtual placement grid with 24-bit foreground `image_id` color and row/col diacritics.
@@ -280,7 +335,15 @@ mod tests {
         let rgba = [255u8; 64];
         let mut apc = Vec::new();
         let mut b64 = Vec::new();
-        stage_base64(&rgba, 4, 4, 0x0012_3456, 2, 1, false, &mut apc, &mut b64);
+        let p = StageParams {
+            w: 4,
+            h: 4,
+            image_id: 0x0012_3456,
+            cols: 2,
+            rows: 1,
+            is_tmux: false,
+        };
+        stage_base64(&rgba, p, &mut apc, &mut b64);
         assert!(apc.starts_with(b"\x1b_Ga=t,t=d,f=32,q=2,i=1193046,s=4,v=4,m=0;"));
         assert!(apc.ends_with(b"\x1b\\"));
 

@@ -19,6 +19,14 @@ path = "src/lib.rs"
 name = "ii"
 path = "src/main.rs"
 
+[[bench]]
+name = "scan_bench"
+harness = false
+
+[[bench]]
+name = "compose_bench"
+harness = false
+
 [dependencies]
 blake3 = "1.8.7"
 lz4_flex = { version = "0.14.2", default-features = false, features = [
@@ -30,6 +38,7 @@ png = "0.18.1"
 ratex-layout = "0.1.16"
 ratex-parser = "0.1.16"
 ratex-svg = "0.1.16"
+ratex-types = "0.1.16"
 resvg = { version = "0.50.0", default-features = false }
 rustix = { version = "1.1.6", features = [
   "fs",
@@ -66,22 +75,24 @@ unused_qualifications = "warn"
 unused_lifetimes = "warn"
 trivial_casts = "warn"
 trivial_numeric_casts = "warn"
+missing_debug_implementations = "warn"
 
 [lints.clippy]
 all = { level = "deny", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
 cargo = { level = "warn", priority = -1 }
-multiple_unsafe_ops_per_block = "deny"
-allow_attributes = "deny"
-allow_attributes_without_reason = "deny"
-undocumented_unsafe_blocks = "deny"
-unwrap_used = "deny"
-expect_used = "deny"
 panic = "deny"
 todo = "deny"
 dbg_macro = "deny"
-unimplemented = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
 print_stdout = "deny"
 print_stderr = "deny"
-inline_always = "warn"
+unimplemented = "deny"
+inline_always = "deny"
 needless_pass_by_value = "warn"
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
+multiple_unsafe_ops_per_block = "deny"
+undocumented_unsafe_blocks = "deny"

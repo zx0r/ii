@@ -1,22 +1,20 @@
-//! `ii` entry point: `SIGPIPE` mask, hand-rolled zero-dep CLI, daemon client/server & streaming pipeline.
+//! `ii` entry point: SIGPIPE mask, zero-dep CLI, daemon client/server & streaming pipeline.
+
+use std::path::Path;
 
 use rustix::{
-    fd::BorrowedFd,
+    fd::{AsFd, BorrowedFd},
     io::{Errno, read, write},
-    net::{AddressFamily, SocketAddrUnix, SocketFlags, SocketType, connect, socket_with},
-    process::getpid,
-    stdio::{stderr, stdin, stdout},
     termios::isatty,
 };
 
 use ii::{
-    cache,
-    cfg::Cfg,
-    compose::{self, Session},
     daemon,
     err::Error,
-    ipc::{Cmd, Header, ERR_FLAG},
-    ir::Scratch,
+    fmt,
+    ipc::{self, Cmd},
+    raster,
+    scene::{RenderScratch, Scene},
     tty,
 };
 
@@ -29,7 +27,7 @@ Options:\n\
   -h, --help     Show this help message\n\
   -V, --version  Show version\n";
 
-fn write_all_fd(fd: BorrowedFd<'_>, mut buf: &[u8]) -> Result<(), Error> {
+fn write_all(fd: BorrowedFd<'_>, mut buf: &[u8]) -> Result<(), Error> {
     while !buf.is_empty() {
         match write(fd, buf) {
             Ok(n) => buf = &buf[n..],
@@ -40,90 +38,9 @@ fn write_all_fd(fd: BorrowedFd<'_>, mut buf: &[u8]) -> Result<(), Error> {
     Ok(())
 }
 
-fn read_exact_fd(fd: BorrowedFd<'_>, mut buf: &mut [u8]) -> Result<(), Error> {
-    while !buf.is_empty() {
-        match read(fd, buf) {
-            Ok(0) => return Err(Error::BadMagic),
-            Ok(n) => buf = &mut buf[n..],
-            Err(Errno::INTR) => {}
-            Err(e) => return Err(Error::Io(e)),
-        }
-    }
-    Ok(())
-}
-
-fn send_ipc_cmd(cmd: Cmd, payload: &[u8]) -> Result<Vec<u8>, Error> {
-    let sock_path = daemon::socket_path();
-    let fd = socket_with(
-        AddressFamily::UNIX,
-        SocketType::STREAM,
-        SocketFlags::CLOEXEC,
-        None,
-    )?;
-    let addr = SocketAddrUnix::new(sock_path.as_path()).map_err(|_| Error::SocketSymlink)?;
-    connect(&fd, &addr)?;
-
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "CLI IPC payloads fit in u32"
-    )]
-    let hdr = Header::new(cmd, payload.len() as u32);
-    write_all_fd(fd.as_fd(), &hdr.to_le_bytes())?;
-    if !payload.is_empty() {
-        write_all_fd(fd.as_fd(), payload)?;
-    }
-
-    let mut resp_hdr_bytes = [0u8; 32];
-    read_exact_fd(fd.as_fd(), &mut resp_hdr_bytes)?;
-    let resp_hdr = Header::from_le_bytes(&resp_hdr_bytes);
-    let _ = resp_hdr.validate()?;
-
-    let mut resp_buf = vec![0u8; resp_hdr.payload_len as usize];
-    if !resp_buf.is_empty() {
-        read_exact_fd(fd.as_fd(), &mut resp_buf)?;
-    }
-    if (resp_hdr.command & ERR_FLAG) != 0 {
-        return Err(Error::UnknownCommand(resp_hdr.command));
-    }
-    Ok(resp_buf)
-}
-
-fn run_render_local(input: &[u8]) -> Result<(), Error> {
-    let (metrics, palette, tty_fd) = tty::probe();
-    let cache_dir = cache::ensure_dirs().ok();
-    // Safety: `stdout()` is valid for the lifetime of the process.
-    let is_stdout_tty = unsafe { isatty(stdout()) };
-    let cfg = Cfg {
-        tty: metrics,
-        viewport: ii::cfg::Viewport::DEFAULT,
-        palette,
-        cache_dir,
-        is_stdout_tty,
-    };
-    let pid = getpid().as_raw_nonzero().get().unsigned_abs();
-    let mut session = Session::new(pid);
-    let mut scratch = Scratch::new();
-
-    compose::compose_ansi(input, &cfg, &mut session, &mut scratch)?;
-
-    if !scratch.apc_buf.is_empty() {
-        if let Some(ref tfd) = tty_fd {
-            let _ = write_all_fd(tfd.as_fd(), &scratch.apc_buf);
-        } else {
-            // Safety: `stdout()` is valid for the lifetime of the process.
-            let out_fd = unsafe { stdout() };
-            let _ = write_all_fd(out_fd, &scratch.apc_buf);
-        }
-    }
-    // Safety: `stdout()` is valid for the lifetime of the process.
-    let out_fd = unsafe { stdout() };
-    write_all_fd(out_fd, &scratch.text_buf)?;
-    Ok(())
-}
-
 fn read_stdin_all() -> Result<Vec<u8>, Error> {
-    // Safety: `stdin()` is valid for the lifetime of the process.
-    let in_fd = unsafe { stdin() };
+    let stdin = std::io::stdin();
+    let in_fd = stdin.as_fd();
     let mut buf = Vec::with_capacity(65536);
     let mut chunk = [0u8; 16384];
     loop {
@@ -137,60 +54,79 @@ fn read_stdin_all() -> Result<Vec<u8>, Error> {
     Ok(buf)
 }
 
+fn render_file_local(data: &[u8], ext: &str) -> Result<(), Error> {
+    let mut scratch = RenderScratch::new();
+    fmt::dispatch_into_scene(data, ext, &mut scratch.scene)?;
+
+    let (metrics, _palette, tty_fd) = tty::probe();
+    let cw = metrics.cell_w.max(1);
+    let ch = metrics.cell_h.max(1);
+    let max_w = (metrics.cols as u32) * (cw as u32);
+
+    let (w, h, cols, rows) = raster::rasterize_scene(
+        &scratch.scene,
+        cw,
+        ch,
+        max_w as u16,
+        &mut scratch.rgba_buf,
+    )?;
+
+    ii::kitty::stage_base64(
+        &scratch.rgba_buf,
+        ii::kitty::StageParams {
+            w,
+            h,
+            image_id: 1,
+            cols,
+            rows,
+            is_tmux: metrics.is_tmux != 0,
+        },
+        &mut scratch.out_buf,
+        &mut Vec::new(),
+    );
+
+    let stdout = std::io::stdout();
+    if let Some(ref tfd) = tty_fd {
+        let _ = write_all(tfd.as_fd(), &scratch.out_buf);
+    } else {
+        let _ = write_all(stdout.as_fd(), &scratch.out_buf);
+    }
+    Ok(())
+}
+
 fn run_cli() -> Result<(), Error> {
     let mut args = std::env::args_os();
     let _ = args.next();
+    let stdin = std::io::stdin();
+    let stdout = std::io::stdout();
 
     let Some(first) = args.next() else {
-        // Safety: `stdin()` is valid for the lifetime of the process.
-        if unsafe { isatty(stdin()) } {
-            // Safety: `stdout()` is valid for the lifetime of the process.
-            write_all_fd(unsafe { stdout() }, USAGE)?;
+        if isatty(&stdin) {
+            write_all(stdout.as_fd(), USAGE)?;
             return Ok(());
         }
         let data = read_stdin_all()?;
-        return run_render_local(&data);
+        return render_file_local(&data, "");
     };
 
     let arg = first.to_string_lossy();
     match arg.as_ref() {
-        "-h" | "--help" => {
-            // Safety: `stdout()` is valid for the lifetime of the process.
-            write_all_fd(unsafe { stdout() }, USAGE)
-        }
-        "-V" | "--version" => {
-            // Safety: `stdout()` is valid for the lifetime of the process.
-            write_all_fd(unsafe { stdout() }, b"ii 0.0.0\n")
-        }
-        "--daemon" => {
-            let _lock_fd = daemon::acquire_lock()?;
-            let listen_fd = daemon::bind_socket()?;
-            let (metrics, palette, _tty_fd) = tty::probe();
-            let cache_dir = cache::ensure_dirs().ok();
-            let cfg = Cfg {
-                tty: metrics,
-                viewport: ii::cfg::Viewport::DEFAULT,
-                palette,
-                cache_dir,
-                is_stdout_tty: false,
-            };
-            daemon::run(cfg, listen_fd)
-        }
+        "-h" | "--help" => write_all(stdout.as_fd(), USAGE),
+        "-V" | "--version" => write_all(stdout.as_fd(), b"ii 0.0.0\n"),
+        "--daemon" => daemon::run(),
         "--ping" => {
-            let resp = send_ipc_cmd(Cmd::Ping, &[])?;
-            let text = if resp.len() >= 4 { &resp[4..] } else { &resp[..] };
-            // Safety: `stdout()` is valid for the lifetime of the process.
-            let out = unsafe { stdout() };
-            write_all_fd(out, text)?;
-            write_all_fd(out, b"\n")
+            let resp = ipc::client_send(Cmd::Ping, &[])?;
+            write_all(stdout.as_fd(), &resp)
         }
         "--shutdown" => {
-            let _ = send_ipc_cmd(Cmd::Shutdown, &[])?;
+            let _ = ipc::client_send(Cmd::Shutdown, &[])?;
             Ok(())
         }
-        path => {
-            let data = std::fs::read(path).map_err(|_| Error::Io(Errno::NOENT))?;
-            run_render_local(&data)
+        path_str => {
+            let p = Path::new(path_str);
+            let ext = p.extension().and_then(|s| s.to_str()).unwrap_or("");
+            let data = std::fs::read(p).map_err(|_| Error::Io(Errno::NOENT))?;
+            render_file_local(&data, ext)
         }
     }
 }
@@ -198,8 +134,8 @@ fn run_cli() -> Result<(), Error> {
 fn main() {
     if let Err(e) = run_cli() {
         let msg = format!("ii: {e}\n");
-        // Safety: `stderr()` is valid for the lifetime of the process.
-        let _ = write_all_fd(unsafe { stderr() }, msg.as_bytes());
+        let stderr = std::io::stderr();
+        let _ = write_all(stderr.as_fd(), msg.as_bytes());
         std::process::exit(1);
     }
 }

@@ -4,21 +4,9 @@ use core::fmt::Write as _;
 
 use crate::{
     err::Error,
+    ir::write_xml_escaped,
     theme::{Idx, Palette},
 };
-
-fn write_xml_escaped(out: &mut String, bytes: &[u8]) {
-    let s = core::str::from_utf8(bytes).unwrap_or("Monospace");
-    for ch in s.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            _ => out.push(ch),
-        }
-    }
-}
 
 /// Generate an SVG specimen card for font identifier/name `src`.
 pub fn specimen(src: &[u8], palette: &Palette, width: u16, out: &mut String) -> Result<(), Error> {
@@ -27,10 +15,10 @@ pub fn specimen(src: &[u8], palette: &Palette, width: u16, out: &mut String) -> 
     }
     let w = width.max(320);
     let h = 160u16;
-    let bg = core::str::from_utf8(palette.get(Idx::BgSurface).hex()).unwrap_or("#313244");
-    let fg = core::str::from_utf8(palette.get(Idx::Fg).hex()).unwrap_or("#cdd6f4");
-    let hdr = core::str::from_utf8(palette.get(Idx::Heading).hex()).unwrap_or("#cba6f7");
-    let muted = core::str::from_utf8(palette.get(Idx::FgMuted).hex()).unwrap_or("#a6adc8");
+    let bg = palette.hex_str(Idx::BgSurface);
+    let fg = palette.hex_str(Idx::Fg);
+    let hdr = palette.hex_str(Idx::Heading);
+    let muted = palette.hex_str(Idx::FgMuted);
 
     let _ = write!(
         out,

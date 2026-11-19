@@ -1,51 +1,101 @@
 //! Single-pass O(N) SWAR/memchr scanner emitting strictly monotonic, non-overlapping `Span`s.
 
-#![expect(
-    clippy::cast_possible_truncation,
-    reason = "input offsets fit within 28-bit Span range"
-)]
-
 use memchr::{memchr, memchr2, memchr3};
 
-use crate::ir::{Kind, OFFSET_MASK, Span};
+pub const OFFSET_MASK: u32 = 0x0FFF_FFFF;
+pub const KIND_SHIFT: u32 = 28;
 
-const MATH_ENVS: &[&[u8]] = &[
-    b"equation*",
-    b"equation",
-    b"align*",
-    b"align",
-    b"gather*",
-    b"gather",
-    b"multline*",
-    b"multline",
-    b"pmatrix",
-    b"bmatrix",
-    b"vmatrix",
-    b"Vmatrix",
-    b"Bmatrix",
-    b"matrix",
-    b"cases",
-    b"split",
-    b"CD",
-];
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Kind {
+    MathDisplay = 0,
+    MathInline = 1,
+    Mermaid = 2,
+    RawSvg = 3,
+    VegaLite = 4,
+    Plotly = 5,
+    CsvTsv = 6,
+    Dot = 7,
+    Quarto = 8,
+    QmdCallout = 9,
+    NotebookOut = 10,
+    PipeTable = 11,
+    Chem = 12,
+    TypstMath = 13,
+}
 
-#[inline]
-const fn is_space(b: u8) -> bool {
-    matches!(b, b' ' | b'\t')
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(C)]
+pub struct Span {
+    pub outer_start: u32,
+    pub outer_end: u32,
+    pub payload_start: u32,
+    pub payload_end_and_kind: u32,
+}
+
+impl Span {
+    #[inline]
+    #[must_use]
+    pub const fn new(
+        outer_start: u32,
+        outer_end: u32,
+        payload_start: u32,
+        payload_end: u32,
+        kind: Kind,
+    ) -> Self {
+        Self {
+            outer_start,
+            outer_end,
+            payload_start,
+            payload_end_and_kind: (payload_end & OFFSET_MASK) | ((kind as u32) << KIND_SHIFT),
+        }
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn payload_end(self) -> u32 {
+        self.payload_end_and_kind & OFFSET_MASK
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn kind(self) -> Kind {
+        match (self.payload_end_and_kind >> KIND_SHIFT) as u8 {
+            0 => Kind::MathDisplay,
+            1 => Kind::MathInline,
+            2 => Kind::Mermaid,
+            3 => Kind::RawSvg,
+            4 => Kind::VegaLite,
+            5 => Kind::Plotly,
+            6 => Kind::CsvTsv,
+            7 => Kind::Dot,
+            8 => Kind::Quarto,
+            9 => Kind::QmdCallout,
+            10 => Kind::NotebookOut,
+            11 => Kind::PipeTable,
+            12 => Kind::Chem,
+            _ => Kind::TypstMath,
+        }
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn payload<'a>(&self, src: &'a [u8]) -> &'a [u8] {
+        src.get(self.payload_start as usize..self.payload_end() as usize)
+            .unwrap_or(&[])
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn outer<'a>(&self, src: &'a [u8]) -> &'a [u8] {
+        src.get(self.outer_start as usize..self.outer_end as usize)
+            .unwrap_or(&[])
+    }
 }
 
 #[inline]
-const fn is_ascii_digit(b: u8) -> bool {
-    b.is_ascii_digit()
-}
-
-#[inline]
-fn line_end(src: &[u8], pos: usize) -> usize {
-    memchr(b'\n', &src[pos..]).map_or(src.len(), |off| pos + off)
-}
-
-#[inline]
-fn trim_ascii(mut s: &[u8]) -> &[u8] {
+#[must_use]
+pub const fn trim_ascii(mut s: &[u8]) -> &[u8] {
     while let Some((&b, rest)) = s.split_first() {
         if b.is_ascii_whitespace() {
             s = rest;
@@ -63,26 +113,35 @@ fn trim_ascii(mut s: &[u8]) -> &[u8] {
     s
 }
 
+const MATH_ENVS: &[&[u8]] = &[
+    b"equation*", b"equation", b"align*", b"align",
+    b"gather*", b"gather", b"multline*", b"multline",
+    b"pmatrix", b"bmatrix", b"vmatrix", b"Vmatrix",
+    b"Bmatrix", b"matrix", b"cases", b"split", b"CD",
+];
+
 #[inline]
-fn eq_ignore_ascii_case(a: &[u8], b: &[u8]) -> bool {
-    a.eq_ignore_ascii_case(b)
+const fn is_space(b: u8) -> bool {
+    matches!(b, b' ' | b'\t')
+}
+
+#[inline]
+fn line_end(src: &[u8], pos: usize) -> usize {
+    memchr(b'\n', &src[pos..]).map_or(src.len(), |off| pos + off)
 }
 
 #[inline]
 fn classify_fence(tag: &[u8]) -> Option<Kind> {
     let tag = trim_ascii(tag);
-    if let Some(inner) = tag
-        .strip_prefix(b"{")
-        .and_then(|s| s.strip_suffix(b"}"))
-    {
+    if let Some(inner) = tag.strip_prefix(b"{").and_then(|s| s.strip_suffix(b"}")) {
         let head = inner
             .split(|&b| b.is_ascii_whitespace() || b == b',')
             .next()
             .unwrap_or(&[]);
-        if eq_ignore_ascii_case(head, b"mermaid") {
+        if head.eq_ignore_ascii_case(b"mermaid") {
             return Some(Kind::Mermaid);
         }
-        if eq_ignore_ascii_case(head, b"dot") || eq_ignore_ascii_case(head, b"graphviz") {
+        if head.eq_ignore_ascii_case(b"dot") || head.eq_ignore_ascii_case(b"graphviz") {
             return Some(Kind::Dot);
         }
         if !head.is_empty() {
@@ -93,23 +152,23 @@ fn classify_fence(tag: &[u8]) -> Option<Kind> {
         .split(|&b| b.is_ascii_whitespace())
         .next()
         .unwrap_or(&[]);
-    if eq_ignore_ascii_case(word, b"mermaid") {
+    if word.eq_ignore_ascii_case(b"mermaid") {
         Some(Kind::Mermaid)
-    } else if eq_ignore_ascii_case(word, b"svg") {
+    } else if word.eq_ignore_ascii_case(b"svg") {
         Some(Kind::RawSvg)
-    } else if eq_ignore_ascii_case(word, b"vega-lite") || eq_ignore_ascii_case(word, b"vegalite") {
+    } else if word.eq_ignore_ascii_case(b"vega-lite") || word.eq_ignore_ascii_case(b"vegalite") {
         Some(Kind::VegaLite)
-    } else if eq_ignore_ascii_case(word, b"plotly") {
+    } else if word.eq_ignore_ascii_case(b"plotly") {
         Some(Kind::Plotly)
-    } else if eq_ignore_ascii_case(word, b"csv") || eq_ignore_ascii_case(word, b"tsv") {
+    } else if word.eq_ignore_ascii_case(b"csv") || word.eq_ignore_ascii_case(b"tsv") {
         Some(Kind::CsvTsv)
-    } else if eq_ignore_ascii_case(word, b"dot") || eq_ignore_ascii_case(word, b"graphviz") {
+    } else if word.eq_ignore_ascii_case(b"dot") || word.eq_ignore_ascii_case(b"graphviz") {
         Some(Kind::Dot)
-    } else if eq_ignore_ascii_case(word, b"math") || eq_ignore_ascii_case(word, b"latex") {
+    } else if word.eq_ignore_ascii_case(b"math") || word.eq_ignore_ascii_case(b"latex") {
         Some(Kind::MathDisplay)
-    } else if eq_ignore_ascii_case(word, b"chem") || eq_ignore_ascii_case(word, b"mhchem") {
+    } else if word.eq_ignore_ascii_case(b"chem") || word.eq_ignore_ascii_case(b"mhchem") {
         Some(Kind::Chem)
-    } else if eq_ignore_ascii_case(word, b"typst") {
+    } else if word.eq_ignore_ascii_case(b"typst") {
         Some(Kind::TypstMath)
     } else {
         None
@@ -261,7 +320,7 @@ fn is_pipe_separator(line: &[u8]) -> bool {
 }
 
 /// Find matching closing `}` for a balanced brace group starting at `open_brace` (`src[open_brace] == b'{'`).
-fn find_balanced_brace(src: &[u8], open_brace: usize) -> Option<usize> {
+const fn find_balanced_brace(src: &[u8], open_brace: usize) -> Option<usize> {
     if open_brace >= src.len() || src[open_brace] != b'{' {
         return None;
     }
@@ -287,6 +346,47 @@ fn find_balanced_brace(src: &[u8], open_brace: usize) -> Option<usize> {
     None
 }
 
+#[inline]
+fn scan_inline_math_close(src: &[u8], mut cur: usize) -> Option<usize> {
+    let len = src.len();
+    while cur < len {
+        let d = memchr3(b'$', b'\\', b'\n', &src[cur..])?;
+        cur += d;
+        match src[cur] {
+            b'\n' => return None,
+            b'\\' => cur += 2,
+            b'$' => {
+                let prev = src[cur - 1];
+                let next_is_digit = cur + 1 < len && src[cur + 1].is_ascii_digit();
+                if !is_space(prev) && !next_is_digit {
+                    return Some(cur);
+                }
+                return None;
+            }
+            _ => cur += 1,
+        }
+    }
+    None
+}
+
+#[inline]
+fn scan_math_env_close(src: &[u8], mut cur: usize, env_name: &[u8]) -> Option<usize> {
+    let len = src.len();
+    while cur + 6 + env_name.len() <= len {
+        let d = memchr(b'\\', &src[cur..])?;
+        cur += d;
+        if cur + 6 + env_name.len() <= len
+            && &src[cur..cur + 5] == b"\\end{"
+            && &src[cur + 5..cur + 5 + env_name.len()] == env_name
+            && src[cur + 5 + env_name.len()] == b'}'
+        {
+            return Some(cur + 6 + env_name.len());
+        }
+        cur += 1;
+    }
+    None
+}
+
 /// Single-pass O(N) SWAR/memchr scanner.
 /// Emits strictly monotonic, non-overlapping `Span`s into `out`.
 pub fn scan(src: &[u8], out: &mut Vec<Span>) {
@@ -302,7 +402,8 @@ pub fn scan(src: &[u8], out: &mut Vec<Span>) {
                     out.push(sp);
                 }
                 pos = next_pos;
-                at_line_start = pos == 0 || (pos <= len && src.get(pos.wrapping_sub(1)) == Some(&b'\n'));
+                at_line_start =
+                    pos == 0 || (pos <= len && src.get(pos.wrapping_sub(1)) == Some(&b'\n'));
                 continue;
             }
             at_line_start = false;
@@ -403,29 +504,7 @@ pub fn scan(src: &[u8], out: &mut Vec<Span>) {
                         pos += 1;
                         continue;
                     }
-                    let mut cur = p_start;
-                    let mut found = None;
-                    while cur < len {
-                        let Some(d) = memchr3(b'$', b'\\', b'\n', &src[cur..]) else {
-                            break;
-                        };
-                        cur += d;
-                        match src[cur] {
-                            b'\n' => break,
-                            b'\\' => cur += 2,
-                            b'$' => {
-                                // Closing `$` cannot be preceded by space or followed immediately by digit
-                                let prev = src[cur - 1];
-                                let next_is_digit = cur + 1 < len && is_ascii_digit(src[cur + 1]);
-                                if !is_space(prev) && !next_is_digit {
-                                    found = Some(cur);
-                                }
-                                break;
-                            }
-                            _ => cur += 1,
-                        }
-                    }
-                    if let Some(p_end) = found {
+                    if let Some(p_end) = scan_inline_math_close(src, p_start) {
                         if p_end > p_start {
                             out.push(Span::new(
                                 pos as u32,
@@ -540,36 +619,19 @@ pub fn scan(src: &[u8], out: &mut Vec<Span>) {
                     b'b' if pos + 7 < len && &src[pos..pos + 7] == b"\\begin{" => {
                         if let Some(env_close) = memchr(b'}', &src[pos + 7..len.min(pos + 32)]) {
                             let env_name = &src[pos + 7..pos + 7 + env_close];
-                            if MATH_ENVS.contains(&env_name) {
-                                // Search for matching `\end{env_name}`
-                                let mut cur = pos + 8 + env_close;
-                                let mut found_end = None;
-                                while cur + 6 + env_name.len() <= len {
-                                    let Some(d) = memchr(b'\\', &src[cur..]) else {
-                                        break;
-                                    };
-                                    cur += d;
-                                    if cur + 6 + env_name.len() <= len
-                                        && &src[cur..cur + 5] == b"\\end{"
-                                        && &src[cur + 5..cur + 5 + env_name.len()] == env_name
-                                        && src[cur + 5 + env_name.len()] == b'}'
-                                    {
-                                        found_end = Some(cur + 6 + env_name.len());
-                                        break;
-                                    }
-                                    cur += 1;
-                                }
-                                if let Some(outer_end) = found_end {
-                                    out.push(Span::new(
-                                        pos as u32,
-                                        outer_end as u32,
-                                        pos as u32,
-                                        outer_end as u32,
-                                        Kind::MathDisplay,
-                                    ));
-                                    pos = outer_end;
-                                    continue;
-                                }
+                            if MATH_ENVS.contains(&env_name)
+                                && let Some(outer_end) =
+                                    scan_math_env_close(src, pos + 8 + env_close, env_name)
+                            {
+                                out.push(Span::new(
+                                    pos as u32,
+                                    outer_end as u32,
+                                    pos as u32,
+                                    outer_end as u32,
+                                    Kind::MathDisplay,
+                                ));
+                                pos = outer_end;
+                                continue;
                             }
                         }
                         pos += 7;
@@ -583,7 +645,7 @@ pub fn scan(src: &[u8], out: &mut Vec<Span>) {
             b'<' => {
                 // Inline raw `<svg ...> ... </svg>`
                 if pos + 4 <= len
-                    && eq_ignore_ascii_case(&src[pos..pos + 4], b"<svg")
+                    && src[pos..pos + 4].eq_ignore_ascii_case(b"<svg")
                     && (pos + 4 == len
                         || src[pos + 4].is_ascii_whitespace()
                         || src[pos + 4] == b'>')
@@ -595,7 +657,7 @@ pub fn scan(src: &[u8], out: &mut Vec<Span>) {
                             break;
                         };
                         cur += d;
-                        if cur + 6 <= len && eq_ignore_ascii_case(&src[cur..cur + 6], b"</svg>") {
+                        if cur + 6 <= len && src[cur..cur + 6].eq_ignore_ascii_case(b"</svg>") {
                             found_end = Some(cur + 6);
                             break;
                         }

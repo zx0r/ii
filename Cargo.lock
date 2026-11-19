@@ -368,6 +368,7 @@ dependencies = [
  "ratex-layout",
  "ratex-parser",
  "ratex-svg",
+ "ratex-types",
  "resvg",
  "rustix",
  "tiny-skia",

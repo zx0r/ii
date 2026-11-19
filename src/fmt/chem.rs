@@ -1,6 +1,6 @@
-//! Pure `\ce{}` / `\pu{}` mhchem → LaTeX transpiler. Zero allocation beyond `out`.
+//! Pure `\ce{}` / `\pu{}` mhchem → `LaTeX` transpiler. Zero allocation beyond `out`.
 
-/// Transpile mhchem chemical formula (`\ce{...}` / `\pu{...}` inner payload) to standard LaTeX.
+/// Transpile mhchem chemical formula (`\ce{...}` / `\pu{...}` inner payload) to standard `LaTeX`.
 pub fn transpile(input: &[u8], out: &mut Vec<u8>) {
     let len = input.len();
     let mut i = 0usize;
@@ -8,22 +8,34 @@ pub fn transpile(input: &[u8], out: &mut Vec<u8>) {
     while i < len {
         // Reaction arrows: `<=>`, `<->`, `->`, `<-`
         if i + 3 <= len && &input[i..i + 3] == b"<=>" {
-            out.extend_from_slice(b"\\rightleftharpoons ");
+            out.extend_from_slice(b"\\rightleftharpoons");
+            if i + 3 < len && !input[i + 3].is_ascii_whitespace() {
+                out.push(b' ');
+            }
             i += 3;
             continue;
         }
         if i + 3 <= len && &input[i..i + 3] == b"<->" {
-            out.extend_from_slice(b"\\leftrightarrow ");
+            out.extend_from_slice(b"\\leftrightarrow");
+            if i + 3 < len && !input[i + 3].is_ascii_whitespace() {
+                out.push(b' ');
+            }
             i += 3;
             continue;
         }
         if i + 2 <= len && &input[i..i + 2] == b"->" {
-            out.extend_from_slice(b"\\rightarrow ");
+            out.extend_from_slice(b"\\rightarrow");
+            if i + 2 < len && !input[i + 2].is_ascii_whitespace() {
+                out.push(b' ');
+            }
             i += 2;
             continue;
         }
         if i + 2 <= len && &input[i..i + 2] == b"<-" {
-            out.extend_from_slice(b"\\leftarrow ");
+            out.extend_from_slice(b"\\leftarrow");
+            if i + 2 < len && !input[i + 2].is_ascii_whitespace() {
+                out.push(b' ');
+            }
             i += 2;
             continue;
         }
@@ -89,7 +101,11 @@ pub fn transpile(input: &[u8], out: &mut Vec<u8>) {
                 i += 1;
             }
             // Check if followed immediately by `+` or `-` (charge like `Fe3+`)
-            if is_sub && i < len && matches!(input[i], b'+' | b'-') && (i + 1 == len || input[i + 1].is_ascii_whitespace()) {
+            if is_sub
+                && i < len
+                && matches!(input[i], b'+' | b'-')
+                && (i + 1 == len || input[i + 1].is_ascii_whitespace())
+            {
                 let charge = input[i];
                 i += 1;
                 out.extend_from_slice(b"^{");

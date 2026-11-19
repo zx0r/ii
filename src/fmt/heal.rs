@@ -1,4 +1,4 @@
-//! Streaming LaTeX healer: balances unclosed braces, `\left`..`\right`, and `\begin{..}` environments.
+//! Streaming `LaTeX` healer: balances unclosed braces, `\left`..`\right`, and `\begin{..}` environments.
 
 use memchr::memchr3;
 
@@ -37,6 +37,7 @@ fn env_id(name: &[u8]) -> Option<u8> {
     None
 }
 
+#[derive(Debug)]
 pub struct State {
     brace_depth: u32,
     env_stack: Vec<u8>,
@@ -60,7 +61,7 @@ impl State {
         self.delim_stack.clear();
     }
 
-    /// Heal a streaming or truncated LaTeX fragment into valid compilable LaTeX inside `out`.
+    /// Heal a streaming or truncated `LaTeX` fragment into valid compilable `LaTeX` inside `out`.
     pub fn heal(&mut self, fragment: &[u8], out: &mut Vec<u8>) {
         self.reset();
         out.extend_from_slice(fragment);
@@ -120,11 +121,8 @@ impl State {
                         }
                         if d < len {
                             self.delim_stack.push(fragment[d]);
-                            i = if fragment[d] == b'\\' && d + 1 < len {
-                                d + 2
-                            } else {
-                                d + 1
-                            };
+                            let is_esc = usize::from(fragment[d] == b'\\' && d + 1 < len);
+                            i = d + 1 + is_esc;
                             continue;
                         }
                     } else if cmd == b"right" {
@@ -134,41 +132,36 @@ impl State {
                         }
                         self.delim_stack.pop();
                         if d < len {
-                            i = if fragment[d] == b'\\' && d + 1 < len {
-                                d + 2
-                            } else {
-                                d + 1
-                            };
+                            let is_esc = usize::from(fragment[d] == b'\\' && d + 1 < len);
+                            i = d + 1 + is_esc;
                             continue;
                         }
                         // Dangling `\right` at end without delimiter
                         out.push(b'.');
-                    } else if cmd == b"begin" && cmd_end < len && fragment[cmd_end] == b'{' {
-                        if let Some(close) = fragment[cmd_end + 1..]
-                            .iter()
-                            .position(|&b| b == b'}')
-                        {
-                            let env = &fragment[cmd_end + 1..cmd_end + 1 + close];
-                            if let Some(id) = env_id(env) {
-                                self.env_stack.push(id);
-                            }
-                            i = cmd_end + 2 + close;
-                            continue;
+                    } else if cmd == b"begin"
+                        && cmd_end < len
+                        && fragment[cmd_end] == b'{'
+                        && let Some(close) = fragment[cmd_end + 1..].iter().position(|&b| b == b'}')
+                    {
+                        let env = &fragment[cmd_end + 1..cmd_end + 1 + close];
+                        if let Some(id) = env_id(env) {
+                            self.env_stack.push(id);
                         }
-                    } else if cmd == b"end" && cmd_end < len && fragment[cmd_end] == b'{' {
-                        if let Some(close) = fragment[cmd_end + 1..]
-                            .iter()
-                            .position(|&b| b == b'}')
+                        i = cmd_end + 2 + close;
+                        continue;
+                    } else if cmd == b"end"
+                        && cmd_end < len
+                        && fragment[cmd_end] == b'{'
+                        && let Some(close) = fragment[cmd_end + 1..].iter().position(|&b| b == b'}')
+                    {
+                        let env = &fragment[cmd_end + 1..cmd_end + 1 + close];
+                        if let Some(id) = env_id(env)
+                            && self.env_stack.last() == Some(&id)
                         {
-                            let env = &fragment[cmd_end + 1..cmd_end + 1 + close];
-                            if let Some(id) = env_id(env) {
-                                if self.env_stack.last() == Some(&id) {
-                                    self.env_stack.pop();
-                                }
-                            }
-                            i = cmd_end + 2 + close;
-                            continue;
+                            self.env_stack.pop();
                         }
+                        i = cmd_end + 2 + close;
+                        continue;
                     }
                     i = cmd_end.max(i + 1);
                 }
@@ -208,6 +201,9 @@ mod tests {
         let mut st = State::new();
         let mut out = Vec::new();
         st.heal(b"\\begin{pmatrix}\\left(\\frac{1}{2", &mut out);
-        assert_eq!(out, b"\\begin{pmatrix}\\left(\\frac{1}{2}\\right.\\end{pmatrix}");
+        assert_eq!(
+            out,
+            b"\\begin{pmatrix}\\left(\\frac{1}{2}\\right.\\end{pmatrix}"
+        );
     }
 }

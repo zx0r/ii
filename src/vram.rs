@@ -1,9 +1,5 @@
 //! 4-way set-associative L0 VRAM tag `Table` (4 160 B), 4-way L1 RGBA `Cache`, and `wymix` identity hash.
 
-#![expect(
-    clippy::cast_possible_truncation,
-    reason = "tag indexing uses low bits of 64-bit wymix hash"
-)]
 
 /// Update 3-bit Tree-PLRU state after accessing `way in 0..4`.
 #[inline]
@@ -60,6 +56,7 @@ impl Set {
 }
 
 /// L0 VRAM tag table: 64 sets × 4 ways = 256 resident KGP slots (4 160 B total, L1d-resident).
+#[derive(Debug)]
 #[repr(C, align(64))]
 pub struct Table {
     sets: [Set; 64],
@@ -79,7 +76,7 @@ impl Table {
 
     #[inline]
     pub fn lookup(&mut self, tag: u64) -> Option<Payload> {
-        let idx = (tag as usize) & 63;
+        let idx = ((tag & 63) as u8) as usize;
         let set = &self.sets[idx];
         for way in 0..4 {
             if set.tags[way] == tag {
@@ -92,7 +89,7 @@ impl Table {
 
     #[inline]
     pub fn insert(&mut self, tag: u64, entry: Payload) {
-        let idx = (tag as usize) & 63;
+        let idx = ((tag & 63) as u8) as usize;
         let set = &mut self.sets[idx];
         for way in 0..4 {
             if set.tags[way] == tag || set.tags[way] == 0 {
@@ -123,6 +120,7 @@ impl Default for Table {
     }
 }
 
+#[derive(Debug)]
 pub struct Replica {
     pub cols: u16,
     pub rows: u16,
@@ -144,6 +142,7 @@ impl Replica {
 }
 
 /// L1 RAM cache: 16 sets × 4 ways with capacity-preserving `Replica` buffers.
+#[derive(Debug)]
 pub struct Cache {
     tags: [[u64; 4]; 16],
     plru: [u8; 16],
@@ -162,7 +161,7 @@ impl Cache {
 
     #[inline]
     pub fn lookup(&mut self, tag: u64) -> Option<&Replica> {
-        let idx = ((tag >> 6) as usize) & 15;
+        let idx = (((tag >> 6) & 15) as u8) as usize;
         for way in 0..4 {
             if self.tags[idx][way] == tag {
                 self.plru[idx] = plru_touch(self.plru[idx], way);
@@ -174,7 +173,7 @@ impl Cache {
 
     #[inline]
     pub fn insert(&mut self, tag: u64, cols: u16, rows: u16, w: u16, h: u16, rgba: &[u8]) {
-        let idx = ((tag >> 6) as usize) & 15;
+        let idx = (((tag >> 6) & 15) as u8) as usize;
         let way = (0..4)
             .find(|&way_idx| self.tags[idx][way_idx] == tag || self.tags[idx][way_idx] == 0)
             .unwrap_or_else(|| plru_victim(self.plru[idx]));
@@ -277,17 +276,52 @@ mod tests {
         let t3 = 7 + 192;
         let t4 = 7 + 256;
 
-        tbl.insert(t0, Payload { image_id: 10, cols: 1, rows: 1 });
-        tbl.insert(t1, Payload { image_id: 11, cols: 1, rows: 1 });
-        tbl.insert(t2, Payload { image_id: 12, cols: 1, rows: 1 });
-        tbl.insert(t3, Payload { image_id: 13, cols: 1, rows: 1 });
+        tbl.insert(
+            t0,
+            Payload {
+                image_id: 10,
+                cols: 1,
+                rows: 1,
+            },
+        );
+        tbl.insert(
+            t1,
+            Payload {
+                image_id: 11,
+                cols: 1,
+                rows: 1,
+            },
+        );
+        tbl.insert(
+            t2,
+            Payload {
+                image_id: 12,
+                cols: 1,
+                rows: 1,
+            },
+        );
+        tbl.insert(
+            t3,
+            Payload {
+                image_id: 13,
+                cols: 1,
+                rows: 1,
+            },
+        );
 
         // Touch t0, t2, t3 so t1 becomes the PLRU victim
         assert_eq!(tbl.lookup(t0).map(|p| p.image_id), Some(10));
         assert_eq!(tbl.lookup(t2).map(|p| p.image_id), Some(12));
         assert_eq!(tbl.lookup(t3).map(|p| p.image_id), Some(13));
 
-        tbl.insert(t4, Payload { image_id: 14, cols: 1, rows: 1 });
+        tbl.insert(
+            t4,
+            Payload {
+                image_id: 14,
+                cols: 1,
+                rows: 1,
+            },
+        );
         assert_eq!(tbl.lookup(t1), None);
         assert_eq!(tbl.lookup(t4).map(|p| p.image_id), Some(14));
     }

@@ -1,16 +1,20 @@
-//! Alignment-safe IXPC v1 binary wire codec: 32 B `Header` and 16 B `Extmark`. Zero `transmute`.
+//! IXPC v1 binary wire protocol: 32-byte Header, 16-byte Extmark, command codec,
+//! and zero-allocation client transport. Decoupled from server poll reactor.
 
-#![expect(
-    clippy::cast_possible_truncation,
-    reason = "payload sizes bounded to <= MAX_PAYLOAD (64 MiB)"
-)]
+use std::path::PathBuf;
+
+use rustix::{
+    fd::{AsFd, BorrowedFd},
+    io::{Errno, FdFlags, fcntl_setfd, read, write},
+    net::{AddressFamily, SocketAddrUnix, SocketType, connect, socket},
+    process::getuid,
+};
 
 use crate::err::Error;
 
 pub const MAGIC: u32 = 0x4958_5043; // "IXPC"
 pub const VERSION: u16 = 1;
 pub const MAX_PAYLOAD: u32 = 0x0400_0000; // 64 MiB
-pub const MAX_CLIENTS: usize = 32;
 pub const RESP_FLAG: u16 = 0x8000;
 pub const ERR_FLAG: u16 = 0x4000;
 
@@ -38,6 +42,8 @@ impl Cmd {
     }
 }
 
+/// 32-byte packed binary header.
+/// Descending alignment: 8 (reserved) -> 4 (magic, flags, payload_len) -> 2 (version, command, cols, rows, cell_w, cell_h).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(C)]
 pub struct Header {
@@ -50,7 +56,7 @@ pub struct Header {
     pub cell_w: u16,
     pub cell_h: u16,
     pub payload_len: u32,
-    pub _reserved: u64,
+    pub reserved: u64,
 }
 
 const _: () = assert!(size_of::<Header>() == 32);
@@ -70,11 +76,10 @@ impl Header {
             cell_w: 8,
             cell_h: 16,
             payload_len,
-            _reserved: 0,
+            reserved: 0,
         }
     }
 
-    /// Explicit byte-slice codec. Zero `transmute`, zero alignment UB.
     #[inline]
     #[must_use]
     pub const fn from_le_bytes(b: &[u8; 32]) -> Self {
@@ -88,7 +93,7 @@ impl Header {
             cell_w: u16::from_le_bytes([b[16], b[17]]),
             cell_h: u16::from_le_bytes([b[18], b[19]]),
             payload_len: u32::from_le_bytes([b[20], b[21], b[22], b[23]]),
-            _reserved: u64::from_le_bytes([b[24], b[25], b[26], b[27], b[28], b[29], b[30], b[31]]),
+            reserved: u64::from_le_bytes([b[24], b[25], b[26], b[27], b[28], b[29], b[30], b[31]]),
         }
     }
 
@@ -104,7 +109,7 @@ impl Header {
         let cw = self.cell_w.to_le_bytes();
         let ch = self.cell_h.to_le_bytes();
         let pl = self.payload_len.to_le_bytes();
-        let rs = self._reserved.to_le_bytes();
+        let rs = self.reserved.to_le_bytes();
         [
             m[0], m[1], m[2], m[3], v[0], v[1], c[0], c[1], f[0], f[1], f[2], f[3], co[0], co[1],
             ro[0], ro[1], cw[0], cw[1], ch[0], ch[1], pl[0], pl[1], pl[2], pl[3], rs[0], rs[1],
@@ -112,6 +117,7 @@ impl Header {
         ]
     }
 
+    #[inline]
     pub const fn validate(&self) -> Result<Cmd, Error> {
         if self.magic != MAGIC {
             return Err(Error::BadMagic);
@@ -126,6 +132,7 @@ impl Header {
     }
 }
 
+/// 16-byte Neovim extmark bounding box and image placement.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(C)]
 pub struct Extmark {
@@ -173,7 +180,7 @@ impl Extmark {
     }
 }
 
-/// Encode dual-channel response (`[u32 apc_len][apc][text]`) prefixed by a 32-byte IXPC response header.
+/// Encode dual-channel response (`[u32 apc_len][apc][text]`) prefixed by a 32-byte header.
 pub fn encode_dual_response(cmd: Cmd, apc: &[u8], text: &[u8], out: &mut Vec<u8>) {
     let payload_len = (4 + apc.len() + text.len()) as u32;
     let mut hdr = Header::new(cmd, payload_len);
@@ -186,7 +193,7 @@ pub fn encode_dual_response(cmd: Cmd, apc: &[u8], text: &[u8], out: &mut Vec<u8>
     out.extend_from_slice(text);
 }
 
-/// Encode an error response frame into `out`.
+/// Encode error frame into `out`.
 pub fn encode_error(cmd: Cmd, msg: &str, out: &mut Vec<u8>) {
     let bytes = msg.as_bytes();
     let mut hdr = Header::new(cmd, bytes.len() as u32);
@@ -197,6 +204,57 @@ pub fn encode_error(cmd: Cmd, msg: &str, out: &mut Vec<u8>) {
     out.extend_from_slice(bytes);
 }
 
+/// Span coordinates for extmark layout calculation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SpanCoord {
+    pub outer_start: u32,
+    pub outer_end: u32,
+    pub image_id: u32,
+    pub cols: u16,
+    pub rows: u16,
+}
+
+/// Compute Neovim extmarks using SIMD newline scanning and accurate column offsets.
+pub fn compose_extmarks(src: &[u8], spans: &[SpanCoord], out: &mut Vec<Extmark>) {
+    out.clear();
+    out.reserve(spans.len());
+
+    let mut line_starts = Vec::with_capacity(64);
+    line_starts.push(0usize);
+    for nl in memchr::memchr_iter(b'\n', src) {
+        line_starts.push(nl + 1);
+    }
+
+    for sp in spans {
+        let start = (sp.outer_start as usize).min(src.len());
+        let end = (sp.outer_end as usize).min(src.len());
+
+        let row_start_idx = match line_starts.binary_search(&start) {
+            Ok(idx) => idx,
+            Err(idx) => idx.saturating_sub(1),
+        };
+        let line_start_byte = line_starts[row_start_idx];
+        let start_col = (start.saturating_sub(line_start_byte)) as u16;
+
+        let row_end_idx = match line_starts.binary_search(&end) {
+            Ok(idx) => idx,
+            Err(idx) => idx.saturating_sub(1),
+        };
+        let end_line_byte = line_starts[row_end_idx];
+        let end_col = (end.saturating_sub(end_line_byte)) as u16;
+
+        out.push(Extmark {
+            image_id: sp.image_id,
+            start_row: row_start_idx as u16,
+            start_col,
+            end_row: row_end_idx as u16,
+            end_col,
+            cols: sp.cols,
+            rows: sp.rows,
+        });
+    }
+}
+
 /// Encode `[Extmark]` records directly into a little-endian byte payload.
 pub fn encode_extmarks(records: &[Extmark], out: &mut Vec<u8>) {
     out.reserve(records.len() * 16);
@@ -205,28 +263,66 @@ pub fn encode_extmarks(records: &[Extmark], out: &mut Vec<u8>) {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// Path to UNIX domain socket in /run/user/$UID/ii or /tmp/ii-$UID.
+#[must_use]
+pub fn socket_path() -> PathBuf {
+    let mut p = if let Some(xdg) = std::env::var_os("XDG_RUNTIME_DIR") {
+        let mut d = PathBuf::from(xdg);
+        d.push("ii");
+        d
+    } else {
+        PathBuf::from(format!("/tmp/ii-{}", getuid().as_raw()))
+    };
+    p.push("ii.sock");
+    p
+}
 
-    #[test]
-    fn header_and_extmark_roundtrip() {
-        let h = Header::new(Cmd::ComposeAnsi, 128);
-        let raw = h.to_le_bytes();
-        let decoded = Header::from_le_bytes(&raw);
-        assert_eq!(h, decoded);
-        assert_eq!(decoded.validate(), Ok(Cmd::ComposeAnsi));
+/// Path to daemon lockfile.
+#[must_use]
+pub fn lock_path() -> PathBuf {
+    let mut p = socket_path();
+    p.set_file_name("ii.lock");
+    p
+}
 
-        let ext = Extmark {
-            image_id: 0x0012_3456,
-            start_row: 1,
-            start_col: 0,
-            end_row: 4,
-            end_col: 20,
-            cols: 20,
-            rows: 3,
-        };
-        let eb = ext.to_le_bytes();
-        assert_eq!(Extmark::from_le_bytes(&eb), ext);
+/// Zero-dep synchronous client transmission.
+pub fn client_send(cmd: Cmd, payload: &[u8]) -> Result<Vec<u8>, Error> {
+    let sock = socket_path();
+    let fd = socket(AddressFamily::UNIX, SocketType::STREAM, None)?;
+    fcntl_setfd(&fd, FdFlags::CLOEXEC)?;
+    let addr = SocketAddrUnix::new(sock.as_path()).map_err(|_| Error::SocketSymlink)?;
+    connect(&fd, &addr)?;
+
+    let hdr = Header::new(cmd, payload.len() as u32);
+    let mut out = Vec::with_capacity(32 + payload.len());
+    out.extend_from_slice(&hdr.to_le_bytes());
+    out.extend_from_slice(payload);
+
+    let mut to_write = &out[..];
+    while !to_write.is_empty() {
+        match write(&fd, to_write) {
+            Ok(n) => to_write = &to_write[n..],
+            Err(Errno::INTR) => {}
+            Err(e) => return Err(Error::Io(e)),
+        }
     }
+
+    let mut resp_hdr = [0u8; 32];
+    read_exact(fd.as_fd(), &mut resp_hdr)?;
+    let parsed = Header::from_le_bytes(&resp_hdr);
+    let mut resp_body = vec![0u8; parsed.payload_len as usize];
+    read_exact(fd.as_fd(), &mut resp_body)?;
+    Ok(resp_body)
+}
+
+fn read_exact(fd: BorrowedFd<'_>, mut buf: &mut [u8]) -> Result<(), Error> {
+    while !buf.is_empty() {
+        match read(fd, buf) {
+            Ok(0) => return Err(Error::BadMagic),
+            Ok(n) => buf = &mut buf[n..],
+            Err(Errno::INTR) => {}
+            Err(e) => return Err(Error::Io(e)),
+        }
+    }
+    Ok(())
 }

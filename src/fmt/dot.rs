@@ -1,14 +1,12 @@
 //! Graphviz DOT → layered Sugiyama SVG renderer. Bounded stack arrays, zero heap graphs.
 
-#![expect(
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    reason = "bounded 64-node Sugiyama graph coordinates fit in u8/u16/f64"
-)]
 
 use core::fmt::Write as _;
 
-use crate::theme::{Idx, Palette};
+use crate::{
+    ir::{trim_ascii, write_xml_escaped},
+    theme::{Idx, Palette},
+};
 
 const MAX_NODES: usize = 32;
 const MAX_EDGES: usize = 64;
@@ -27,28 +25,21 @@ struct Edge {
 }
 
 #[inline]
-fn trim(mut s: &[u8]) -> &[u8] {
+fn trim_semi(mut s: &[u8]) -> &[u8] {
+    s = trim_ascii(s);
     while let Some((&b, rest)) = s.split_first() {
-        if b.is_ascii_whitespace() || b == b';' {
-            s = rest;
-        } else {
-            break;
-        }
+        if b == b';' { s = rest; } else { break; }
     }
     while let Some((&b, rest)) = s.split_last() {
-        if b.is_ascii_whitespace() || b == b';' {
-            s = rest;
-        } else {
-            break;
-        }
+        if b == b';' { s = rest; } else { break; }
     }
-    s
+    trim_ascii(s)
 }
 
 fn clean_id(mut s: &[u8]) -> &[u8] {
-    s = trim(s);
+    s = trim_semi(s);
     if let Some(bracket) = s.iter().position(|&b| b == b'[') {
-        s = trim(&s[..bracket]);
+        s = trim_semi(&s[..bracket]);
     }
     if s.len() >= 2 && s.starts_with(b"\"") && s.ends_with(b"\"") {
         s = &s[1..s.len() - 1];
@@ -56,7 +47,11 @@ fn clean_id(mut s: &[u8]) -> &[u8] {
     s
 }
 
-fn find_or_insert<'a>(nodes: &mut [Node<'a>; MAX_NODES], n_nodes: &mut usize, id: &'a [u8]) -> Option<u8> {
+fn find_or_insert<'a>(
+    nodes: &mut [Node<'a>; MAX_NODES],
+    n_nodes: &mut usize,
+    id: &'a [u8],
+) -> Option<u8> {
     if id.is_empty() {
         return None;
     }
@@ -76,19 +71,6 @@ fn find_or_insert<'a>(nodes: &mut [Node<'a>; MAX_NODES], n_nodes: &mut usize, id
     };
     *n_nodes += 1;
     Some(idx as u8)
-}
-
-fn write_xml_escaped(out: &mut String, bytes: &[u8]) {
-    let s = core::str::from_utf8(bytes).unwrap_or("");
-    for ch in s.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            _ => out.push(ch),
-        }
-    }
 }
 
 /// Parse Graphviz DOT `src` and emit a layered DAG SVG into `out`.
@@ -116,7 +98,7 @@ pub fn render(src: &[u8], palette: &Palette, width: u16, out: &mut String) {
     };
 
     for raw_stmt in body.split(|&b| b == b'\n' || b == b';') {
-        let stmt = trim(raw_stmt);
+        let stmt = trim_semi(raw_stmt);
         if stmt.is_empty()
             || stmt.starts_with(b"//")
             || stmt.starts_with(b"#")
@@ -150,11 +132,11 @@ pub fn render(src: &[u8], palette: &Palette, width: u16, out: &mut String) {
                 };
                 let id = clean_id(part);
                 if let Some(u) = find_or_insert(&mut nodes, &mut n_nodes, id) {
-                    if let Some(p) = prev {
-                        if n_edges < MAX_EDGES {
-                            edges[n_edges] = Edge { from: p, to: u };
-                            n_edges += 1;
-                        }
+                    if let Some(p) = prev
+                        && n_edges < MAX_EDGES
+                    {
+                        edges[n_edges] = Edge { from: p, to: u };
+                        n_edges += 1;
                     }
                     prev = Some(u);
                 }
@@ -196,12 +178,12 @@ pub fn render(src: &[u8], palette: &Palette, width: u16, out: &mut String) {
     let w = f64::from(width.max(240));
     let layers = usize::from(max_rank) + 1;
     let layer_h = 72.0;
-    let h = ((layers as f64) * layer_h + 36.0).max(120.0);
+    let h = (layers as f64).mul_add(layer_h, 36.0).max(120.0);
 
-    let bg = core::str::from_utf8(palette.get(Idx::BgSurface).hex()).unwrap_or("#313244");
-    let fg = core::str::from_utf8(palette.get(Idx::Fg).hex()).unwrap_or("#cdd6f4");
-    let border = core::str::from_utf8(palette.get(Idx::HeadingSub).hex()).unwrap_or("#89b4fa");
-    let line_col = core::str::from_utf8(palette.get(Idx::FgMuted).hex()).unwrap_or("#a6adc8");
+    let bg = palette.hex_str(Idx::BgSurface);
+    let fg = palette.hex_str(Idx::Fg);
+    let border = palette.hex_str(Idx::HeadingSub);
+    let line_col = palette.hex_str(Idx::FgMuted);
 
     let _ = write!(
         out,
@@ -212,18 +194,17 @@ pub fn render(src: &[u8], palette: &Palette, width: u16, out: &mut String) {
         r#"<rect width="{w:.0}" height="{h:.0}" rx="6" fill="{bg}"/>"#
     );
 
-    let node_pos = |idx: usize| -> (f64, f64) {
-        let node = nodes[idx];
+    let node_pos = |node: &Node| -> (f64, f64) {
         let count = f64::from(rank_counts[node.rank as usize].max(1));
         let cx = w * (f64::from(node.order) + 0.5) / count;
-        let cy = 36.0 + f64::from(node.rank) * layer_h;
+        let cy = f64::mul_add(f64::from(node.rank), layer_h, 36.0);
         (cx, cy)
     };
 
     // Draw edges first
     for e in edges.iter().take(n_edges) {
-        let (x0, y0) = node_pos(e.from as usize);
-        let (x1, y1) = node_pos(e.to as usize);
+        let (x0, y0) = node_pos(&nodes[e.from as usize]);
+        let (x1, y1) = node_pos(&nodes[e.to as usize]);
         let _ = write!(
             out,
             r#"<line x1="{x0:.1}" y1="{y0:.1}" x2="{x1:.1}" y2="{y1:.1}" stroke="{line_col}" stroke-width="1.6"/>"#
@@ -233,10 +214,10 @@ pub fn render(src: &[u8], palette: &Palette, width: u16, out: &mut String) {
     // Draw nodes
     let box_w = 88.0;
     let box_h = 32.0;
-    for i in 0..n_nodes {
-        let (cx, cy) = node_pos(i);
-        let rx = cx - box_w * 0.5;
-        let ry = cy - box_h * 0.5;
+    for node in nodes.iter().take(n_nodes) {
+        let (cx, cy) = node_pos(node);
+        let rx = f64::mul_add(box_w, -0.5, cx);
+        let ry = f64::mul_add(box_h, -0.5, cy);
         let _ = write!(
             out,
             r#"<rect x="{rx:.1}" y="{ry:.1}" width="{box_w:.0}" height="{box_h:.0}" rx="5" fill="{bg}" stroke="{border}" stroke-width="1.8"/>"#
@@ -246,7 +227,7 @@ pub fn render(src: &[u8], palette: &Palette, width: u16, out: &mut String) {
             r#"<text x="{cx:.1}" y="{:.1}" fill="{fg}" font-family="sans-serif" font-size="12" text-anchor="middle">"#,
             cy + 4.0
         );
-        write_xml_escaped(out, nodes[i].id);
+        write_xml_escaped(out, node.id);
         out.push_str("</text>");
     }
 

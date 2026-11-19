@@ -114,14 +114,13 @@ mod tests {
 
     #[test]
     fn rewrites_black_current_color_and_rgb_in_single_pass() {
-        let src = br#"<svg fill="#000" stroke="currentColor"><path fill="rgb(0, 0, 0)" bg="#ffffff"/></svg>"#;
+        let src = b"<svg fill=\"#000\" stroke=\"currentColor\"><path fill=\"rgb(0, 0, 0)\" bg=\"#ffffff\"/></svg>";
         let mut dst = Vec::new();
         rewrite_colors(src, &DARK, &mut dst);
         let fg = core::str::from_utf8(DARK.get(Idx::Fg).hex()).unwrap_or("");
         let bg = core::str::from_utf8(DARK.get(Idx::Bg).hex()).unwrap_or("");
-        let expected = format!(
-            r#"<svg fill="{fg}" stroke="{fg}"><path fill="{fg}" bg="{bg}"/></svg>"#
-        );
+        let expected =
+            format!("<svg fill=\"{fg}\" stroke=\"{fg}\"><path fill=\"{fg}\" bg=\"{bg}\"/></svg>");
         assert_eq!(dst, expected.as_bytes());
     }
 }

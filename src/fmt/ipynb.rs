@@ -1,11 +1,7 @@
 //! Zero-serde `.ipynb` cell descriptor and extraction.
 
-#![expect(
-    clippy::cast_possible_truncation,
-    reason = "notebook size and cell counts bounded to u32"
-)]
 
-use crate::{err::Error, ir::Kind, json::Nav};
+use crate::{err::Error, fmt::{json::Nav, md::Kind}};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
@@ -49,9 +45,7 @@ pub fn extract_cells<'a>(src: &'a [u8], cells: &mut Vec<Cell>) -> Result<Nav<'a>
             CellKind::Code
         };
 
-        let (source_start, source_end) = item
-            .get(b"source")
-            .map_or((0, 0), |n| n.span());
+        let (source_start, source_end) = item.get(b"source").map_or((0, 0), |n| n.span());
         let outputs_nav = item.get(b"outputs");
         let (outputs_start, outputs_end) = outputs_nav.map_or((0, 0), |n| n.span());
         let output_count = outputs_nav.map_or(0, |n| n.items().count() as u32);
@@ -111,27 +105,7 @@ mod tests {
 
     #[test]
     fn extracts_cells_and_resolves_mime_priority() {
-        let nb = br#"{
-            "cells": [
-                {
-                    "cell_type": "markdown",
-                    "source": ["# Title"]
-                },
-                {
-                    "cell_type": "code",
-                    "execution_count": 3,
-                    "source": ["plot()"],
-                    "outputs": [
-                        {
-                            "data": {
-                                "image/svg+xml": "<svg/>",
-                                "image/png": "iVBORw0KGgo="
-                            }
-                        }
-                    ]
-                }
-            ]
-        }"#;
+        let nb = b"{\"cells\":[{\"cell_type\":\"markdown\",\"source\":[\"# Title\"]},{\"cell_type\":\"code\",\"execution_count\":3,\"source\":[\"plot()\"],\"outputs\":[{\"data\":{\"image/svg+xml\":\"<svg/>\",\"image/png\":\"iVBORw0KGgo=\"}}]}]}";
         let mut cells = Vec::new();
         let root = extract_cells(nb, &mut cells);
         assert!(root.is_ok());
@@ -141,7 +115,10 @@ mod tests {
         assert_eq!(cells[1].output_count, 1);
 
         let out_slice = &nb[cells[1].outputs_start as usize..cells[1].outputs_end as usize];
-        let first_out = Nav::new(out_slice).items().next().unwrap_or_else(|| Nav::new(b"{}"));
+        let first_out = Nav::new(out_slice)
+            .items()
+            .next()
+            .unwrap_or_else(|| Nav::new(b"{}"));
         let resolved = resolve_output(first_out, out_slice);
         assert_eq!(resolved, Some((Kind::RawSvg, &b"<svg/>"[..])));
     }

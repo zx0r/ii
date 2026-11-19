@@ -1,48 +1,15 @@
 //! CSV, TSV, and Markdown pipe-table → SVG table renderer.
 
-#![expect(
-    clippy::cast_precision_loss,
-    reason = "bounded table grid coordinates fit in f64"
-)]
 
 use core::fmt::Write as _;
 
-use crate::theme::{Idx, Palette};
+use crate::{
+    ir::{trim_ascii, write_xml_escaped},
+    theme::{Idx, Palette},
+};
 
 const MAX_COLS: usize = 16;
 const MAX_ROWS: usize = 64;
-
-#[inline]
-fn trim(mut s: &[u8]) -> &[u8] {
-    while let Some((&b, rest)) = s.split_first() {
-        if b.is_ascii_whitespace() {
-            s = rest;
-        } else {
-            break;
-        }
-    }
-    while let Some((&b, rest)) = s.split_last() {
-        if b.is_ascii_whitespace() {
-            s = rest;
-        } else {
-            break;
-        }
-    }
-    s
-}
-
-fn write_xml_escaped(out: &mut String, bytes: &[u8]) {
-    let s = core::str::from_utf8(bytes).unwrap_or("");
-    for ch in s.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            _ => out.push(ch),
-        }
-    }
-}
 
 fn emit_table_svg(
     grid: &[[&[u8]; MAX_COLS]; MAX_ROWS],
@@ -56,14 +23,14 @@ fn emit_table_svg(
     let row_h = 28.0;
     let rows = n_rows.max(1);
     let cols = n_cols.max(1);
-    let h = (rows as f64) * row_h + 8.0;
+    let h = (rows as f64).mul_add(row_h, 8.0);
     let col_w = w / (cols as f64);
 
-    let bg = core::str::from_utf8(palette.get(Idx::Bg).hex()).unwrap_or("#1e1e2e");
-    let hdr_bg = core::str::from_utf8(palette.get(Idx::BgSurface).hex()).unwrap_or("#313244");
-    let fg = core::str::from_utf8(palette.get(Idx::Fg).hex()).unwrap_or("#cdd6f4");
-    let hdr_fg = core::str::from_utf8(palette.get(Idx::Heading).hex()).unwrap_or("#cba6f7");
-    let border = core::str::from_utf8(palette.get(Idx::GridLine).hex()).unwrap_or("#45475a");
+    let bg = palette.hex_str(Idx::Bg);
+    let header_bg = palette.hex_str(Idx::BgSurface);
+    let fg = palette.hex_str(Idx::Fg);
+    let header_fg = palette.hex_str(Idx::Heading);
+    let border = palette.hex_str(Idx::GridLine);
 
     let _ = write!(
         out,
@@ -77,23 +44,23 @@ fn emit_table_svg(
     if n_rows > 0 {
         let _ = write!(
             out,
-            r#"<rect x="1" y="1" width="{:.0}" height="{row_h:.0}" rx="3" fill="{hdr_bg}"/>"#,
+            r#"<rect x="1" y="1" width="{:.0}" height="{row_h:.0}" rx="3" fill="{header_bg}"/>"#,
             w - 2.0
         );
     }
 
     for (r, row) in grid.iter().enumerate().take(n_rows) {
-        let y = 4.0 + (r as f64) * row_h;
+        let y = (r as f64).mul_add(row_h, 4.0);
         if r > 0 {
             let _ = write!(
                 out,
                 r#"<line x1="0" y1="{y:.1}" x2="{w:.0}" y2="{y:.1}" stroke="{border}" stroke-width="1"/>"#
             );
         }
-        let text_col = if r == 0 { hdr_fg } else { fg };
+        let text_col = if r == 0 { header_fg } else { fg };
         let weight = if r == 0 { "bold" } else { "normal" };
         for (c, &cell) in row.iter().enumerate().take(n_cols) {
-            let x = (c as f64) * col_w + 10.0;
+            let x = (c as f64).mul_add(col_w, 10.0);
             let ty = y + 18.0;
             let _ = write!(
                 out,
@@ -121,7 +88,7 @@ pub fn render_csv(src: &[u8], palette: &Palette, width: u16, out: &mut String) {
     let mut n_cols = 0usize;
 
     for line in src.split(|&b| b == b'\n') {
-        let line = trim(line);
+        let line = trim_ascii(line);
         if line.is_empty() || n_rows >= MAX_ROWS {
             continue;
         }
@@ -130,7 +97,7 @@ pub fn render_csv(src: &[u8], palette: &Palette, width: u16, out: &mut String) {
             if c >= MAX_COLS {
                 break;
             }
-            let f = trim(field);
+            let f = trim_ascii(field);
             let f = if f.len() >= 2 && f.starts_with(b"\"") && f.ends_with(b"\"") {
                 &f[1..f.len() - 1]
             } else {
@@ -155,7 +122,7 @@ pub fn render_pipe_table(src: &[u8], palette: &Palette, width: u16, out: &mut St
     let mut n_cols = 0usize;
 
     for (line_idx, raw_line) in src.split(|&b| b == b'\n').enumerate() {
-        let mut line = trim(raw_line);
+        let mut line = trim_ascii(raw_line);
         if line.is_empty() || n_rows >= MAX_ROWS {
             continue;
         }
@@ -178,7 +145,7 @@ pub fn render_pipe_table(src: &[u8], palette: &Palette, width: u16, out: &mut St
             if c >= MAX_COLS {
                 break;
             }
-            grid[n_rows][c] = trim(field);
+            grid[n_rows][c] = trim_ascii(field);
             c += 1;
         }
         if c > n_cols {
@@ -204,7 +171,12 @@ mod tests {
         assert!(svg.ends_with("</svg>"));
 
         svg.clear();
-        render_pipe_table(b"| Col1 | Col2 |\n|---|---|\n| X | Y |\n", &DARK, 320, &mut svg);
+        render_pipe_table(
+            b"| Col1 | Col2 |\n|---|---|\n| X | Y |\n",
+            &DARK,
+            320,
+            &mut svg,
+        );
         assert!(svg.contains(">Col1</text>"));
         assert!(svg.contains(">Y</text>"));
     }

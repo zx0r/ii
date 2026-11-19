@@ -2,7 +2,7 @@
 
 use rustix::{
     fd::{BorrowedFd, OwnedFd},
-    fs::{CWD, Mode, OFlags, mkdirat, openat, renameat, unlinkat, AtFlags},
+    fs::{AtFlags, CWD, Mode, OFlags, mkdirat, openat, renameat, unlinkat},
     io::{Errno, read, write},
     process::getpid,
 };
@@ -243,7 +243,7 @@ pub fn ensure_dirs() -> Result<OwnedFd, Error> {
     } else if let Some(home) = std::env::var_os("HOME") {
         let mut p = std::path::PathBuf::from(home);
         p.push(".cache");
-        let _ = mkdirat(CWD, p.as_path(), Mode::RUSWX);
+        let _ = mkdirat(CWD, p.as_path(), Mode::RWXU);
         p.push("ii");
         p
     } else {
@@ -251,7 +251,7 @@ pub fn ensure_dirs() -> Result<OwnedFd, Error> {
         std::path::PathBuf::from(format!("/tmp/ii-cache-{uid}"))
     };
 
-    match mkdirat(CWD, path.as_path(), Mode::RUSWX) {
+    match mkdirat(CWD, path.as_path(), Mode::RWXU) {
         Ok(()) | Err(Errno::EXIST) => {}
         Err(e) => return Err(Error::Io(e)),
     }
@@ -274,6 +274,6 @@ mod tests {
         let key = blake3_key(8, 16, 640, true, b"<svg/>");
         let mut hex = [0u8; 64];
         hex_encode(&key, &mut hex);
-        assert!(hex.iter().all(|b| b.is_ascii_hexdigit()));
+        assert!(hex.iter().all(u8::is_ascii_hexdigit));
     }
 }

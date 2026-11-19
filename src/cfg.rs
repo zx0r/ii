@@ -2,7 +2,10 @@
 
 use rustix::fd::OwnedFd;
 
-use crate::tty::Metrics;
+use crate::{
+    theme::{self, Palette},
+    tty::Metrics,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(C)]
@@ -33,6 +36,7 @@ impl Default for Viewport {
 pub struct Cfg {
     pub tty: Metrics,
     pub viewport: Viewport,
+    pub palette: &'static Palette,
     pub cache_dir: Option<OwnedFd>,
     pub is_stdout_tty: bool,
 }
@@ -43,6 +47,7 @@ impl Cfg {
         Self {
             tty: Metrics::FALLBACK,
             viewport: Viewport::DEFAULT,
+            palette: &theme::DARK,
             cache_dir: None,
             is_stdout_tty: false,
         }

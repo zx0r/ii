@@ -1,0 +1,41 @@
+## cargo-mutants configuration for pixx
+## Docs: https://mutants.rs/cargo-mutants.html
+
+# ── Equivalent-mutant exclusions ──────────────────────────────────────────────
+# Capacity hints (`reserve`, `with_capacity`) never alter observable bytes;
+# mutating their arithmetic cannot be caught by any functional test.
+# Non-cryptographic mixer internals are tested via sensitivity/collision tests.
+# OS I/O entry-points (filesystem, process, socket) are integration-only;
+# they require real TTY / disk / network and are excluded from unit mutation.
+
+exclude_re = [
+    # Allocation capacity hints — only affect memory, never output bytes
+    "\\.reserve\\(",
+    "\\.with_capacity\\(",
+    "capacity\\(\\)",
+    "get_maximum_output_size",
+
+    # wymix non-cryptographic 128-bit fold — tested via sensitivity assertions
+    "fn wymix",
+
+    # OS I/O wrappers — require real filesystem / TTY; not unit-testable
+    "fn base_dir_fd",
+    "fn lookup_disk",
+    "fn store\\b",
+    "fn transmit_image",
+    "fn compile_and_rasterize",
+    "fn render_archive_listing",
+    "fn render_font_specimen",
+    "fn render_raw_png_file",
+    "fn render_file_path",
+    "fn process_ipynb_png",
+]
+
+# CLI entrypoints and TTY probing — require real process environment
+exclude_globs = [
+    "src/main.rs",
+    "src/tty.rs",
+    "src/ipc.rs",
+    "src/raster.rs",
+    "src/math.rs",
+]

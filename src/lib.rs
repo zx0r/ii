@@ -16,3 +16,4 @@ pub mod style;
 pub mod svg;
 pub mod theme;
 pub mod tty;
+pub mod vram;

@@ -127,64 +127,6 @@ impl TableLayout {
     }
 }
 
-/// Sugiyama layered graph layout: assigns vertical rank and horizontal barycenter order.
-#[derive(Debug)]
-pub struct DagNode {
-    pub id: u32,
-    pub rank: u16,
-    pub order: u16,
-    pub x: f32,
-    pub y: f32,
-}
-
-#[derive(Debug)]
-pub struct DagEdge {
-    pub from: u32,
-    pub to: u32,
-}
-
-/// Assigns ranks to nodes using longest-path layering.
-pub fn assign_ranks(nodes: &mut [DagNode], edges: &[DagEdge]) {
-    // Zero in-degree roots start at rank 0
-    let mut changed = true;
-    let mut passes = 0;
-    while changed && passes < nodes.len() {
-        changed = false;
-        passes += 1;
-        for e in edges {
-            let from_rank = nodes.iter().find(|n| n.id == e.from).map_or(0, |n| n.rank);
-            if let Some(to_node) = nodes.iter_mut().find(|n| n.id == e.to) {
-                if to_node.rank <= from_rank {
-                    to_node.rank = from_rank + 1;
-                    changed = true;
-                }
-            }
-        }
-    }
-}
-
-/// Compute node coordinates from ranks and layer orders.
-pub fn layout_dag_coordinates(
-    nodes: &mut [DagNode],
-    layer_gap_y: f32,
-    node_gap_x: f32,
-    node_w: f32,
-) {
-    let max_rank = nodes.iter().map(|n| n.rank).max().unwrap_or(0);
-    for r in 0..=max_rank {
-        let count = nodes.iter().filter(|n| n.rank == r).count();
-        let row_width = count as f32 * (node_w + node_gap_x) - node_gap_x;
-        let start_x = -row_width * 0.5;
-
-        let mut idx = 0;
-        for n in nodes.iter_mut().filter(|n| n.rank == r) {
-            n.x = start_x + (idx as f32) * (node_w + node_gap_x);
-            n.y = (r as f32) * layer_gap_y;
-            idx += 1;
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

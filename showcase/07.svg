@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="240" viewBox="0 0 680 240">
+  <rect x="4" y="4" width="672" height="232" rx="10" fill="#181825" stroke="#89b4fa" stroke-width="2"/>
+  <text x="24" y="36" font-family="Maple Mono NF" font-size="18" font-weight="bold" fill="#89b4fa">CPU L1 Cacheline Layout (64 Bytes = 512 Bits)</text>
+
+  <text x="24" y="68" font-family="Maple Mono NF" font-size="13" fill="#a6adc8">VramEntry (16B x 4 per 64B Cacheline) — Zero-Padding #[repr(C)]</text>
+  <rect x="24" y="78" width="280" height="44" rx="4" fill="#313244" stroke="#a6e3a1" stroke-width="1.5"/>
+  <text x="40" y="105" font-family="Maple Mono NF" font-size="14" fill="#a6e3a1">tag: u64 [0..8] (8B)</text>
+  <rect x="308" y="78" width="160" height="44" rx="4" fill="#313244" stroke="#89b4fa" stroke-width="1.5"/>
+  <text x="320" y="105" font-family="Maple Mono NF" font-size="14" fill="#89b4fa">image_id: u32 (4B)</text>
+  <rect x="472" y="78" width="90" height="44" rx="4" fill="#313244" stroke="#f9e2af" stroke-width="1.5"/>
+  <text x="482" y="105" font-family="Maple Mono NF" font-size="14" fill="#f9e2af">cols (2B)</text>
+  <rect x="566" y="78" width="90" height="44" rx="4" fill="#313244" stroke="#cba6f7" stroke-width="1.5"/>
+  <text x="576" y="105" font-family="Maple Mono NF" font-size="14" fill="#cba6f7">rows (2B)</text>
+
+  <text x="24" y="154" font-family="Maple Mono NF" font-size="13" fill="#a6adc8">ExtmarkRecord (16B x 4 per 64B Cacheline) — LuaJIT FFI &lt;I4I2I2I2I2I2I2</text>
+  <rect x="24" y="164" width="140" height="44" rx="4" fill="#313244" stroke="#89b4fa" stroke-width="1.5"/>
+  <text x="36" y="191" font-family="Maple Mono NF" font-size="13" fill="#89b4fa">id: u32 [0..4]</text>
+  <rect x="168" y="164" width="160" height="44" rx="4" fill="#313244" stroke="#a6e3a1" stroke-width="1.5"/>
+  <text x="178" y="191" font-family="Maple Mono NF" font-size="13" fill="#a6e3a1">start_r/c [4..8]</text>
+  <rect x="332" y="164" width="160" height="44" rx="4" fill="#313244" stroke="#f9e2af" stroke-width="1.5"/>
+  <text x="346" y="191" font-family="Maple Mono NF" font-size="13" fill="#f9e2af">end_r/c [8..12]</text>
+  <rect x="496" y="164" width="160" height="44" rx="4" fill="#313244" stroke="#f38ba8" stroke-width="1.5"/>
+  <text x="510" y="191" font-family="Maple Mono NF" font-size="13" fill="#f38ba8">cols/rows [12..16]</text>
+</svg>

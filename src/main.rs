@@ -14,7 +14,7 @@ use ii::{
     fmt,
     ipc::{self, Cmd},
     raster,
-    scene::{RenderScratch, Scene},
+    scene::RenderScratch,
     tty,
 };
 

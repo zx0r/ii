@@ -1,0 +1,51 @@
+---
+title: "Stochastic SEIR Modelling of Seasonal Influenza"
+author: "Computational Epidemiology Group"
+format: html
+---
+
+## Compartmental model
+
+$$
+\frac{dS}{dt}=-\beta\frac{SI}{N},\quad
+\frac{dE}{dt}=\beta\frac{SI}{N}-\sigma E,\quad
+\frac{dI}{dt}=\sigma E-\gamma I,\quad
+\frac{dR}{dt}=\gamma I
+$$
+
+The basic reproduction number is $R_0=\beta/\gamma$ and the next-generation matrix approach gives the dominant eigenvalue
+$$ R_0=\rho\!\left(FV^{-1}\right)=\frac{\beta\sigma}{\sigma\gamma}. $$
+
+```{python}
+import numpy as np
+from scipy.integrate import solve_ivp
+
+def seir(t, y, beta, sigma, gamma, N):
+    S, E, I, R = y
+    return [-beta*S*I/N, beta*S*I/N - sigma*E, sigma*E - gamma*I, gamma*I]
+
+sol = solve_ivp(seir, (0, 200), [9.99e6, 5e3, 5e3, 0],
+                args=(0.45, 1/1.9, 1/3.2, 1e7), dense_output=True)
+```
+
+## Parameter estimates (MCMC, 4 chains x 2000)
+
+| Parameter | Mean | 95% CrI | R-hat |
+|:---|---:|:---:|---:|
+| $\beta$ | 0.452 | 0.431-0.474 | 1.001 |
+| $1/\sigma$ (days) | 1.91 | 1.62-2.24 | 1.002 |
+| $1/\gamma$ (days) | 3.18 | 2.84-3.55 | 1.001 |
+| $R_0$ | 1.42 | 1.36-1.49 | 1.001 |
+| Reporting rate | 0.31 | 0.27-0.36 | 1.003 |
+
+The final attack rate solves $z=1-e^{-R_0 z}$, giving $z\approx0.55$ for $R_0=1.42$.
+
+## Intervention scenarios
+
+With vaccination coverage $v$ and efficacy $\varepsilon$ the effective reproduction number is $R_e=R_0\,(1-v\varepsilon)$, so the herd immunity threshold is
+$$ v_c=\frac{1}{\varepsilon}\left(1-\frac{1}{R_0}\right)\approx 0.34. $$
+
+```{python}
+for cov in (0.0, 0.2, 0.4, 0.6):
+    print(cov, 1.42 * (1 - cov * 0.6))
+```

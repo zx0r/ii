@@ -1,0 +1,29 @@
+% Hartree-Fock and post-HF methods
+\documentclass{article}
+\begin{document}
+\section{The Electronic Schr\"odinger Equation}
+Within the Born--Oppenheimer approximation the electronic Hamiltonian for $N$ electrons and $M$ nuclei is
+\[ \hat H = -\sum_{i=1}^{N}\frac{1}{2}\nabla_i^2 - \sum_{i=1}^{N}\sum_{A=1}^{M}\frac{Z_A}{r_{iA}} + \sum_{i<j}\frac{1}{r_{ij}}. \]
+
+\section{Hartree--Fock}
+The Fock operator is $\hat f(1)=\hat h(1)+\sum_{j}\left[\hat J_j(1)-\hat K_j(1)\right]$ and the Roothaan--Hall equations read
+\[ \mathbf{F}\mathbf{C}=\mathbf{S}\mathbf{C}\boldsymbol{\varepsilon}. \]
+The Fock matrix elements in an atomic-orbital basis are
+\[ F_{\mu\nu}=h_{\mu\nu}+\sum_{\lambda\sigma}P_{\lambda\sigma}\left[(\mu\nu|\sigma\lambda)-\tfrac{1}{2}(\mu\lambda|\sigma\nu)\right],\qquad P_{\lambda\sigma}=2\sum_{a}^{occ}C_{\lambda a}C_{\sigma a}. \]
+
+\section{Correlation Energy}
+M{\o}ller--Plesset second order perturbation theory gives
+\[ E^{(2)}=\sum_{i<j}^{occ}\sum_{a<b}^{virt}\frac{|\langle ij||ab\rangle|^2}{\varepsilon_i+\varepsilon_j-\varepsilon_a-\varepsilon_b}. \]
+Coupled cluster with singles and doubles uses the exponential ansatz
+\[ |\Psi_{CC}\rangle=e^{\hat T}|\Phi_0\rangle,\qquad \hat T=\hat T_1+\hat T_2. \]
+
+\section{Density Functional Theory}
+Kohn--Sham equations: $\left[-\tfrac12\nabla^2+v_{\mathrm{eff}}(\mathbf r)\right]\phi_i=\varepsilon_i\phi_i$ with
+\[ v_{\mathrm{eff}}=v_{\mathrm{ext}}+\int\frac{\rho(\mathbf r')}{|\mathbf r-\mathbf r'|}d\mathbf r'+\frac{\delta E_{xc}[\rho]}{\delta\rho}. \]
+The local density exchange energy is
+\[ E_x^{LDA}=-\frac{3}{4}\left(\frac{3}{\pi}\right)^{1/3}\int\rho^{4/3}(\mathbf r)\,d\mathbf r. \]
+
+\section{Results: Water, cc-pVTZ}
+The total HF energy is $E_{HF}=-76.0571\,E_h$, MP2 correlation $-0.2760\,E_h$, CCSD(T) correlation $-0.3000\,E_h$.
+The dipole moment is $\mu=1.85\,\mathrm{D}$ and the O--H bond length $r_e=0.9572\,\mathrm{\AA}$.
+\end{document}

@@ -165,43 +165,25 @@ impl Scene {
 
     #[inline]
     pub fn text(&self, glyph: &GlyphRun) -> &str {
-        let start = glyph.text_off as usize;
-        let end = start + glyph.text_len as usize;
-        core::str::from_utf8(self.text_pool.get(start..end).unwrap_or(&[])).unwrap_or("")
+        core::str::from_utf8(self.text_pool.get(glyph.text_off as usize..glyph.text_off as usize + glyph.text_len as usize).unwrap_or(&[])).unwrap_or("")
     }
 
     #[inline]
     pub fn cell_text(&self, cell: &CellSpan) -> &str {
-        let start = cell.text_off as usize;
-        let end = start + cell.text_len as usize;
-        core::str::from_utf8(self.text_pool.get(start..end).unwrap_or(&[])).unwrap_or("")
+        core::str::from_utf8(self.text_pool.get(cell.text_off as usize..cell.text_off as usize + cell.text_len as usize).unwrap_or(&[])).unwrap_or("")
     }
 
     #[inline]
     pub fn push_series_line(&mut self, pts: &[[f32; 2]], color: ColorToken, stroke_width: u8) {
-        if pts.is_empty() {
-            return;
-        }
-        let pt_start = self.points.len() as u32;
-        let pt_count = pts.len() as u32;
+        if pts.is_empty() { return; }
+        let (pt_start, pt_count) = (self.points.len() as u32, pts.len() as u32);
         self.points.extend_from_slice(pts);
-
         let verb_start = self.verbs.len() as u32;
         self.verbs.push(Verb::MoveTo as u8);
-        for _ in 1..pts.len() {
-            self.verbs.push(Verb::LineTo as u8);
-        }
-        let verb_count = self.verbs.len() as u32 - verb_start;
-
+        self.verbs.resize(self.verbs.len() + pts.len() - 1, Verb::LineTo as u8);
         self.paths.push(Path {
-            pt_start,
-            pt_count,
-            verb_start,
-            verb_count,
-            color,
-            stroke_width,
-            flags: 2, // stroke
-            _pad: 0,
+            pt_start, pt_count, verb_start, verb_count: pts.len() as u32,
+            color, stroke_width, flags: 2, _pad: 0,
         });
     }
 }

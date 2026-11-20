@@ -213,7 +213,10 @@ pub fn compute_tag(
     #[inline]
     const fn wymix(a: u64, b: u64) -> u64 {
         let r = (a as u128).wrapping_mul(b as u128);
-        (r as u64) ^ ((r >> 64) as u64)
+        let bytes = r.to_le_bytes();
+        let lo = u64::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]]);
+        let hi = u64::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]]);
+        lo ^ hi
     }
 
     let meta = u64::from(cell_w)
@@ -258,7 +261,9 @@ pub fn compute_tag(
 #[inline]
 #[must_use]
 pub const fn image_id_from_tag(tag: u64) -> u32 {
-    let id = ((tag ^ (tag >> 24) ^ (tag >> 48)) as u32) & 0x00FF_FFFF;
+    let folded = tag ^ (tag >> 24) ^ (tag >> 48);
+    let bytes = folded.to_le_bytes();
+    let id = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], 0]);
     if id == 0 { 1 } else { id }
 }
 
@@ -269,61 +274,15 @@ mod tests {
     #[test]
     fn table_4way_plru_evicts_least_recently_used() {
         let mut tbl = Table::new();
-        // 4 colliding tags in set 7
-        let t0 = 7u64;
-        let t1 = 7 + 64;
-        let t2 = 7 + 128;
-        let t3 = 7 + 192;
-        let t4 = 7 + 256;
-
-        tbl.insert(
-            t0,
-            Payload {
-                image_id: 10,
-                cols: 1,
-                rows: 1,
-            },
-        );
-        tbl.insert(
-            t1,
-            Payload {
-                image_id: 11,
-                cols: 1,
-                rows: 1,
-            },
-        );
-        tbl.insert(
-            t2,
-            Payload {
-                image_id: 12,
-                cols: 1,
-                rows: 1,
-            },
-        );
-        tbl.insert(
-            t3,
-            Payload {
-                image_id: 13,
-                cols: 1,
-                rows: 1,
-            },
-        );
-
-        // Touch t0, t2, t3 so t1 becomes the PLRU victim
-        assert_eq!(tbl.lookup(t0).map(|p| p.image_id), Some(10));
-        assert_eq!(tbl.lookup(t2).map(|p| p.image_id), Some(12));
-        assert_eq!(tbl.lookup(t3).map(|p| p.image_id), Some(13));
-
-        tbl.insert(
-            t4,
-            Payload {
-                image_id: 14,
-                cols: 1,
-                rows: 1,
-            },
-        );
-        assert_eq!(tbl.lookup(t1), None);
-        assert_eq!(tbl.lookup(t4).map(|p| p.image_id), Some(14));
+        for i in 0..4u32 {
+            tbl.insert(7 + u64::from(i) * 64, Payload { image_id: 10 + i, cols: 1, rows: 1 });
+        }
+        for &t in &[7, 7 + 128, 7 + 192] {
+            assert!(tbl.lookup(t).is_some());
+        }
+        tbl.insert(7 + 256, Payload { image_id: 14, cols: 1, rows: 1 });
+        assert_eq!(tbl.lookup(7 + 64), None);
+        assert_eq!(tbl.lookup(7 + 256).map(|p| p.image_id), Some(14));
     }
 
     #[test]

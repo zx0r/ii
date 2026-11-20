@@ -1,0 +1,19 @@
+flowchart TD
+    A[Experimental design] --> B[Data acquisition]
+    B --> C{Missing values?}
+    C -->|yes| D[Multiple imputation MICE]
+    C -->|no| E[Feature scaling]
+    D --> E
+    E --> F[Train / validation / test split 70-15-15]
+    F --> G[Hyperparameter search - Optuna TPE]
+    G --> H[Gradient boosted trees]
+    G --> I[Transformer encoder]
+    G --> J[Gaussian process regression]
+    H --> K[Ensemble stacking]
+    I --> K
+    J --> K
+    K --> L{Calibration ECE < 0.03?}
+    L -->|no| M[Isotonic recalibration]
+    L -->|yes| N[SHAP explanations]
+    M --> N
+    N --> O[Report and model card]

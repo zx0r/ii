@@ -4,37 +4,14 @@ use memchr::memchr3;
 
 /// Packed environment tags for stack-resident zero-alloc tracking.
 const ENV_NAMES: &[&[u8]] = &[
-    b"matrix",
-    b"pmatrix",
-    b"bmatrix",
-    b"Bmatrix",
-    b"vmatrix",
-    b"Vmatrix",
-    b"cases",
-    b"aligned",
-    b"align",
-    b"align*",
-    b"equation",
-    b"equation*",
-    b"gather",
-    b"gather*",
-    b"array",
-    b"split",
-    b"substack",
+    b"matrix", b"pmatrix", b"bmatrix", b"Bmatrix", b"vmatrix", b"Vmatrix", b"cases",
+    b"aligned", b"align", b"align*", b"equation", b"equation*", b"gather", b"gather*",
+    b"array", b"split", b"substack",
 ];
 
 #[inline]
 fn env_id(name: &[u8]) -> Option<u8> {
-    for (idx, &cand) in ENV_NAMES.iter().enumerate() {
-        if cand == name {
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "ENV_NAMES has fewer than 255 entries"
-            )]
-            return Some(idx as u8);
-        }
-    }
-    None
+    ENV_NAMES.iter().position(|&cand| cand == name).and_then(|idx| u8::try_from(idx).ok())
 }
 
 #[derive(Debug)]

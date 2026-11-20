@@ -2,6 +2,12 @@
 
 use memchr::{memchr, memchr2, memchr3};
 
+use crate::{
+    err::Error,
+    scene::{GlyphRun, Scene},
+    theme::ColorToken,
+};
+
 pub const OFFSET_MASK: u32 = 0x0FFF_FFFF;
 pub const KIND_SHIFT: u32 = 28;
 
@@ -678,6 +684,64 @@ pub fn scan(src: &[u8], out: &mut Vec<Span>) {
                 pos += 1;
             }
             _ => pos += 1,
+        }
+    }
+}
+
+pub fn parse_into_scene(src: &[u8], scene: &mut Scene) -> Result<(), Error> {
+    let mut spans = Vec::with_capacity(32);
+    scan(src, &mut spans);
+    let mut cursor = 0usize;
+
+    for sp in &spans {
+        let (os, oe) = (sp.outer_start as usize, sp.outer_end as usize);
+        if os > cursor && os <= src.len() {
+            push_text_slice(&src[cursor..os], scene);
+        }
+        let (ps, pe) = (sp.payload_start as usize, sp.payload_end() as usize);
+        if ps <= pe && pe <= src.len() {
+            let payload = &src[ps..pe];
+            match sp.kind() {
+                Kind::MathDisplay | Kind::MathInline => { let _ = crate::fmt::tex::parse_into_scene(payload, scene); }
+                Kind::RawSvg => { let _ = crate::fmt::svg::parse_into_scene(payload, scene); }
+                Kind::Dot => { let _ = crate::fmt::dot::parse_into_scene(payload, scene); }
+                Kind::CsvTsv | Kind::PipeTable => { let _ = crate::fmt::csv::parse_into_scene(payload, scene); }
+                Kind::Chem => { let _ = crate::fmt::chem::parse_into_scene(payload, scene); }
+                _ => push_text_slice(&src[os..oe.min(src.len())], scene),
+            }
+        }
+        cursor = oe.max(cursor);
+    }
+    if cursor < src.len() {
+        push_text_slice(&src[cursor..], scene);
+    }
+    Ok(())
+}
+
+fn push_text_slice(text: &[u8], scene: &mut Scene) {
+    for line in text.split(|&b| b == b'\n') {
+        let line = trim_ascii(line);
+        if line.is_empty() {
+            scene.height += 8.0;
+            continue;
+        }
+        let text_off = scene.text_pool.len() as u32;
+        let text_len = line.len().min(u16::MAX as usize) as u16;
+        scene.text_pool.extend_from_slice(&line[..text_len as usize]);
+        scene.glyphs.push(GlyphRun {
+            x: 0.0,
+            y: scene.height,
+            text_off,
+            text_len,
+            font_size: 14,
+            color: ColorToken::FG_PRIMARY,
+            flags: 0,
+            _pad: [0; 2],
+        });
+        scene.height += 20.0;
+        let w = (text_len as f32) * 8.5;
+        if w > scene.width {
+            scene.width = w;
         }
     }
 }

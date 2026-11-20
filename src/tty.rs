@@ -96,16 +96,9 @@ pub const fn luminance(r: u8, g: u8, b: u8) -> u8 {
 
 #[inline]
 fn parse_hex_channel(s: &[u8]) -> Option<u8> {
-    if s.len() >= 2 {
-        let hi = theme::hex_digit(s[0])?;
-        let lo = theme::hex_digit(s[1])?;
-        Some((hi << 4) | lo)
-    } else if s.len() == 1 {
-        let h = theme::hex_digit(s[0])?;
-        Some((h << 4) | h)
-    } else {
-        None
-    }
+    let hi = theme::hex_digit(*s.first()?)?;
+    let lo = s.get(1).and_then(|&b| theme::hex_digit(b)).unwrap_or(hi);
+    Some((hi << 4) | lo)
 }
 
 /// Parse an OSC 10/11 response containing `rgb:RRRR/GGGG/BBBB` into 8-bit `(R, G, B)`.
@@ -162,10 +155,6 @@ fn query_bg(fd: BorrowedFd<'_>) -> Option<(u8, u8, u8)> {
     query_osc_color(fd, b"\x1b]11;?\x1b\\")
 }
 
-#[expect(dead_code, reason = "architectural §3.13 symmetry with query_bg")]
-fn query_fg(fd: BorrowedFd<'_>) -> Option<(u8, u8, u8)> {
-    query_osc_color(fd, b"\x1b]10;?\x1b\\")
-}
 
 /// Probe `/dev/tty` for window geometry (`TIOCGWINSZ`), SSH/tmux environment, and OSC 11 background luminance.
 #[must_use]

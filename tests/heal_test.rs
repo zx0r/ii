@@ -1,4 +1,4 @@
-use ii::{chem::transpile, heal::State};
+use ii::fmt::{chem::transpile, heal::State};
 
 #[test]
 fn heal_balances_nested_latex_and_dangling_scripts() {

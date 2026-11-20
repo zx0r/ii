@@ -1,0 +1,22 @@
+\documentclass{article}
+\begin{document}
+\section{Incompressible Navier--Stokes}
+\[ \rho\left(\frac{\partial \mathbf u}{\partial t}+\mathbf u\cdot\nabla\mathbf u\right)=-\nabla p+\mu\nabla^2\mathbf u+\mathbf f,\qquad \nabla\cdot\mathbf u=0. \]
+The Reynolds number is $\mathrm{Re}=\dfrac{\rho U L}{\mu}$; laminar pipe flow becomes unstable near $\mathrm{Re}\approx 2300$.
+
+\section{Turbulence}
+Kolmogorov's $-5/3$ law for the inertial subrange:
+\[ E(k)=C\,\varepsilon^{2/3}k^{-5/3},\qquad C\approx 1.5 \]
+with the Kolmogorov microscale $\eta=\left(\nu^3/\varepsilon\right)^{1/4}$.
+Reynolds-averaged equations introduce the stress tensor $-\rho\overline{u_i'u_j'}$ closed by the $k$--$\varepsilon$ model:
+\[ \nu_t=C_\mu\frac{k^2}{\varepsilon},\quad \frac{Dk}{Dt}=P_k-\varepsilon+\nabla\cdot\!\left[\left(\nu+\frac{\nu_t}{\sigma_k}\right)\nabla k\right]. \]
+
+\section{Boundary Layer}
+Blasius solution: $f'''+\tfrac12 ff''=0$, $f(0)=f'(0)=0$, $f'(\infty)=1$, giving $\delta_{99}\approx 4.91\sqrt{\nu x/U}$ and
+\[ C_f=\frac{0.664}{\sqrt{\mathrm{Re}_x}}. \]
+
+\section{Numerical Method}
+Finite volume discretisation with the SIMPLE algorithm; the pressure correction satisfies
+\[ \nabla\cdot\left(\frac{1}{a_P}\nabla p'\right)=\nabla\cdot\mathbf u^{*}. \]
+CFL stability: $\mathrm{CFL}=\dfrac{u\,\Delta t}{\Delta x}\le 1$ for explicit schemes.
+\end{document}

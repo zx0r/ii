@@ -33,6 +33,52 @@ impl ColorToken {
     }
 }
 
+/// Palette index identifier used by format adapters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Idx {
+    Bg = 0,
+    BgSurface = 1,
+    Fg = 2,
+    FgMuted = 3,
+    GridLine = 4,
+    Border = 5,
+    Accent = 6,
+    Heading = 7,
+    HeadingSub = 8,
+    Error = 9,
+}
+
+impl Idx {
+    #[inline]
+    #[must_use]
+    pub const fn to_token(self) -> ColorToken {
+        ColorToken(self as u8)
+    }
+}
+
+/// Hex and SGR entry for formatted outputs.
+#[derive(Clone, Copy, Debug)]
+pub struct ColorEntry {
+    pub hex: &'static str,
+    pub sgr: &'static [u8],
+    pub rgb: (u8, u8, u8),
+}
+
+impl ColorEntry {
+    #[inline]
+    #[must_use]
+    pub const fn hex(self) -> &'static str {
+        self.hex
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn sgr(self) -> &'static [u8] {
+        self.sgr
+    }
+}
+
 /// 32-bit packed RGBA color for tiny-skia (premultiplied LE: [r, g, b, a]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[repr(transparent)]
@@ -86,6 +132,7 @@ impl Rgba {
     }
 }
 
+#[derive(Debug)]
 pub struct SgrSeq {
     pub buf: [u8; 20],
     pub len: u8,
@@ -157,91 +204,70 @@ pub struct Palette {
 const _: () = assert!(size_of::<Palette>() == 192);
 const _: () = assert!(align_of::<Palette>() == 64);
 
+impl Palette {
+    #[inline]
+    #[must_use]
+    pub fn hex_str(&self, idx: Idx) -> &'static str {
+        DARK_HEX[idx as usize]
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn series_hex_str(&self, idx: usize) -> &'static str {
+        SERIES_HEX[idx & 0x0F]
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn get(&self, idx: Idx) -> ColorEntry {
+        let i = idx as usize;
+        let c = self.colors[i];
+        ColorEntry {
+            hex: DARK_HEX[i],
+            sgr: sgr(ColorToken(i as u8), self.is_dark),
+            rgb: (c.r(), c.g(), c.b()),
+        }
+    }
+}
+
+const DARK_HEX: [&str; 16] = [
+    "#18181b", "#27272a", "#f4f4f5", "#71717a", "#3f3f46", "#52525b",
+    "#38bdf8", "#fb923c", "#4ade80", "#f87171", "#000000", "#000000",
+    "#000000", "#000000", "#000000", "#000000",
+];
+
+const SERIES_HEX: [&str; 16] = [
+    "#38bdf8", "#fb923c", "#4ade80", "#c084fc", "#f472b6", "#2dd4bf",
+    "#facc15", "#a78bfa", "#fb7185", "#60a5fa", "#34d399", "#f87171",
+    "#818cf8", "#fbbf24", "#e879f9", "#94a3b8",
+];
+
 const DARK_COLORS: [Rgba; 32] = [
-    Rgba::from_rgba(0x18, 0x18, 0x1B, 0xFF), // 0: BgPrimary (#18181b)
-    Rgba::from_rgba(0x27, 0x27, 0x2A, 0xFF), // 1: BgSurface (#27272a)
-    Rgba::from_rgba(0xF4, 0xF4, 0xF5, 0xFF), // 2: FgPrimary (#f4f4f5)
-    Rgba::from_rgba(0x71, 0x71, 0x7A, 0xFF), // 3: FgMuted   (#71717a)
-    Rgba::from_rgba(0x3F, 0x3F, 0x46, 0x80), // 4: GridLine (premultiplied in from_rgba!)
-    Rgba::from_rgba(0x52, 0x52, 0x5B, 0xFF), // 5: Border
-    Rgba::from_rgba(0x38, 0xBD, 0xF8, 0xFF), // 6: Accent
-    Rgba::from_rgba(0xFB, 0x92, 0x3C, 0xFF), // 7: AccentOrange
-    Rgba::from_rgba(0x4A, 0xDE, 0x80, 0xFF), // 8: AccentGreen
-    Rgba::from_rgba(0xF8, 0x71, 0x71, 0xFF), // 9: AccentRed
-    Rgba::from_rgba(0, 0, 0, 0),
-    Rgba::from_rgba(0, 0, 0, 0),
-    Rgba::from_rgba(0, 0, 0, 0),
-    Rgba::from_rgba(0, 0, 0, 0),
-    Rgba::from_rgba(0, 0, 0, 0),
-    Rgba::from_rgba(0, 0, 0, 0),
-    // 16..31: Data series palette
-    Rgba::from_rgba(0x38, 0xBD, 0xF8, 0xFF),
-    Rgba::from_rgba(0xFB, 0x92, 0x3C, 0xFF),
-    Rgba::from_rgba(0x4A, 0xDE, 0x80, 0xFF),
-    Rgba::from_rgba(0xC0, 0x84, 0xFC, 0xFF),
-    Rgba::from_rgba(0xF4, 0x72, 0xB6, 0xFF),
-    Rgba::from_rgba(0x2D, 0xD4, 0xBF, 0xFF),
-    Rgba::from_rgba(0xFA, 0xCC, 0x15, 0xFF),
-    Rgba::from_rgba(0xA7, 0x8B, 0xFA, 0xFF),
-    Rgba::from_rgba(0xFB, 0x71, 0x85, 0xFF),
-    Rgba::from_rgba(0x60, 0xA5, 0xFA, 0xFF),
-    Rgba::from_rgba(0x34, 0xD3, 0x99, 0xFF),
-    Rgba::from_rgba(0xF8, 0x71, 0x71, 0xFF),
-    Rgba::from_rgba(0x81, 0x8C, 0xF8, 0xFF),
-    Rgba::from_rgba(0xFB, 0xBF, 0x24, 0xFF),
-    Rgba::from_rgba(0xE8, 0x79, 0xF9, 0xFF),
-    Rgba::from_rgba(0x94, 0xA3, 0xB8, 0xFF),
+    Rgba::from_rgba(0x18, 0x18, 0x1B, 0xFF), Rgba::from_rgba(0x27, 0x27, 0x2A, 0xFF), Rgba::from_rgba(0xF4, 0xF4, 0xF5, 0xFF), Rgba::from_rgba(0x71, 0x71, 0x7A, 0xFF),
+    Rgba::from_rgba(0x3F, 0x3F, 0x46, 0x80), Rgba::from_rgba(0x52, 0x52, 0x5B, 0xFF), Rgba::from_rgba(0x38, 0xBD, 0xF8, 0xFF), Rgba::from_rgba(0xFB, 0x92, 0x3C, 0xFF),
+    Rgba::from_rgba(0x4A, 0xDE, 0x80, 0xFF), Rgba::from_rgba(0xF8, 0x71, 0x71, 0xFF), Rgba::from_rgba(0, 0, 0, 0), Rgba::from_rgba(0, 0, 0, 0),
+    Rgba::from_rgba(0, 0, 0, 0), Rgba::from_rgba(0, 0, 0, 0), Rgba::from_rgba(0, 0, 0, 0), Rgba::from_rgba(0, 0, 0, 0),
+    Rgba::from_rgba(0x38, 0xBD, 0xF8, 0xFF), Rgba::from_rgba(0xFB, 0x92, 0x3C, 0xFF), Rgba::from_rgba(0x4A, 0xDE, 0x80, 0xFF), Rgba::from_rgba(0xC0, 0x84, 0xFC, 0xFF),
+    Rgba::from_rgba(0xF4, 0xF4, 0xB6, 0xFF), Rgba::from_rgba(0x2D, 0xD4, 0xBF, 0xFF), Rgba::from_rgba(0xFA, 0xCC, 0x15, 0xFF), Rgba::from_rgba(0xA7, 0x8B, 0xFA, 0xFF),
+    Rgba::from_rgba(0xFB, 0x71, 0x85, 0xFF), Rgba::from_rgba(0x60, 0xA5, 0xFA, 0xFF), Rgba::from_rgba(0x34, 0xD3, 0x99, 0xFF), Rgba::from_rgba(0xF8, 0x71, 0x71, 0xFF),
+    Rgba::from_rgba(0x81, 0x8C, 0xF8, 0xFF), Rgba::from_rgba(0xFB, 0xBF, 0x24, 0xFF), Rgba::from_rgba(0xE8, 0x79, 0xF9, 0xFF), Rgba::from_rgba(0x94, 0xA3, 0xB8, 0xFF),
 ];
 
 const LIGHT_COLORS: [Rgba; 32] = [
-    Rgba::from_rgba(0xFF, 0xFF, 0xFF, 0xFF),
-    Rgba::from_rgba(0xF4, 0xF4, 0xF5, 0xFF),
-    Rgba::from_rgba(0x18, 0x18, 0x1B, 0xFF),
-    Rgba::from_rgba(0xA1, 0xA1, 0xAA, 0xFF),
-    Rgba::from_rgba(0xE4, 0xE4, 0xE7, 0x80),
-    Rgba::from_rgba(0xD4, 0xD4, 0xD8, 0xFF),
-    Rgba::from_rgba(0x02, 0x84, 0xC7, 0xFF),
-    Rgba::from_rgba(0xEA, 0x58, 0x0C, 0xFF),
-    Rgba::from_rgba(0x16, 0xA3, 0x4A, 0xFF),
-    Rgba::from_rgba(0xDC, 0x26, 0x26, 0xFF),
-    Rgba::from_rgba(0, 0, 0, 0),
-    Rgba::from_rgba(0, 0, 0, 0),
-    Rgba::from_rgba(0, 0, 0, 0),
-    Rgba::from_rgba(0, 0, 0, 0),
-    Rgba::from_rgba(0, 0, 0, 0),
-    Rgba::from_rgba(0, 0, 0, 0),
-    // 16..31: Data series
-    Rgba::from_rgba(0x02, 0x84, 0xC7, 0xFF),
-    Rgba::from_rgba(0xEA, 0x58, 0x0C, 0xFF),
-    Rgba::from_rgba(0x16, 0xA3, 0x4A, 0xFF),
-    Rgba::from_rgba(0x93, 0x33, 0xEA, 0xFF),
-    Rgba::from_rgba(0xDB, 0x27, 0x77, 0xFF),
-    Rgba::from_rgba(0x0D, 0x94, 0x88, 0xFF),
-    Rgba::from_rgba(0xCA, 0x8A, 0x04, 0xFF),
-    Rgba::from_rgba(0x7C, 0x3A, 0xED, 0xFF),
-    Rgba::from_rgba(0xE1, 0x1D, 0x48, 0xFF),
-    Rgba::from_rgba(0x25, 0x63, 0xEB, 0xFF),
-    Rgba::from_rgba(0x05, 0x96, 0x69, 0xFF),
-    Rgba::from_rgba(0xDC, 0x26, 0x26, 0xFF),
-    Rgba::from_rgba(0x4F, 0x46, 0xE5, 0xFF),
-    Rgba::from_rgba(0xD9, 0x77, 0x06, 0xFF),
-    Rgba::from_rgba(0xC0, 0x26, 0xD3, 0xFF),
-    Rgba::from_rgba(0x64, 0x74, 0x8B, 0xFF),
+    Rgba::from_rgba(0xFF, 0xFF, 0xFF, 0xFF), Rgba::from_rgba(0xF4, 0xF4, 0xF5, 0xFF), Rgba::from_rgba(0x18, 0x18, 0x1B, 0xFF), Rgba::from_rgba(0xA1, 0xA1, 0xAA, 0xFF),
+    Rgba::from_rgba(0xE4, 0xE4, 0xE7, 0x80), Rgba::from_rgba(0xD4, 0xD4, 0xD8, 0xFF), Rgba::from_rgba(0x02, 0x84, 0xC7, 0xFF), Rgba::from_rgba(0xEA, 0x58, 0x0C, 0xFF),
+    Rgba::from_rgba(0x16, 0xA3, 0x4A, 0xFF), Rgba::from_rgba(0xDC, 0x26, 0x26, 0xFF), Rgba::from_rgba(0, 0, 0, 0), Rgba::from_rgba(0, 0, 0, 0),
+    Rgba::from_rgba(0, 0, 0, 0), Rgba::from_rgba(0, 0, 0, 0), Rgba::from_rgba(0, 0, 0, 0), Rgba::from_rgba(0, 0, 0, 0),
+    Rgba::from_rgba(0x02, 0x84, 0xC7, 0xFF), Rgba::from_rgba(0xEA, 0x58, 0x0C, 0xFF), Rgba::from_rgba(0x16, 0xA3, 0x4A, 0xFF), Rgba::from_rgba(0x93, 0x33, 0xEA, 0xFF),
+    Rgba::from_rgba(0xDB, 0x27, 0x77, 0xFF), Rgba::from_rgba(0x0D, 0x94, 0x88, 0xFF), Rgba::from_rgba(0xCA, 0x8A, 0x04, 0xFF), Rgba::from_rgba(0x7C, 0x3A, 0xED, 0xFF),
+    Rgba::from_rgba(0xE1, 0x1D, 0x48, 0xFF), Rgba::from_rgba(0x25, 0x63, 0xEB, 0xFF), Rgba::from_rgba(0x05, 0x96, 0x69, 0xFF), Rgba::from_rgba(0xDC, 0x26, 0x26, 0xFF),
+    Rgba::from_rgba(0x4F, 0x46, 0xE5, 0xFF), Rgba::from_rgba(0xD9, 0xF7, 0x06, 0xFF), Rgba::from_rgba(0xC0, 0x26, 0xD3, 0xFF), Rgba::from_rgba(0x64, 0x74, 0x8B, 0xFF),
 ];
 
-pub static DARK_PALETTE: Palette = Palette {
-    colors: DARK_COLORS,
-    theme_hash: compute_palette_hash(&DARK_COLORS),
-    is_dark: true,
-    _pad: [0; 3],
-};
-
-pub static LIGHT_PALETTE: Palette = Palette {
-    colors: LIGHT_COLORS,
-    theme_hash: compute_palette_hash(&LIGHT_COLORS),
-    is_dark: false,
-    _pad: [0; 3],
-};
+pub static DARK: Palette = Palette { colors: DARK_COLORS, theme_hash: compute_palette_hash(&DARK_COLORS), is_dark: true, _pad: [0; 3] };
+pub static LIGHT: Palette = Palette { colors: LIGHT_COLORS, theme_hash: compute_palette_hash(&LIGHT_COLORS), is_dark: false, _pad: [0; 3] };
+pub static DARK_PALETTE: Palette = DARK;
+pub static LIGHT_PALETTE: Palette = LIGHT;
 
 const fn build_sgr_table(colors: &[Rgba; 32]) -> [SgrSeq; 32] {
     let mut table = [const { SgrSeq { buf: [0; 20], len: 0 } }; 32];
@@ -270,4 +296,15 @@ pub fn sgr(token: ColorToken, dark: bool) -> &'static [u8] {
     let table = if dark { &DARK_SGR } else { &LIGHT_SGR };
     let entry = &table[token.index()];
     &entry.buf[..entry.len as usize]
+}
+
+#[inline]
+#[must_use]
+pub const fn hex_digit(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
 }

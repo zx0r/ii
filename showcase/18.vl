@@ -1,0 +1,1823 @@
+{
+ "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+ "description": "SIR epidemic model, R0 = beta/gamma = 2.82, N = 10 M",
+ "data": {
+  "values": [
+   {
+    "day": 0,
+    "compartment": "Susceptible",
+    "people": 9986903
+   },
+   {
+    "day": 0,
+    "compartment": "Infectious",
+    "people": 11997
+   },
+   {
+    "day": 0,
+    "compartment": "Recovered",
+    "people": 1100
+   },
+   {
+    "day": 2,
+    "compartment": "Susceptible",
+    "people": 9978735
+   },
+   {
+    "day": 2,
+    "compartment": "Infectious",
+    "people": 17262
+   },
+   {
+    "day": 2,
+    "compartment": "Recovered",
+    "people": 4003
+   },
+   {
+    "day": 4,
+    "compartment": "Susceptible",
+    "people": 9966994
+   },
+   {
+    "day": 4,
+    "compartment": "Infectious",
+    "people": 24827
+   },
+   {
+    "day": 4,
+    "compartment": "Recovered",
+    "people": 8179
+   },
+   {
+    "day": 6,
+    "compartment": "Susceptible",
+    "people": 9950133
+   },
+   {
+    "day": 6,
+    "compartment": "Infectious",
+    "people": 35683
+   },
+   {
+    "day": 6,
+    "compartment": "Recovered",
+    "people": 14184
+   },
+   {
+    "day": 8,
+    "compartment": "Susceptible",
+    "people": 9925951
+   },
+   {
+    "day": 8,
+    "compartment": "Infectious",
+    "people": 51236
+   },
+   {
+    "day": 8,
+    "compartment": "Recovered",
+    "people": 22813
+   },
+   {
+    "day": 10,
+    "compartment": "Susceptible",
+    "people": 9891333
+   },
+   {
+    "day": 10,
+    "compartment": "Infectious",
+    "people": 73468
+   },
+   {
+    "day": 10,
+    "compartment": "Recovered",
+    "people": 35200
+   },
+   {
+    "day": 12,
+    "compartment": "Susceptible",
+    "people": 9841909
+   },
+   {
+    "day": 12,
+    "compartment": "Infectious",
+    "people": 105139
+   },
+   {
+    "day": 12,
+    "compartment": "Recovered",
+    "people": 52952
+   },
+   {
+    "day": 14,
+    "compartment": "Susceptible",
+    "people": 9771620
+   },
+   {
+    "day": 14,
+    "compartment": "Infectious",
+    "people": 150042
+   },
+   {
+    "day": 14,
+    "compartment": "Recovered",
+    "people": 78339
+   },
+   {
+    "day": 16,
+    "compartment": "Susceptible",
+    "people": 9672203
+   },
+   {
+    "day": 16,
+    "compartment": "Infectious",
+    "people": 213266
+   },
+   {
+    "day": 16,
+    "compartment": "Recovered",
+    "people": 114532
+   },
+   {
+    "day": 18,
+    "compartment": "Susceptible",
+    "people": 9532676
+   },
+   {
+    "day": 18,
+    "compartment": "Infectious",
+    "people": 301420
+   },
+   {
+    "day": 18,
+    "compartment": "Recovered",
+    "people": 165904
+   },
+   {
+    "day": 20,
+    "compartment": "Susceptible",
+    "people": 9338991
+   },
+   {
+    "day": 20,
+    "compartment": "Infectious",
+    "people": 422642
+   },
+   {
+    "day": 20,
+    "compartment": "Recovered",
+    "people": 238367
+   },
+   {
+    "day": 22,
+    "compartment": "Susceptible",
+    "people": 9074200
+   },
+   {
+    "day": 22,
+    "compartment": "Infectious",
+    "people": 586106
+   },
+   {
+    "day": 22,
+    "compartment": "Recovered",
+    "people": 339694
+   },
+   {
+    "day": 24,
+    "compartment": "Susceptible",
+    "people": 8719723
+   },
+   {
+    "day": 24,
+    "compartment": "Infectious",
+    "people": 800596
+   },
+   {
+    "day": 24,
+    "compartment": "Recovered",
+    "people": 479681
+   },
+   {
+    "day": 26,
+    "compartment": "Susceptible",
+    "people": 8258442
+   },
+   {
+    "day": 26,
+    "compartment": "Infectious",
+    "people": 1071628
+   },
+   {
+    "day": 26,
+    "compartment": "Recovered",
+    "people": 669930
+   },
+   {
+    "day": 28,
+    "compartment": "Susceptible",
+    "people": 7680130
+   },
+   {
+    "day": 28,
+    "compartment": "Infectious",
+    "people": 1396970
+   },
+   {
+    "day": 28,
+    "compartment": "Recovered",
+    "people": 922900
+   },
+   {
+    "day": 30,
+    "compartment": "Susceptible",
+    "people": 6988585
+   },
+   {
+    "day": 30,
+    "compartment": "Infectious",
+    "people": 1761499
+   },
+   {
+    "day": 30,
+    "compartment": "Recovered",
+    "people": 1249916
+   },
+   {
+    "day": 32,
+    "compartment": "Susceptible",
+    "people": 6207704
+   },
+   {
+    "day": 32,
+    "compartment": "Infectious",
+    "people": 2134186
+   },
+   {
+    "day": 32,
+    "compartment": "Recovered",
+    "people": 1658110
+   },
+   {
+    "day": 34,
+    "compartment": "Susceptible",
+    "people": 5381858
+   },
+   {
+    "day": 34,
+    "compartment": "Infectious",
+    "people": 2471158
+   },
+   {
+    "day": 34,
+    "compartment": "Recovered",
+    "people": 2146984
+   },
+   {
+    "day": 36,
+    "compartment": "Susceptible",
+    "people": 4567239
+   },
+   {
+    "day": 36,
+    "compartment": "Infectious",
+    "people": 2726672
+   },
+   {
+    "day": 36,
+    "compartment": "Recovered",
+    "people": 2706089
+   },
+   {
+    "day": 38,
+    "compartment": "Susceptible",
+    "people": 3816600
+   },
+   {
+    "day": 38,
+    "compartment": "Infectious",
+    "people": 2867970
+   },
+   {
+    "day": 38,
+    "compartment": "Recovered",
+    "people": 3315430
+   },
+   {
+    "day": 40,
+    "compartment": "Susceptible",
+    "people": 3165552
+   },
+   {
+    "day": 40,
+    "compartment": "Infectious",
+    "people": 2885442
+   },
+   {
+    "day": 40,
+    "compartment": "Recovered",
+    "people": 3949007
+   },
+   {
+    "day": 42,
+    "compartment": "Susceptible",
+    "people": 2627631
+   },
+   {
+    "day": 42,
+    "compartment": "Infectious",
+    "people": 2792333
+   },
+   {
+    "day": 42,
+    "compartment": "Recovered",
+    "people": 4580037
+   },
+   {
+    "day": 44,
+    "compartment": "Susceptible",
+    "people": 2198342
+   },
+   {
+    "day": 44,
+    "compartment": "Infectious",
+    "people": 2616075
+   },
+   {
+    "day": 44,
+    "compartment": "Recovered",
+    "people": 5185583
+   },
+   {
+    "day": 46,
+    "compartment": "Susceptible",
+    "people": 1863093
+   },
+   {
+    "day": 46,
+    "compartment": "Infectious",
+    "people": 2387831
+   },
+   {
+    "day": 46,
+    "compartment": "Recovered",
+    "people": 5749076
+   },
+   {
+    "day": 48,
+    "compartment": "Susceptible",
+    "people": 1604151
+   },
+   {
+    "day": 48,
+    "compartment": "Infectious",
+    "people": 2135173
+   },
+   {
+    "day": 48,
+    "compartment": "Recovered",
+    "people": 6260676
+   },
+   {
+    "day": 50,
+    "compartment": "Susceptible",
+    "people": 1404796
+   },
+   {
+    "day": 50,
+    "compartment": "Infectious",
+    "people": 1878946
+   },
+   {
+    "day": 50,
+    "compartment": "Recovered",
+    "people": 6716258
+   },
+   {
+    "day": 52,
+    "compartment": "Susceptible",
+    "people": 1251032
+   },
+   {
+    "day": 52,
+    "compartment": "Infectious",
+    "people": 1633076
+   },
+   {
+    "day": 52,
+    "compartment": "Recovered",
+    "people": 7115892
+   },
+   {
+    "day": 54,
+    "compartment": "Susceptible",
+    "people": 1131852
+   },
+   {
+    "day": 54,
+    "compartment": "Infectious",
+    "people": 1405772
+   },
+   {
+    "day": 54,
+    "compartment": "Recovered",
+    "people": 7462375
+   },
+   {
+    "day": 56,
+    "compartment": "Susceptible",
+    "people": 1038886
+   },
+   {
+    "day": 56,
+    "compartment": "Infectious",
+    "people": 1201053
+   },
+   {
+    "day": 56,
+    "compartment": "Recovered",
+    "people": 7760061
+   },
+   {
+    "day": 58,
+    "compartment": "Susceptible",
+    "people": 965862
+   },
+   {
+    "day": 58,
+    "compartment": "Infectious",
+    "people": 1020123
+   },
+   {
+    "day": 58,
+    "compartment": "Recovered",
+    "people": 8014015
+   },
+   {
+    "day": 60,
+    "compartment": "Susceptible",
+    "people": 908108
+   },
+   {
+    "day": 60,
+    "compartment": "Infectious",
+    "people": 862434
+   },
+   {
+    "day": 60,
+    "compartment": "Recovered",
+    "people": 8229458
+   },
+   {
+    "day": 62,
+    "compartment": "Susceptible",
+    "people": 862134
+   },
+   {
+    "day": 62,
+    "compartment": "Infectious",
+    "people": 726438
+   },
+   {
+    "day": 62,
+    "compartment": "Recovered",
+    "people": 8411429
+   },
+   {
+    "day": 64,
+    "compartment": "Susceptible",
+    "people": 825321
+   },
+   {
+    "day": 64,
+    "compartment": "Infectious",
+    "people": 610088
+   },
+   {
+    "day": 64,
+    "compartment": "Recovered",
+    "people": 8564591
+   },
+   {
+    "day": 66,
+    "compartment": "Susceptible",
+    "people": 795691
+   },
+   {
+    "day": 66,
+    "compartment": "Infectious",
+    "people": 511164
+   },
+   {
+    "day": 66,
+    "compartment": "Recovered",
+    "people": 8693145
+   },
+   {
+    "day": 68,
+    "compartment": "Susceptible",
+    "people": 771733
+   },
+   {
+    "day": 68,
+    "compartment": "Infectious",
+    "people": 427464
+   },
+   {
+    "day": 68,
+    "compartment": "Recovered",
+    "people": 8800803
+   },
+   {
+    "day": 70,
+    "compartment": "Susceptible",
+    "people": 752284
+   },
+   {
+    "day": 70,
+    "compartment": "Infectious",
+    "people": 356919
+   },
+   {
+    "day": 70,
+    "compartment": "Recovered",
+    "people": 8890798
+   },
+   {
+    "day": 72,
+    "compartment": "Susceptible",
+    "people": 736442
+   },
+   {
+    "day": 72,
+    "compartment": "Infectious",
+    "people": 297641
+   },
+   {
+    "day": 72,
+    "compartment": "Recovered",
+    "people": 8965917
+   },
+   {
+    "day": 74,
+    "compartment": "Susceptible",
+    "people": 723502
+   },
+   {
+    "day": 74,
+    "compartment": "Infectious",
+    "people": 247955
+   },
+   {
+    "day": 74,
+    "compartment": "Recovered",
+    "people": 9028544
+   },
+   {
+    "day": 76,
+    "compartment": "Susceptible",
+    "people": 712905
+   },
+   {
+    "day": 76,
+    "compartment": "Infectious",
+    "people": 206390
+   },
+   {
+    "day": 76,
+    "compartment": "Recovered",
+    "people": 9080705
+   },
+   {
+    "day": 78,
+    "compartment": "Susceptible",
+    "people": 704210
+   },
+   {
+    "day": 78,
+    "compartment": "Infectious",
+    "people": 171674
+   },
+   {
+    "day": 78,
+    "compartment": "Recovered",
+    "people": 9124115
+   },
+   {
+    "day": 80,
+    "compartment": "Susceptible",
+    "people": 697063
+   },
+   {
+    "day": 80,
+    "compartment": "Infectious",
+    "people": 142718
+   },
+   {
+    "day": 80,
+    "compartment": "Recovered",
+    "people": 9160219
+   },
+   {
+    "day": 82,
+    "compartment": "Susceptible",
+    "people": 691180
+   },
+   {
+    "day": 82,
+    "compartment": "Infectious",
+    "people": 118591
+   },
+   {
+    "day": 82,
+    "compartment": "Recovered",
+    "people": 9190229
+   },
+   {
+    "day": 84,
+    "compartment": "Susceptible",
+    "people": 686332
+   },
+   {
+    "day": 84,
+    "compartment": "Infectious",
+    "people": 98504
+   },
+   {
+    "day": 84,
+    "compartment": "Recovered",
+    "people": 9215164
+   },
+   {
+    "day": 86,
+    "compartment": "Susceptible",
+    "people": 682332
+   },
+   {
+    "day": 86,
+    "compartment": "Infectious",
+    "people": 81795
+   },
+   {
+    "day": 86,
+    "compartment": "Recovered",
+    "people": 9235873
+   },
+   {
+    "day": 88,
+    "compartment": "Susceptible",
+    "people": 679030
+   },
+   {
+    "day": 88,
+    "compartment": "Infectious",
+    "people": 67902
+   },
+   {
+    "day": 88,
+    "compartment": "Recovered",
+    "people": 9253069
+   },
+   {
+    "day": 90,
+    "compartment": "Susceptible",
+    "people": 676301
+   },
+   {
+    "day": 90,
+    "compartment": "Infectious",
+    "people": 56357
+   },
+   {
+    "day": 90,
+    "compartment": "Recovered",
+    "people": 9267343
+   },
+   {
+    "day": 92,
+    "compartment": "Susceptible",
+    "people": 674045
+   },
+   {
+    "day": 92,
+    "compartment": "Infectious",
+    "people": 46766
+   },
+   {
+    "day": 92,
+    "compartment": "Recovered",
+    "people": 9279189
+   },
+   {
+    "day": 94,
+    "compartment": "Susceptible",
+    "people": 672179
+   },
+   {
+    "day": 94,
+    "compartment": "Infectious",
+    "people": 38802
+   },
+   {
+    "day": 94,
+    "compartment": "Recovered",
+    "people": 9289019
+   },
+   {
+    "day": 96,
+    "compartment": "Susceptible",
+    "people": 670635
+   },
+   {
+    "day": 96,
+    "compartment": "Infectious",
+    "people": 32190
+   },
+   {
+    "day": 96,
+    "compartment": "Recovered",
+    "people": 9297175
+   },
+   {
+    "day": 98,
+    "compartment": "Susceptible",
+    "people": 669357
+   },
+   {
+    "day": 98,
+    "compartment": "Infectious",
+    "people": 26702
+   },
+   {
+    "day": 98,
+    "compartment": "Recovered",
+    "people": 9303941
+   },
+   {
+    "day": 100,
+    "compartment": "Susceptible",
+    "people": 668298
+   },
+   {
+    "day": 100,
+    "compartment": "Infectious",
+    "people": 22148
+   },
+   {
+    "day": 100,
+    "compartment": "Recovered",
+    "people": 9309553
+   },
+   {
+    "day": 102,
+    "compartment": "Susceptible",
+    "people": 667422
+   },
+   {
+    "day": 102,
+    "compartment": "Infectious",
+    "people": 18370
+   },
+   {
+    "day": 102,
+    "compartment": "Recovered",
+    "people": 9314209
+   },
+   {
+    "day": 104,
+    "compartment": "Susceptible",
+    "people": 666696
+   },
+   {
+    "day": 104,
+    "compartment": "Infectious",
+    "people": 15235
+   },
+   {
+    "day": 104,
+    "compartment": "Recovered",
+    "people": 9318069
+   },
+   {
+    "day": 106,
+    "compartment": "Susceptible",
+    "people": 666094
+   },
+   {
+    "day": 106,
+    "compartment": "Infectious",
+    "people": 12634
+   },
+   {
+    "day": 106,
+    "compartment": "Recovered",
+    "people": 9321271
+   },
+   {
+    "day": 108,
+    "compartment": "Susceptible",
+    "people": 665596
+   },
+   {
+    "day": 108,
+    "compartment": "Infectious",
+    "people": 10477
+   },
+   {
+    "day": 108,
+    "compartment": "Recovered",
+    "people": 9323927
+   },
+   {
+    "day": 110,
+    "compartment": "Susceptible",
+    "people": 665183
+   },
+   {
+    "day": 110,
+    "compartment": "Infectious",
+    "people": 8688
+   },
+   {
+    "day": 110,
+    "compartment": "Recovered",
+    "people": 9326129
+   },
+   {
+    "day": 112,
+    "compartment": "Susceptible",
+    "people": 664841
+   },
+   {
+    "day": 112,
+    "compartment": "Infectious",
+    "people": 7205
+   },
+   {
+    "day": 112,
+    "compartment": "Recovered",
+    "people": 9327955
+   },
+   {
+    "day": 114,
+    "compartment": "Susceptible",
+    "people": 664557
+   },
+   {
+    "day": 114,
+    "compartment": "Infectious",
+    "people": 5974
+   },
+   {
+    "day": 114,
+    "compartment": "Recovered",
+    "people": 9329469
+   },
+   {
+    "day": 116,
+    "compartment": "Susceptible",
+    "people": 664322
+   },
+   {
+    "day": 116,
+    "compartment": "Infectious",
+    "people": 4954
+   },
+   {
+    "day": 116,
+    "compartment": "Recovered",
+    "people": 9330724
+   },
+   {
+    "day": 118,
+    "compartment": "Susceptible",
+    "people": 664127
+   },
+   {
+    "day": 118,
+    "compartment": "Infectious",
+    "people": 4107
+   },
+   {
+    "day": 118,
+    "compartment": "Recovered",
+    "people": 9331766
+   },
+   {
+    "day": 120,
+    "compartment": "Susceptible",
+    "people": 663965
+   },
+   {
+    "day": 120,
+    "compartment": "Infectious",
+    "people": 3406
+   },
+   {
+    "day": 120,
+    "compartment": "Recovered",
+    "people": 9332629
+   },
+   {
+    "day": 122,
+    "compartment": "Susceptible",
+    "people": 663832
+   },
+   {
+    "day": 122,
+    "compartment": "Infectious",
+    "people": 2824
+   },
+   {
+    "day": 122,
+    "compartment": "Recovered",
+    "people": 9333345
+   },
+   {
+    "day": 124,
+    "compartment": "Susceptible",
+    "people": 663721
+   },
+   {
+    "day": 124,
+    "compartment": "Infectious",
+    "people": 2341
+   },
+   {
+    "day": 124,
+    "compartment": "Recovered",
+    "people": 9333938
+   },
+   {
+    "day": 126,
+    "compartment": "Susceptible",
+    "people": 663628
+   },
+   {
+    "day": 126,
+    "compartment": "Infectious",
+    "people": 1941
+   },
+   {
+    "day": 126,
+    "compartment": "Recovered",
+    "people": 9334430
+   },
+   {
+    "day": 128,
+    "compartment": "Susceptible",
+    "people": 663552
+   },
+   {
+    "day": 128,
+    "compartment": "Infectious",
+    "people": 1610
+   },
+   {
+    "day": 128,
+    "compartment": "Recovered",
+    "people": 9334838
+   },
+   {
+    "day": 130,
+    "compartment": "Susceptible",
+    "people": 663489
+   },
+   {
+    "day": 130,
+    "compartment": "Infectious",
+    "people": 1335
+   },
+   {
+    "day": 130,
+    "compartment": "Recovered",
+    "people": 9335176
+   },
+   {
+    "day": 132,
+    "compartment": "Susceptible",
+    "people": 663436
+   },
+   {
+    "day": 132,
+    "compartment": "Infectious",
+    "people": 1107
+   },
+   {
+    "day": 132,
+    "compartment": "Recovered",
+    "people": 9335457
+   },
+   {
+    "day": 134,
+    "compartment": "Susceptible",
+    "people": 663393
+   },
+   {
+    "day": 134,
+    "compartment": "Infectious",
+    "people": 918
+   },
+   {
+    "day": 134,
+    "compartment": "Recovered",
+    "people": 9335689
+   },
+   {
+    "day": 136,
+    "compartment": "Susceptible",
+    "people": 663357
+   },
+   {
+    "day": 136,
+    "compartment": "Infectious",
+    "people": 761
+   },
+   {
+    "day": 136,
+    "compartment": "Recovered",
+    "people": 9335882
+   },
+   {
+    "day": 138,
+    "compartment": "Susceptible",
+    "people": 663327
+   },
+   {
+    "day": 138,
+    "compartment": "Infectious",
+    "people": 631
+   },
+   {
+    "day": 138,
+    "compartment": "Recovered",
+    "people": 9336042
+   },
+   {
+    "day": 140,
+    "compartment": "Susceptible",
+    "people": 663302
+   },
+   {
+    "day": 140,
+    "compartment": "Infectious",
+    "people": 523
+   },
+   {
+    "day": 140,
+    "compartment": "Recovered",
+    "people": 9336175
+   },
+   {
+    "day": 142,
+    "compartment": "Susceptible",
+    "people": 663282
+   },
+   {
+    "day": 142,
+    "compartment": "Infectious",
+    "people": 434
+   },
+   {
+    "day": 142,
+    "compartment": "Recovered",
+    "people": 9336285
+   },
+   {
+    "day": 144,
+    "compartment": "Susceptible",
+    "people": 663265
+   },
+   {
+    "day": 144,
+    "compartment": "Infectious",
+    "people": 360
+   },
+   {
+    "day": 144,
+    "compartment": "Recovered",
+    "people": 9336376
+   },
+   {
+    "day": 146,
+    "compartment": "Susceptible",
+    "people": 663251
+   },
+   {
+    "day": 146,
+    "compartment": "Infectious",
+    "people": 298
+   },
+   {
+    "day": 146,
+    "compartment": "Recovered",
+    "people": 9336451
+   },
+   {
+    "day": 148,
+    "compartment": "Susceptible",
+    "people": 663239
+   },
+   {
+    "day": 148,
+    "compartment": "Infectious",
+    "people": 247
+   },
+   {
+    "day": 148,
+    "compartment": "Recovered",
+    "people": 9336514
+   },
+   {
+    "day": 150,
+    "compartment": "Susceptible",
+    "people": 663229
+   },
+   {
+    "day": 150,
+    "compartment": "Infectious",
+    "people": 205
+   },
+   {
+    "day": 150,
+    "compartment": "Recovered",
+    "people": 9336566
+   },
+   {
+    "day": 152,
+    "compartment": "Susceptible",
+    "people": 663221
+   },
+   {
+    "day": 152,
+    "compartment": "Infectious",
+    "people": 170
+   },
+   {
+    "day": 152,
+    "compartment": "Recovered",
+    "people": 9336609
+   },
+   {
+    "day": 154,
+    "compartment": "Susceptible",
+    "people": 663214
+   },
+   {
+    "day": 154,
+    "compartment": "Infectious",
+    "people": 141
+   },
+   {
+    "day": 154,
+    "compartment": "Recovered",
+    "people": 9336645
+   },
+   {
+    "day": 156,
+    "compartment": "Susceptible",
+    "people": 663209
+   },
+   {
+    "day": 156,
+    "compartment": "Infectious",
+    "people": 117
+   },
+   {
+    "day": 156,
+    "compartment": "Recovered",
+    "people": 9336674
+   },
+   {
+    "day": 158,
+    "compartment": "Susceptible",
+    "people": 663204
+   },
+   {
+    "day": 158,
+    "compartment": "Infectious",
+    "people": 97
+   },
+   {
+    "day": 158,
+    "compartment": "Recovered",
+    "people": 9336699
+   },
+   {
+    "day": 160,
+    "compartment": "Susceptible",
+    "people": 663200
+   },
+   {
+    "day": 160,
+    "compartment": "Infectious",
+    "people": 80
+   },
+   {
+    "day": 160,
+    "compartment": "Recovered",
+    "people": 9336719
+   },
+   {
+    "day": 162,
+    "compartment": "Susceptible",
+    "people": 663197
+   },
+   {
+    "day": 162,
+    "compartment": "Infectious",
+    "people": 67
+   },
+   {
+    "day": 162,
+    "compartment": "Recovered",
+    "people": 9336736
+   },
+   {
+    "day": 164,
+    "compartment": "Susceptible",
+    "people": 663195
+   },
+   {
+    "day": 164,
+    "compartment": "Infectious",
+    "people": 55
+   },
+   {
+    "day": 164,
+    "compartment": "Recovered",
+    "people": 9336750
+   },
+   {
+    "day": 166,
+    "compartment": "Susceptible",
+    "people": 663193
+   },
+   {
+    "day": 166,
+    "compartment": "Infectious",
+    "people": 46
+   },
+   {
+    "day": 166,
+    "compartment": "Recovered",
+    "people": 9336762
+   },
+   {
+    "day": 168,
+    "compartment": "Susceptible",
+    "people": 663191
+   },
+   {
+    "day": 168,
+    "compartment": "Infectious",
+    "people": 38
+   },
+   {
+    "day": 168,
+    "compartment": "Recovered",
+    "people": 9336771
+   },
+   {
+    "day": 170,
+    "compartment": "Susceptible",
+    "people": 663189
+   },
+   {
+    "day": 170,
+    "compartment": "Infectious",
+    "people": 31
+   },
+   {
+    "day": 170,
+    "compartment": "Recovered",
+    "people": 9336779
+   },
+   {
+    "day": 172,
+    "compartment": "Susceptible",
+    "people": 663188
+   },
+   {
+    "day": 172,
+    "compartment": "Infectious",
+    "people": 26
+   },
+   {
+    "day": 172,
+    "compartment": "Recovered",
+    "people": 9336786
+   },
+   {
+    "day": 174,
+    "compartment": "Susceptible",
+    "people": 663187
+   },
+   {
+    "day": 174,
+    "compartment": "Infectious",
+    "people": 22
+   },
+   {
+    "day": 174,
+    "compartment": "Recovered",
+    "people": 9336791
+   },
+   {
+    "day": 176,
+    "compartment": "Susceptible",
+    "people": 663186
+   },
+   {
+    "day": 176,
+    "compartment": "Infectious",
+    "people": 18
+   },
+   {
+    "day": 176,
+    "compartment": "Recovered",
+    "people": 9336796
+   },
+   {
+    "day": 178,
+    "compartment": "Susceptible",
+    "people": 663185
+   },
+   {
+    "day": 178,
+    "compartment": "Infectious",
+    "people": 15
+   },
+   {
+    "day": 178,
+    "compartment": "Recovered",
+    "people": 9336800
+   },
+   {
+    "day": 180,
+    "compartment": "Susceptible",
+    "people": 663185
+   },
+   {
+    "day": 180,
+    "compartment": "Infectious",
+    "people": 12
+   },
+   {
+    "day": 180,
+    "compartment": "Recovered",
+    "people": 9336803
+   },
+   {
+    "day": 182,
+    "compartment": "Susceptible",
+    "people": 663184
+   },
+   {
+    "day": 182,
+    "compartment": "Infectious",
+    "people": 10
+   },
+   {
+    "day": 182,
+    "compartment": "Recovered",
+    "people": 9336805
+   },
+   {
+    "day": 184,
+    "compartment": "Susceptible",
+    "people": 663184
+   },
+   {
+    "day": 184,
+    "compartment": "Infectious",
+    "people": 8
+   },
+   {
+    "day": 184,
+    "compartment": "Recovered",
+    "people": 9336808
+   },
+   {
+    "day": 186,
+    "compartment": "Susceptible",
+    "people": 663184
+   },
+   {
+    "day": 186,
+    "compartment": "Infectious",
+    "people": 7
+   },
+   {
+    "day": 186,
+    "compartment": "Recovered",
+    "people": 9336809
+   },
+   {
+    "day": 188,
+    "compartment": "Susceptible",
+    "people": 663183
+   },
+   {
+    "day": 188,
+    "compartment": "Infectious",
+    "people": 6
+   },
+   {
+    "day": 188,
+    "compartment": "Recovered",
+    "people": 9336811
+   },
+   {
+    "day": 190,
+    "compartment": "Susceptible",
+    "people": 663183
+   },
+   {
+    "day": 190,
+    "compartment": "Infectious",
+    "people": 5
+   },
+   {
+    "day": 190,
+    "compartment": "Recovered",
+    "people": 9336812
+   },
+   {
+    "day": 192,
+    "compartment": "Susceptible",
+    "people": 663183
+   },
+   {
+    "day": 192,
+    "compartment": "Infectious",
+    "people": 4
+   },
+   {
+    "day": 192,
+    "compartment": "Recovered",
+    "people": 9336813
+   },
+   {
+    "day": 194,
+    "compartment": "Susceptible",
+    "people": 663183
+   },
+   {
+    "day": 194,
+    "compartment": "Infectious",
+    "people": 3
+   },
+   {
+    "day": 194,
+    "compartment": "Recovered",
+    "people": 9336814
+   },
+   {
+    "day": 196,
+    "compartment": "Susceptible",
+    "people": 663183
+   },
+   {
+    "day": 196,
+    "compartment": "Infectious",
+    "people": 3
+   },
+   {
+    "day": 196,
+    "compartment": "Recovered",
+    "people": 9336815
+   },
+   {
+    "day": 198,
+    "compartment": "Susceptible",
+    "people": 663183
+   },
+   {
+    "day": 198,
+    "compartment": "Infectious",
+    "people": 2
+   },
+   {
+    "day": 198,
+    "compartment": "Recovered",
+    "people": 9336815
+   },
+   {
+    "day": 200,
+    "compartment": "Susceptible",
+    "people": 663182
+   },
+   {
+    "day": 200,
+    "compartment": "Infectious",
+    "people": 2
+   },
+   {
+    "day": 200,
+    "compartment": "Recovered",
+    "people": 9336816
+   },
+   {
+    "day": 202,
+    "compartment": "Susceptible",
+    "people": 663182
+   },
+   {
+    "day": 202,
+    "compartment": "Infectious",
+    "people": 2
+   },
+   {
+    "day": 202,
+    "compartment": "Recovered",
+    "people": 9336816
+   },
+   {
+    "day": 204,
+    "compartment": "Susceptible",
+    "people": 663182
+   },
+   {
+    "day": 204,
+    "compartment": "Infectious",
+    "people": 1
+   },
+   {
+    "day": 204,
+    "compartment": "Recovered",
+    "people": 9336816
+   },
+   {
+    "day": 206,
+    "compartment": "Susceptible",
+    "people": 663182
+   },
+   {
+    "day": 206,
+    "compartment": "Infectious",
+    "people": 1
+   },
+   {
+    "day": 206,
+    "compartment": "Recovered",
+    "people": 9336817
+   },
+   {
+    "day": 208,
+    "compartment": "Susceptible",
+    "people": 663182
+   },
+   {
+    "day": 208,
+    "compartment": "Infectious",
+    "people": 1
+   },
+   {
+    "day": 208,
+    "compartment": "Recovered",
+    "people": 9336817
+   },
+   {
+    "day": 210,
+    "compartment": "Susceptible",
+    "people": 663182
+   },
+   {
+    "day": 210,
+    "compartment": "Infectious",
+    "people": 1
+   },
+   {
+    "day": 210,
+    "compartment": "Recovered",
+    "people": 9336817
+   },
+   {
+    "day": 212,
+    "compartment": "Susceptible",
+    "people": 663182
+   },
+   {
+    "day": 212,
+    "compartment": "Infectious",
+    "people": 1
+   },
+   {
+    "day": 212,
+    "compartment": "Recovered",
+    "people": 9336817
+   },
+   {
+    "day": 214,
+    "compartment": "Susceptible",
+    "people": 663182
+   },
+   {
+    "day": 214,
+    "compartment": "Infectious",
+    "people": 1
+   },
+   {
+    "day": 214,
+    "compartment": "Recovered",
+    "people": 9336817
+   },
+   {
+    "day": 216,
+    "compartment": "Susceptible",
+    "people": 663182
+   },
+   {
+    "day": 216,
+    "compartment": "Infectious",
+    "people": 0
+   },
+   {
+    "day": 216,
+    "compartment": "Recovered",
+    "people": 9336817
+   },
+   {
+    "day": 218,
+    "compartment": "Susceptible",
+    "people": 663182
+   },
+   {
+    "day": 218,
+    "compartment": "Infectious",
+    "people": 0
+   },
+   {
+    "day": 218,
+    "compartment": "Recovered",
+    "people": 9336818
+   },
+   {
+    "day": 220,
+    "compartment": "Susceptible",
+    "people": 663182
+   },
+   {
+    "day": 220,
+    "compartment": "Infectious",
+    "people": 0
+   },
+   {
+    "day": 220,
+    "compartment": "Recovered",
+    "people": 9336818
+   },
+   {
+    "day": 222,
+    "compartment": "Susceptible",
+    "people": 663182
+   },
+   {
+    "day": 222,
+    "compartment": "Infectious",
+    "people": 0
+   },
+   {
+    "day": 222,
+    "compartment": "Recovered",
+    "people": 9336818
+   },
+   {
+    "day": 224,
+    "compartment": "Susceptible",
+    "people": 663182
+   },
+   {
+    "day": 224,
+    "compartment": "Infectious",
+    "people": 0
+   },
+   {
+    "day": 224,
+    "compartment": "Recovered",
+    "people": 9336818
+   },
+   {
+    "day": 226,
+    "compartment": "Susceptible",
+    "people": 663182
+   },
+   {
+    "day": 226,
+    "compartment": "Infectious",
+    "people": 0
+   },
+   {
+    "day": 226,
+    "compartment": "Recovered",
+    "people": 9336818
+   },
+   {
+    "day": 228,
+    "compartment": "Susceptible",
+    "people": 663182
+   },
+   {
+    "day": 228,
+    "compartment": "Infectious",
+    "people": 0
+   },
+   {
+    "day": 228,
+    "compartment": "Recovered",
+    "people": 9336818
+   },
+   {
+    "day": 230,
+    "compartment": "Susceptible",
+    "people": 663182
+   },
+   {
+    "day": 230,
+    "compartment": "Infectious",
+    "people": 0
+   },
+   {
+    "day": 230,
+    "compartment": "Recovered",
+    "people": 9336818
+   },
+   {
+    "day": 232,
+    "compartment": "Susceptible",
+    "people": 663182
+   },
+   {
+    "day": 232,
+    "compartment": "Infectious",
+    "people": 0
+   },
+   {
+    "day": 232,
+    "compartment": "Recovered",
+    "people": 9336818
+   },
+   {
+    "day": 234,
+    "compartment": "Susceptible",
+    "people": 663182
+   },
+   {
+    "day": 234,
+    "compartment": "Infectious",
+    "people": 0
+   },
+   {
+    "day": 234,
+    "compartment": "Recovered",
+    "people": 9336818
+   },
+   {
+    "day": 236,
+    "compartment": "Susceptible",
+    "people": 663182
+   },
+   {
+    "day": 236,
+    "compartment": "Infectious",
+    "people": 0
+   },
+   {
+    "day": 236,
+    "compartment": "Recovered",
+    "people": 9336818
+   },
+   {
+    "day": 238,
+    "compartment": "Susceptible",
+    "people": 663182
+   },
+   {
+    "day": 238,
+    "compartment": "Infectious",
+    "people": 0
+   },
+   {
+    "day": 238,
+    "compartment": "Recovered",
+    "people": 9336818
+   }
+  ]
+ },
+ "mark": "line",
+ "encoding": {
+  "x": {
+   "field": "day",
+   "type": "quantitative"
+  },
+  "y": {
+   "field": "people",
+   "type": "quantitative"
+  },
+  "color": {
+   "field": "compartment",
+   "type": "nominal"
+  }
+ }
+}

@@ -15,6 +15,7 @@ use crate::err::Error;
 pub const MAGIC: u32 = 0x4958_5043; // "IXPC"
 pub const VERSION: u16 = 1;
 pub const MAX_PAYLOAD: u32 = 0x0400_0000; // 64 MiB
+pub const MAX_CLIENTS: usize = 32;
 pub const RESP_FLAG: u16 = 0x8000;
 pub const ERR_FLAG: u16 = 0x4000;
 
@@ -100,20 +101,13 @@ impl Header {
     #[inline]
     #[must_use]
     pub const fn to_le_bytes(&self) -> [u8; 32] {
-        let m = self.magic.to_le_bytes();
-        let v = self.version.to_le_bytes();
-        let c = self.command.to_le_bytes();
-        let f = self.flags.to_le_bytes();
-        let co = self.cols.to_le_bytes();
-        let ro = self.rows.to_le_bytes();
-        let cw = self.cell_w.to_le_bytes();
-        let ch = self.cell_h.to_le_bytes();
-        let pl = self.payload_len.to_le_bytes();
-        let rs = self.reserved.to_le_bytes();
+        let (m, v, c, f) = (self.magic.to_le_bytes(), self.version.to_le_bytes(), self.command.to_le_bytes(), self.flags.to_le_bytes());
+        let (co, ro, cw, ch) = (self.cols.to_le_bytes(), self.rows.to_le_bytes(), self.cell_w.to_le_bytes(), self.cell_h.to_le_bytes());
+        let (pl, rs) = (self.payload_len.to_le_bytes(), self.reserved.to_le_bytes());
         [
-            m[0], m[1], m[2], m[3], v[0], v[1], c[0], c[1], f[0], f[1], f[2], f[3], co[0], co[1],
-            ro[0], ro[1], cw[0], cw[1], ch[0], ch[1], pl[0], pl[1], pl[2], pl[3], rs[0], rs[1],
-            rs[2], rs[3], rs[4], rs[5], rs[6], rs[7],
+            m[0], m[1], m[2], m[3], v[0], v[1], c[0], c[1], f[0], f[1], f[2], f[3],
+            co[0], co[1], ro[0], ro[1], cw[0], cw[1], ch[0], ch[1],
+            pl[0], pl[1], pl[2], pl[3], rs[0], rs[1], rs[2], rs[3], rs[4], rs[5], rs[6], rs[7],
         ]
     }
 
@@ -153,16 +147,10 @@ impl Extmark {
     #[must_use]
     pub const fn to_le_bytes(self) -> [u8; 16] {
         let id = self.image_id.to_le_bytes();
-        let sr = self.start_row.to_le_bytes();
-        let sc = self.start_col.to_le_bytes();
-        let er = self.end_row.to_le_bytes();
-        let ec = self.end_col.to_le_bytes();
-        let co = self.cols.to_le_bytes();
-        let ro = self.rows.to_le_bytes();
-        [
-            id[0], id[1], id[2], id[3], sr[0], sr[1], sc[0], sc[1], er[0], er[1], ec[0], ec[1],
-            co[0], co[1], ro[0], ro[1],
-        ]
+        let (sr, sc) = (self.start_row.to_le_bytes(), self.start_col.to_le_bytes());
+        let (er, ec) = (self.end_row.to_le_bytes(), self.end_col.to_le_bytes());
+        let (co, ro) = (self.cols.to_le_bytes(), self.rows.to_le_bytes());
+        [id[0], id[1], id[2], id[3], sr[0], sr[1], sc[0], sc[1], er[0], er[1], ec[0], ec[1], co[0], co[1], ro[0], ro[1]]
     }
 
     #[inline]
@@ -193,15 +181,27 @@ pub fn encode_dual_response(cmd: Cmd, apc: &[u8], text: &[u8], out: &mut Vec<u8>
     out.extend_from_slice(text);
 }
 
+pub trait ToCmdCode {
+    fn to_code(self) -> u16;
+}
+impl ToCmdCode for u16 {
+    #[inline]
+    fn to_code(self) -> u16 { self }
+}
+impl ToCmdCode for Cmd {
+    #[inline]
+    fn to_code(self) -> u16 { self as u16 }
+}
+
 /// Encode error frame into `out`.
-pub fn encode_error(cmd: Cmd, msg: &str, out: &mut Vec<u8>) {
-    let bytes = msg.as_bytes();
-    let mut hdr = Header::new(cmd, bytes.len() as u32);
-    hdr.command = (cmd as u16) | RESP_FLAG | ERR_FLAG;
+pub fn encode_error<C: ToCmdCode, M: AsRef<[u8]> + ?Sized>(cmd: C, msg: &M, out: &mut Vec<u8>) {
+    let msg = msg.as_ref();
+    let mut hdr = Header::new(Cmd::Ping, msg.len() as u32);
+    hdr.command = cmd.to_code() | RESP_FLAG | ERR_FLAG;
     out.clear();
-    out.reserve(32 + bytes.len());
+    out.reserve(32 + msg.len());
     out.extend_from_slice(&hdr.to_le_bytes());
-    out.extend_from_slice(bytes);
+    out.extend_from_slice(msg);
 }
 
 /// Span coordinates for extmark layout calculation.
@@ -317,7 +317,7 @@ pub fn client_send(cmd: Cmd, payload: &[u8]) -> Result<Vec<u8>, Error> {
 
 fn read_exact(fd: BorrowedFd<'_>, mut buf: &mut [u8]) -> Result<(), Error> {
     while !buf.is_empty() {
-        match read(fd, buf) {
+        match read(fd, &mut *buf) {
             Ok(0) => return Err(Error::BadMagic),
             Ok(n) => buf = &mut buf[n..],
             Err(Errno::INTR) => {}

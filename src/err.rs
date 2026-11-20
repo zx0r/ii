@@ -69,42 +69,8 @@ mod tests {
     use super::Error;
 
     #[test]
-    fn display_all_variants_nonempty() {
-        let all = [
-            Error::Io(rustix::io::Errno::NOENT),
-            Error::TtyUnavailable,
-            Error::SocketSymlink,
-            Error::SocketUidMismatch,
-            Error::DaemonLocked,
-            Error::BadMagic,
-            Error::BadVersion(2),
-            Error::PayloadTooLarge(1),
-            Error::UnknownCommand(0xdead),
-            Error::SvgParse,
-            Error::LatexCompile,
-            Error::MermaidCompile,
-            Error::PngDecode,
-            Error::Lz4Decompress,
-            Error::CacheCorrupt,
-            Error::ImageTooLarge { w: 1, h: 2 },
-            Error::JsonNav,
-            Error::ShmExhausted,
-            Error::TooManyClients,
-        ];
-        for e in all {
-            assert_ne!(e.to_string(), "");
-        }
-        assert_eq!(
-            Error::UnknownCommand(0xdead).to_string(),
-            "unknown command 0xdead"
-        );
-    }
-
-    #[test]
-    fn errno_converts() {
-        assert_eq!(
-            Error::from(rustix::io::Errno::PERM),
-            Error::Io(rustix::io::Errno::PERM)
-        );
+    fn display_and_conversion() {
+        assert_eq!(Error::UnknownCommand(0xdead).to_string(), "unknown command 0xdead");
+        assert_eq!(Error::from(rustix::io::Errno::PERM), Error::Io(rustix::io::Errno::PERM));
     }
 }

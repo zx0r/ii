@@ -26,22 +26,8 @@ impl Header {
     #[inline]
     #[must_use]
     pub const fn to_le_bytes(self) -> [u8; 12] {
-        let w = self.width.to_le_bytes();
-        let h = self.height.to_le_bytes();
-        [
-            self.magic[0],
-            self.magic[1],
-            self.magic[2],
-            self.magic[3],
-            w[0],
-            w[1],
-            w[2],
-            w[3],
-            h[0],
-            h[1],
-            h[2],
-            h[3],
-        ]
+        let (w, h) = (self.width.to_le_bytes(), self.height.to_le_bytes());
+        [self.magic[0], self.magic[1], self.magic[2], self.magic[3], w[0], w[1], w[2], w[3], h[0], h[1], h[2], h[3]]
     }
 
     #[inline]

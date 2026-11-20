@@ -231,54 +231,25 @@ impl<'a> Nav<'a> {
                 continue;
             }
             i += 1;
-            if i >= raw.len() {
-                break;
-            }
-            match raw[i] {
-                b'"' | b'\\' | b'/' => {
-                    scratch.push(raw[i]);
-                    i += 1;
-                }
-                b'n' => {
-                    scratch.push(b'\n');
-                    i += 1;
-                }
-                b'r' => {
-                    scratch.push(b'\r');
-                    i += 1;
-                }
-                b't' => {
-                    scratch.push(b'\t');
-                    i += 1;
-                }
-                b'b' => {
-                    scratch.push(0x08);
-                    i += 1;
-                }
-                b'f' => {
-                    scratch.push(0x0C);
-                    i += 1;
-                }
+            if i >= raw.len() { break; }
+            let esc = match raw[i] {
+                b'"' | b'\\' | b'/' => raw[i],
+                b'n' => b'\n', b'r' => b'\r', b't' => b'\t', b'b' => 0x08, b'f' => 0x0C,
                 b'u' if i + 4 < raw.len() => {
-                    let h0 = crate::theme::hex_digit(raw[i + 1])?;
-                    let h1 = crate::theme::hex_digit(raw[i + 2])?;
-                    let h2 = crate::theme::hex_digit(raw[i + 3])?;
-                    let h3 = crate::theme::hex_digit(raw[i + 4])?;
-                    let cp = (u32::from(h0) << 12)
-                        | (u32::from(h1) << 8)
-                        | (u32::from(h2) << 4)
-                        | u32::from(h3);
-                    if let Some(ch) = char::from_u32(cp) {
-                        let mut u8_buf = [0u8; 4];
-                        scratch.extend_from_slice(ch.encode_utf8(&mut u8_buf).as_bytes());
+                    let hex = [raw[i + 1], raw[i + 2], raw[i + 3], raw[i + 4]];
+                    if let Ok(s) = core::str::from_utf8(&hex)
+                        && let Ok(cp) = u32::from_str_radix(s, 16)
+                        && let Some(ch) = char::from_u32(cp)
+                    {
+                        scratch.extend_from_slice(ch.encode_utf8(&mut [0; 4]).as_bytes());
                     }
                     i += 5;
+                    continue;
                 }
-                other => {
-                    scratch.push(other);
-                    i += 1;
-                }
-            }
+                other => other,
+            };
+            scratch.push(esc);
+            i += 1;
         }
         Some(&scratch[base..])
     }

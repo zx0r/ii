@@ -1,0 +1,29 @@
+digraph Metabolism {
+  rankdir=TB;
+  node [shape=ellipse];
+  Glucose -> G6P;
+  G6P -> F6P;
+  F6P -> F16BP;
+  F16BP -> DHAP;
+  DHAP -> G3P;
+  G3P -> BPG13;
+  BPG13 -> PG3;
+  PG3 -> PG2;
+  PG2 -> PEP;
+  PEP -> Pyruvate;
+  Pyruvate -> AcCoA;
+  AcCoA -> Citrate;
+  Citrate -> Isocitrate;
+  Isocitrate -> aKG;
+  aKG -> SuccCoA;
+  SuccCoA -> Succinate;
+  Succinate -> Fumarate;
+  Fumarate -> Malate;
+  Malate -> OAA;
+  OAA -> Citrate;
+  DHAP -> G3P;
+  G6P -> Ribose5P;
+  Ribose5P -> F6P;
+  Pyruvate -> Lactate;
+  Pyruvate -> OAA;
+}

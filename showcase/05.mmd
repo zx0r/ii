@@ -1,0 +1,17 @@
+flowchart LR
+    RAW[(Raw FASTQ<br/>2x150bp)] --> QC[FastQC / MultiQC]
+    QC --> TRIM[fastp adapter trim]
+    TRIM --> ALIGN[STAR 2-pass alignment]
+    ALIGN --> SORT[samtools sort + index]
+    SORT --> DEDUP[Picard MarkDuplicates]
+    DEDUP --> COUNT[featureCounts]
+    COUNT --> NORM[DESeq2 size factors]
+    NORM --> DE{Differential expression}
+    DE -->|padj < 0.05| GSEA[GSEA / MSigDB]
+    DE -->|volcano| PLOT[ggplot2 figures]
+    GSEA --> REPORT[Quarto report]
+    PLOT --> REPORT
+    DEDUP --> VAR[GATK HaplotypeCaller]
+    VAR --> VQSR[VQSR filter]
+    VQSR --> ANN[VEP annotation]
+    ANN --> REPORT

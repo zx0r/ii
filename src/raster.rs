@@ -2,8 +2,8 @@
 
 use crate::{
     err::Error,
-    scene::{Scene, Verb},
-    theme::{ColorToken, resolve_color},
+    scene::Scene,
+    theme::resolve_color,
 };
 
 const MAX_DIM: u32 = 4096;
@@ -22,17 +22,11 @@ const UNPREMUL_LUT: [u32; 256] = {
 /// In-place Q24 fixed-point unpremultiplication of premultiplied RGBA8 pixels.
 /// Zero integer division on the hot loop.
 #[inline]
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "Q24 fixed-point product clamped to .min(255) fits in u8"
-)]
 pub fn unpremultiply(rgba: &mut [u8]) {
     for px in rgba.as_chunks_mut::<4>().0 {
         let a = px[3];
         if a == 0 {
-            px[0] = 0;
-            px[1] = 0;
-            px[2] = 0;
+            px[..3].fill(0);
         } else if a < 255 {
             let inv = UNPREMUL_LUT[a as usize];
             px[0] = ((u32::from(px[0]) * inv + (1 << 23)) >> 24).min(255) as u8;
@@ -153,18 +147,8 @@ pub fn rasterize_scene(
         let mut pt_idx = 0;
         for &v in verb_slice {
             match v {
-                0 => { // MoveTo
-                    if pt_idx < pt_slice.len() {
-                        pb.move_to(pt_slice[pt_idx][0], pt_slice[pt_idx][1]);
-                        pt_idx += 1;
-                    }
-                }
-                1 => { // LineTo
-                    if pt_idx < pt_slice.len() {
-                        pb.line_to(pt_slice[pt_idx][0], pt_slice[pt_idx][1]);
-                        pt_idx += 1;
-                    }
-                }
+                0 if pt_idx < pt_slice.len() => { pb.move_to(pt_slice[pt_idx][0], pt_slice[pt_idx][1]); pt_idx += 1; }
+                1 if pt_idx < pt_slice.len() => { pb.line_to(pt_slice[pt_idx][0], pt_slice[pt_idx][1]); pt_idx += 1; }
                 4 => pb.close(),
                 _ => {}
             }

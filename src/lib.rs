@@ -1,4 +1,4 @@
-//! `ii` — terminal graphical coprocessor. See `ARCHITECTURE_PRINCIPAL.md`.
+//! `ii` — zero-overhead terminal graphical coprocessor.
 
 pub mod cache;
 pub mod daemon;

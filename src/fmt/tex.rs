@@ -1,113 +1,235 @@
-//! LaTeX / Typst math ingest adapter via ratex.
-//! Translates math formulas into SVG rewritten into scene.text_pool.
-//! parse_into_scene: scan for display/inline math blocks, compile each via ratex.
+//! `Latex` / `mhchem` math compiler backed by `ratex-*`.
+//! Zero-copy fast-path when no `\ce{...}` macro is present.
 
-use crate::{err::Error, fmt::heal, scene::Scene, theme::Palette};
+use crate::{
+    err::Error,
+    fmt::{font, svg, trim_ascii},
+    scene::{GlyphRun, Scene},
+    theme::{self, ColorToken, Palette},
+};
 
-/// Compile a single LaTeX math expression into themed SVG, appending to `out_svg`.
-/// `display` = true → `\[...\]` display math; false → `\(...\)` inline.
-pub fn compile_latex(
-    latex_bytes: &[u8],
+#[inline]
+fn strip_delims(src: &[u8]) -> &[u8] {
+    let trimmed = trim_ascii(src);
+    if let Some(inner) = trimmed
+        .strip_prefix(b"$$")
+        .and_then(|s| s.strip_suffix(b"$$"))
+    {
+        return trim_ascii(inner);
+    }
+    if let Some(inner) = trimmed
+        .strip_prefix(b"\\[")
+        .and_then(|s| s.strip_suffix(b"\\]"))
+    {
+        return trim_ascii(inner);
+    }
+    if let Some(inner) = trimmed
+        .strip_prefix(b"\\(")
+        .and_then(|s| s.strip_suffix(b"\\)"))
+    {
+        return trim_ascii(inner);
+    }
+    trimmed
+        .strip_prefix(b"$")
+        .and_then(|s| s.strip_suffix(b"$"))
+        .map_or(trimmed, trim_ascii)
+}
+
+fn transpile_ce(body: &[u8], out: &mut Vec<u8>) {
+    let mut pos = 0usize;
+    let mut after_atom = false;
+    while pos < body.len() {
+        let rest = &body[pos..];
+        if rest.starts_with(b"<=>") {
+            out.extend_from_slice(b" \\rightleftharpoons ");
+            pos += 3;
+            after_atom = false;
+        } else if rest.starts_with(b"<->") {
+            out.extend_from_slice(b" \\leftrightarrow ");
+            pos += 3;
+            after_atom = false;
+        } else if rest.starts_with(b"->") {
+            out.extend_from_slice(b" \\rightarrow ");
+            pos += 2;
+            after_atom = false;
+        } else if rest.starts_with(b"<-") {
+            out.extend_from_slice(b" \\leftarrow ");
+            pos += 2;
+            after_atom = false;
+        } else if body[pos].is_ascii_alphabetic() {
+            let start = pos;
+            pos += 1;
+            while pos < body.len() && body[pos].is_ascii_lowercase() {
+                pos += 1;
+            }
+            out.extend_from_slice(b"\\mathrm{");
+            out.extend_from_slice(&body[start..pos]);
+            out.push(b'}');
+            after_atom = true;
+        } else if body[pos].is_ascii_digit() && after_atom {
+            let start = pos;
+            while pos < body.len() && body[pos].is_ascii_digit() {
+                pos += 1;
+            }
+            out.extend_from_slice(b"_{");
+            out.extend_from_slice(&body[start..pos]);
+            out.push(b'}');
+            after_atom = false;
+        } else if body[pos] == b'^' {
+            pos += 1;
+            let start = pos;
+            while pos < body.len()
+                && (body[pos].is_ascii_alphanumeric() || matches!(body[pos], b'+' | b'-'))
+            {
+                pos += 1;
+            }
+            out.extend_from_slice(b"^{");
+            out.extend_from_slice(&body[start..pos]);
+            out.push(b'}');
+            after_atom = false;
+        } else {
+            let byte = body[pos];
+            out.push(byte);
+            after_atom = matches!(byte, b')' | b']');
+            pos += 1;
+        }
+    }
+}
+
+fn expand_ce(src: &[u8], out: &mut Vec<u8>) {
+    out.clear();
+    out.reserve(src.len().saturating_mul(2));
+    let mut pos = 0usize;
+    while pos < src.len() {
+        let Some(rel) = src[pos..].windows(4).position(|w| w == b"\\ce{") else {
+            out.extend_from_slice(&src[pos..]);
+            break;
+        };
+        out.extend_from_slice(&src[pos..pos + rel]);
+        let body_start = pos + rel + 4;
+        let mut depth = 1u32;
+        let mut cur = body_start;
+        while cur < src.len() && depth > 0 {
+            match src[cur] {
+                b'{' => depth += 1,
+                b'}' => depth -= 1,
+                _ => {}
+            }
+            if depth > 0 {
+                cur += 1;
+            }
+        }
+        transpile_ce(&src[body_start..cur], out);
+        pos = (cur + 1).min(src.len());
+    }
+}
+
+fn compile_expr(
+    expr: &str,
     display: bool,
     palette: &Palette,
-    heal_state: &mut heal::State,
-    aux: &mut Vec<u8>,
     out_svg: &mut Vec<u8>,
 ) -> Result<(), Error> {
-    aux.clear();
-    heal_state.heal(latex_bytes, aux);
-    let healed = core::str::from_utf8(aux).map_err(|_| Error::LatexCompile)?;
-
-    let ast = ratex_parser::parse(healed).map_err(|_| Error::LatexCompile)?;
-    let math_style = if display {
+    let nodes = ratex_parser::parse(expr).map_err(|_| Error::LatexCompile)?;
+    let style = if display {
         ratex_types::MathStyle::Display
     } else {
         ratex_types::MathStyle::Text
     };
-    let layout_opts = ratex_layout::LayoutOptions {
-        style: math_style,
-        ..ratex_layout::LayoutOptions::default()
-    };
-    let layout_box = ratex_layout::layout(&ast, &layout_opts);
-    let dlist      = ratex_layout::to_display_list(&layout_box);
-    let svg_opts   = ratex_svg::SvgOptions::default();
-    let raw_svg    = ratex_svg::render_to_svg(&dlist, &svg_opts);
-
-    aux.clear();
-    crate::fmt::svg::rewrite_colors(raw_svg.as_bytes(), palette, aux);
-    out_svg.extend_from_slice(aux);
+    let opts = ratex_layout::LayoutOptions::default().with_style(style);
+    let lbox = ratex_layout::layout(&nodes, &opts);
+    let display_list = ratex_layout::to_display_list(&lbox);
+    let svg_str = ratex_svg::render_to_svg(&display_list, &ratex_svg::SvgOptions::default());
+    svg::rewrite_colors(svg_str.as_bytes(), palette, out_svg);
     Ok(())
 }
 
-/// Scan `src` for `\[...\]` and `\(...\)` math blocks and compile each into `scene`.
-/// Each compiled SVG blob is stored as a GlyphRun with `flags = 0x80` (SVG marker).
-pub fn parse_into_scene(src: &[u8], scene: &mut Scene) -> Result<(), Error> {
-    use crate::{
-        fmt::md::{scan, Kind},
-        scene::GlyphRun,
-        theme::ColorToken,
+/// Compile `Latex` (with optional inline `\ce{...}`) into theme-adapted SVG inside `out_svg`.
+///
+/// # Errors
+/// Returns `Error::LatexCompile` if UTF-8 validation or `ratex_parser::parse` fails.
+pub fn compile_latex(
+    latex_bytes: &[u8],
+    display: bool,
+    palette: &Palette,
+    out_svg: &mut Vec<u8>,
+) -> Result<(), Error> {
+    let raw = strip_delims(latex_bytes);
+    let mut expanded = Vec::new();
+    let src = if raw.windows(4).any(|w| w == b"\\ce{") {
+        expand_ce(raw, &mut expanded);
+        expanded.as_slice()
+    } else {
+        raw
+    };
+    let expr = core::str::from_utf8(src).map_err(|_| Error::LatexCompile)?;
+    compile_expr(expr, display, palette, out_svg)
+}
+
+fn stage_or_fallback(raw_src: &[u8], display: bool, is_chem: bool, scene: &mut Scene) {
+    let Ok(svg_start) = u32::try_from(scene.text_pool.len()) else {
+        return;
     };
 
-    let mut spans = Vec::with_capacity(16);
-    scan(src, &mut spans);
+    let compiled = if is_chem {
+        let mut buf = Vec::with_capacity(raw_src.len().saturating_mul(2));
+        transpile_ce(trim_ascii(raw_src), &mut buf);
+        core::str::from_utf8(&buf)
+            .map_err(|_| Error::LatexCompile)
+            .and_then(|expr| compile_expr(expr, display, &theme::DARK, &mut scene.text_pool))
+    } else {
+        compile_latex(raw_src, display, &theme::DARK, &mut scene.text_pool)
+    };
 
-    let mut heal_state = heal::State::new();
-    let mut aux        = Vec::with_capacity(2048);
-
-    for sp in &spans {
-        if !matches!(sp.kind(), Kind::MathDisplay | Kind::MathInline) {
-            continue;
-        }
-        let display = sp.kind() == Kind::MathDisplay;
-        let ps = sp.payload_start as usize;
-        let pe = sp.payload_end() as usize;
-        if ps >= pe || pe > src.len() {
-            continue;
-        }
-        let payload = &src[ps..pe];
-
-        let svg_start = scene.text_pool.len() as u32;
-        // compile_latex appends rewritten SVG into scene.text_pool via aux+extend
-        // We build into aux first, then push.
-        if compile_latex(payload, display, &crate::theme::DARK, &mut heal_state, &mut aux, &mut scene.text_pool).is_err() {
-            // Graceful degradation: store raw LaTeX bytes as a text run.
-            let text_off = scene.text_pool.len() as u32;
-            let text_len = payload.len().min(u16::MAX as usize) as u16;
-            scene.text_pool.extend_from_slice(&payload[..text_len as usize]);
-            scene.glyphs.push(GlyphRun {
-                x: 0.0,
-                y: scene.height,
-                text_off,
-                text_len,
-                font_size: 14,
-                color: ColorToken::FG_MUTED,
-                flags: 0x02, // italic
-                _pad: [0; 2],
-            });
-            scene.height += 20.0;
-            continue;
-        }
-
-        let svg_len = scene.text_pool.len() - svg_start as usize;
-        if svg_len == 0 { continue; }
-
-        let (svg_w, svg_h) = crate::fmt::svg::extract_svg_dimensions(
-            &scene.text_pool[svg_start as usize..],
-        );
-
+    if compiled.is_ok() {
+        let end = scene.text_pool.len();
+        let len = end.saturating_sub(svg_start as usize);
+        let (svg_w, svg_h) = svg::extract_svg_dimensions(&scene.text_pool[svg_start as usize..end]);
         scene.glyphs.push(GlyphRun {
             x: 0.0,
             y: scene.height,
             text_off: svg_start,
-            text_len: svg_len.min(u16::MAX as usize) as u16,
+            text_len: u16::try_from(len).unwrap_or(u16::MAX),
             font_size: 0,
             color: ColorToken::FG_PRIMARY,
-            flags: 0x80, // SVG blob marker
+            flags: 0,
             _pad: [0; 2],
         });
+        scene.width = scene.width.max(svg_w);
         scene.height += svg_h;
-        if svg_w > scene.width { scene.width = svg_w; }
+    } else {
+        scene.text_pool.truncate(svg_start as usize);
+        let fallback = core::str::from_utf8(trim_ascii(raw_src)).unwrap_or("");
+        let cursor_y = scene.height + 16.0;
+        scene.push_text(8.0, cursor_y, fallback, ColorToken::FG_MUTED, 14);
+        scene.width = scene.width.max(font::measure_str(fallback, 14.0) + 16.0);
+        scene.height = cursor_y + 8.0;
     }
+}
 
+/// Compile `Latex` math block into `Scene` (honest degradation to literal text on syntax error).
+///
+/// # Errors
+/// Never fails hard; returns `Ok(())`.
+pub fn parse_into_scene(src: &[u8], scene: &mut Scene) -> Result<(), Error> {
+    stage_or_fallback(src, true, false, scene);
+    Ok(())
+}
+
+/// Compile inline `Latex` math (`$...$`) into `Scene`.
+///
+/// # Errors
+/// Never fails hard; returns `Ok(())`.
+pub fn parse_inline_into_scene(src: &[u8], scene: &mut Scene) -> Result<(), Error> {
+    stage_or_fallback(src, false, false, scene);
+    Ok(())
+}
+
+/// Compile bare `mhchem` block (` ```chem `) into `Scene` via `ratex-*`.
+///
+/// # Errors
+/// Never fails hard; returns `Ok(())`.
+pub fn parse_chem_into_scene(src: &[u8], scene: &mut Scene) -> Result<(), Error> {
+    stage_or_fallback(src, true, true, scene);
     Ok(())
 }

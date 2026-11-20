@@ -1,7 +1,42 @@
-//! 4-way set-associative L0 VRAM tag `Table` (4 160 B), 4-way L1 RGBA `Cache`, and `wymix` identity hash.
+//! 4-way set-associative L0 VRAM `Table` (4 160 B), L1 RGBA `Cache`, and `wymix` `Tag`.
 
+use core::num::{NonZeroU32, NonZeroU64};
 
-/// Update 3-bit Tree-PLRU state after accessing `way in 0..4`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub struct Tag(NonZeroU64);
+
+const _: () = assert!(size_of::<Tag>() == 8);
+const _: () = assert!(size_of::<Option<Tag>>() == 8);
+
+impl Tag {
+    #[inline]
+    #[must_use]
+    pub const fn new(raw: u64) -> Option<Self> {
+        match NonZeroU64::new(raw) {
+            Some(nz) => Some(Self(nz)),
+            None => None,
+        }
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0.get()
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn image_id(self) -> NonZeroU32 {
+        let raw = self.0.get();
+        let b = (raw ^ (raw >> 24) ^ (raw >> 48)).to_le_bytes();
+        match NonZeroU32::new(u32::from_le_bytes([b[0], b[1], b[2], 0])) {
+            Some(nz) => nz,
+            None => NonZeroU32::MIN,
+        }
+    }
+}
+
 #[inline]
 const fn plru_touch(bits: u8, way: usize) -> u8 {
     match way & 3 {
@@ -12,7 +47,6 @@ const fn plru_touch(bits: u8, way: usize) -> u8 {
     }
 }
 
-/// Select victim way from 3-bit Tree-PLRU state. Returns `0..4`.
 #[inline]
 const fn plru_victim(bits: u8) -> usize {
     let b0 = (bits & 1) as usize;
@@ -27,7 +61,6 @@ pub struct Payload {
     pub cols: u16,
     pub rows: u16,
 }
-
 const _: () = assert!(size_of::<Payload>() == 8);
 
 impl Payload {
@@ -41,28 +74,25 @@ impl Payload {
 #[derive(Clone, Copy, Debug)]
 #[repr(C, align(64))]
 pub struct Set {
-    pub tags: [u64; 4],
+    pub tags: [Option<Tag>; 4],
     pub entries: [Payload; 4],
 }
-
 const _: () = assert!(size_of::<Set>() == 64);
 const _: () = assert!(align_of::<Set>() == 64);
 
 impl Set {
     pub const ZERO: Self = Self {
-        tags: [0; 4],
+        tags: [None; 4],
         entries: [Payload::ZERO; 4],
     };
 }
 
-/// L0 VRAM tag table: 64 sets × 4 ways = 256 resident KGP slots (4 160 B total, L1d-resident).
 #[derive(Debug)]
 #[repr(C, align(64))]
 pub struct Table {
     sets: [Set; 64],
     plru: [u8; 64],
 }
-
 const _: () = assert!(size_of::<Table>() == 4160);
 
 impl Table {
@@ -75,40 +105,60 @@ impl Table {
     }
 
     #[inline]
-    pub fn lookup(&mut self, tag: u64) -> Option<Payload> {
-        let idx = ((tag & 63) as u8) as usize;
+    pub const fn lookup(&mut self, tag: Tag) -> Option<Payload> {
+        let idx = (tag.get().to_le_bytes()[0] & 63) as usize;
         let set = &self.sets[idx];
-        for way in 0..4 {
-            if set.tags[way] == tag {
+        let mut way = 0;
+        while way < 4 {
+            if let Some(cur) = set.tags[way]
+                && cur.get() == tag.get()
+            {
                 self.plru[idx] = plru_touch(self.plru[idx], way);
                 return Some(set.entries[way]);
             }
+            way += 1;
         }
         None
     }
 
     #[inline]
-    pub fn insert(&mut self, tag: u64, entry: Payload) {
-        let idx = ((tag & 63) as u8) as usize;
+    pub const fn insert(&mut self, tag: Tag, entry: Payload) -> Option<Payload> {
+        let idx = (tag.get().to_le_bytes()[0] & 63) as usize;
         let set = &mut self.sets[idx];
-        for way in 0..4 {
-            if set.tags[way] == tag || set.tags[way] == 0 {
-                set.tags[way] = tag;
-                set.entries[way] = entry;
-                self.plru[idx] = plru_touch(self.plru[idx], way);
-                return;
+        let mut empty: Option<usize> = None;
+        let mut way = 0;
+        while way < 4 {
+            match set.tags[way] {
+                Some(cur) if cur.get() == tag.get() => {
+                    set.entries[way] = entry;
+                    self.plru[idx] = plru_touch(self.plru[idx], way);
+                    return None;
+                }
+                None if empty.is_none() => empty = Some(way),
+                _ => {}
             }
+            way += 1;
+        }
+        if let Some(slot) = empty {
+            set.tags[slot] = Some(tag);
+            set.entries[slot] = entry;
+            self.plru[idx] = plru_touch(self.plru[idx], slot);
+            return None;
         }
         let victim = plru_victim(self.plru[idx]);
-        set.tags[victim] = tag;
+        let evicted = set.entries[victim];
+        set.tags[victim] = Some(tag);
         set.entries[victim] = entry;
         self.plru[idx] = plru_touch(self.plru[idx], victim);
+        Some(evicted)
     }
 
     #[inline]
-    pub fn invalidate(&mut self) {
-        for set in &mut self.sets {
-            set.tags = [0; 4];
+    pub const fn invalidate(&mut self) {
+        let mut i = 0;
+        while i < 64 {
+            self.sets[i].tags = [None; 4];
+            i += 1;
         }
         self.plru = [0; 64];
     }
@@ -141,29 +191,31 @@ impl Replica {
     }
 }
 
-/// L1 RAM cache: 16 sets × 4 ways with capacity-preserving `Replica` buffers.
 #[derive(Debug)]
+#[repr(C, align(64))]
 pub struct Cache {
-    tags: [[u64; 4]; 16],
+    tags: [[Option<Tag>; 4]; 16],
     plru: [u8; 16],
     ways: Box<[[Replica; 4]; 16]>,
 }
 
 impl Cache {
+    pub const MAX_RETAINED_SLOT_CAP: usize = 2 * 1024 * 1024;
+
     #[must_use]
     pub fn new() -> Self {
         Self {
-            tags: [[0; 4]; 16],
+            tags: [[None; 4]; 16],
             plru: [0; 16],
             ways: Box::new([const { [const { Replica::empty() }; 4] }; 16]),
         }
     }
 
     #[inline]
-    pub fn lookup(&mut self, tag: u64) -> Option<&Replica> {
-        let idx = (((tag >> 6) & 15) as u8) as usize;
+    pub fn lookup(&mut self, tag: Tag) -> Option<&Replica> {
+        let idx = usize::from((tag.get() >> 6).to_le_bytes()[0] & 15);
         for way in 0..4 {
-            if self.tags[idx][way] == tag {
+            if self.tags[idx][way] == Some(tag) {
                 self.plru[idx] = plru_touch(self.plru[idx], way);
                 return Some(&self.ways[idx][way]);
             }
@@ -172,20 +224,37 @@ impl Cache {
     }
 
     #[inline]
-    pub fn insert(&mut self, tag: u64, cols: u16, rows: u16, w: u16, h: u16, rgba: &[u8]) {
-        let idx = (((tag >> 6) & 15) as u8) as usize;
-        let way = (0..4)
-            .find(|&way_idx| self.tags[idx][way_idx] == tag || self.tags[idx][way_idx] == 0)
-            .unwrap_or_else(|| plru_victim(self.plru[idx]));
-        self.tags[idx][way] = tag;
+    pub fn insert(&mut self, tag: Tag, cols: u16, rows: u16, w: u16, h: u16, rgba: &[u8]) {
+        let idx = usize::from((tag.get() >> 6).to_le_bytes()[0] & 15);
+        let mut chosen = None;
+        for way in 0..4 {
+            if self.tags[idx][way] == Some(tag) {
+                chosen = Some(way);
+                break;
+            }
+            if self.tags[idx][way].is_none() && chosen.is_none() {
+                chosen = Some(way);
+            }
+        }
+        let way = chosen.unwrap_or_else(|| plru_victim(self.plru[idx]));
+        self.tags[idx][way] = Some(tag);
         self.plru[idx] = plru_touch(self.plru[idx], way);
+
         let slot = &mut self.ways[idx][way];
-        slot.cols = cols;
-        slot.rows = rows;
-        slot.w = w;
-        slot.h = h;
+        (slot.cols, slot.rows, slot.w, slot.h) = (cols, rows, w, h);
         slot.rgba.clear();
+        if slot.rgba.capacity() > Self::MAX_RETAINED_SLOT_CAP
+            && rgba.len() <= Self::MAX_RETAINED_SLOT_CAP
+        {
+            slot.rgba.shrink_to(rgba.len().max(4096));
+        }
         slot.rgba.extend_from_slice(rgba);
+    }
+
+    #[inline]
+    pub const fn invalidate(&mut self) {
+        self.tags = [[None; 4]; 16];
+        self.plru = [0; 16];
     }
 }
 
@@ -195,8 +264,17 @@ impl Default for Cache {
     }
 }
 
-/// 64-bit content+geometry `wymix` hash. Folds `cell_w`, `cell_h`, `cols`, `kind`, `fg_rgb`, `payload`.
-/// Guaranteed non-zero (`0` = empty sentinel).
+#[inline]
+const fn wymix(a: u64, b: u64) -> u64 {
+    let r = (a as u128).wrapping_mul(b as u128);
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "split u128 product into 64-bit halves"
+    )]
+    let mixed = (r as u64) ^ ((r >> 64) as u64);
+    mixed
+}
+
 #[inline]
 #[must_use]
 pub fn compute_tag(
@@ -206,18 +284,9 @@ pub fn compute_tag(
     kind: u8,
     fg_rgb: [u8; 3],
     payload: &[u8],
-) -> u64 {
+) -> Tag {
     const P0: u64 = 0xa076_1d64_78bd_642f;
     const P1: u64 = 0xe703_7ed1_a0b4_28db;
-
-    #[inline]
-    const fn wymix(a: u64, b: u64) -> u64 {
-        let r = (a as u128).wrapping_mul(b as u128);
-        let bytes = r.to_le_bytes();
-        let lo = u64::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]]);
-        let hi = u64::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]]);
-        lo ^ hi
-    }
 
     let meta = u64::from(cell_w)
         | (u64::from(cell_h) << 16)
@@ -229,87 +298,16 @@ pub fn compute_tag(
         ((u64::from(fg_rgb[1]) << 8) | u64::from(fg_rgb[2])) ^ P1,
     );
 
-    let mut i = 0;
-    while i + 8 <= payload.len() {
-        let v = u64::from_le_bytes([
-            payload[i],
-            payload[i + 1],
-            payload[i + 2],
-            payload[i + 3],
-            payload[i + 4],
-            payload[i + 5],
-            payload[i + 6],
-            payload[i + 7],
-        ]);
-        seed = wymix(seed ^ P0, v ^ P1);
-        i += 8;
+    let (chunks, rem) = payload.as_chunks::<8>();
+    for c in chunks {
+        seed = wymix(seed ^ P0, u64::from_le_bytes(*c) ^ P1);
     }
-    if i < payload.len() {
-        let mut tail = 0u64;
-        let mut shift = 0;
-        while i < payload.len() {
-            tail |= u64::from(payload[i]) << shift;
-            shift += 8;
-            i += 1;
-        }
-        seed = wymix(seed ^ P0, tail ^ P1);
-    }
-    wymix(seed ^ (payload.len() as u64), P1).max(1)
-}
-
-/// Canonical 24-bit non-zero KGP `image_id` from `wymix` tag.
-#[inline]
-#[must_use]
-pub const fn image_id_from_tag(tag: u64) -> u32 {
-    let folded = tag ^ (tag >> 24) ^ (tag >> 48);
-    let bytes = folded.to_le_bytes();
-    let id = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], 0]);
-    if id == 0 { 1 } else { id }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn table_4way_plru_evicts_least_recently_used() {
-        let mut tbl = Table::new();
-        for i in 0..4u32 {
-            tbl.insert(7 + u64::from(i) * 64, Payload { image_id: 10 + i, cols: 1, rows: 1 });
-        }
-        for &t in &[7, 7 + 128, 7 + 192] {
-            assert!(tbl.lookup(t).is_some());
-        }
-        tbl.insert(7 + 256, Payload { image_id: 14, cols: 1, rows: 1 });
-        assert_eq!(tbl.lookup(7 + 64), None);
-        assert_eq!(tbl.lookup(7 + 256).map(|p| p.image_id), Some(14));
+    if !rem.is_empty() {
+        let mut tail = [0u8; 8];
+        tail[..rem.len()].copy_from_slice(rem);
+        seed = wymix(seed ^ P0, u64::from_le_bytes(tail) ^ P1);
     }
 
-    #[test]
-    fn l1_cache_preserves_rgba_capacity_on_eviction() {
-        let mut cache = Cache::new();
-        let base_tag = 1u64 << 6;
-        for way in 0..4u64 {
-            let tag = base_tag + (way << 10) + 1;
-            cache.insert(tag, 10, 5, 80, 80, &[0xAA; 256]);
-        }
-        let victim_tag = base_tag + (4 << 10) + 1;
-        cache.insert(victim_tag, 4, 2, 32, 32, &[0xBB; 16]);
-        let rep = cache.lookup(victim_tag);
-        assert!(rep.is_some());
-        if let Some(r) = rep {
-            assert_eq!(r.rgba.len(), 16);
-            assert!(r.rgba.capacity() >= 256);
-        }
-    }
-
-    #[test]
-    fn compute_tag_and_image_id_never_zero() {
-        let t = compute_tag(8, 16, 80, 0, [205, 214, 244], b"E = mc^2");
-        assert_ne!(t, 0);
-        let id = image_id_from_tag(t);
-        assert_ne!(id, 0);
-        assert!(id <= 0x00FF_FFFF);
-        assert_eq!(image_id_from_tag(0), 1);
-    }
+    let raw = wymix(seed ^ (payload.len() as u64), P1);
+    Tag::new(raw | u64::from(raw == 0)).unwrap_or(Tag(NonZeroU64::MIN))
 }

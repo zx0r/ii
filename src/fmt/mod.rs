@@ -1,15 +1,10 @@
-//! Ingest parsers: format adapters.
-//!
-//! Rule 1: Ingest != Render. All formats push into `crate::scene::Scene`.
-//! Rule 2: Table-driven dispatch (`magic_bytes`, extensions, `parser_fn`).
-//! Rule 3: `write_xml_escaped` writes to `&mut Vec<u8>` — zero heap in hot path.
+//! Closed-enum format router (`Kind`) and zero-allocation byte/ASCII/XML formatters.
 
+pub mod archive;
 pub mod chart;
-pub mod chem;
 pub mod csv;
 pub mod dot;
 pub mod font;
-pub mod heal;
 pub mod ipynb;
 pub mod json;
 pub mod md;
@@ -19,215 +14,179 @@ pub mod tex;
 
 use crate::{err::Error, scene::Scene};
 
-// ── XML escape ───────────────────────────────────────────────────────────────
-
-pub trait XmlBuffer {
-    fn extend_bytes(&mut self, b: &[u8]);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Kind {
+    Md = 0,
+    Ipynb = 1,
+    Tex = 2,
+    TexInline = 3,
+    Chem = 4,
+    Mermaid = 5,
+    Dot = 6,
+    Svg = 7,
+    Csv = 8,
+    Tsv = 9,
+    Chart = 10,
+    Archive = 11,
 }
 
-impl XmlBuffer for Vec<u8> {
-    #[inline]
-    fn extend_bytes(&mut self, b: &[u8]) { self.extend_from_slice(b); }
-}
-
-impl XmlBuffer for String {
-    #[inline]
-    fn extend_bytes(&mut self, b: &[u8]) {
-        // SAFETY: callers only pass valid UTF-8 slices or ASCII XML entities.
-        unsafe { self.as_mut_vec().extend_from_slice(b); }
-    }
-}
-
-/// Write XML-escaped UTF-8 `bytes` into `out` with zero heap allocation.
-/// Encodes only `& < > "` as required by XML 1.0 §2.4.
-#[inline]
-pub fn write_xml_escaped<B: XmlBuffer + ?Sized>(out: &mut B, bytes: &[u8]) {
-    let mut pos = 0usize;
-    while pos < bytes.len() {
-        let b = bytes[pos];
-        match b {
-            b'&' => { out.extend_bytes(b"&amp;");  pos += 1; }
-            b'<' => { out.extend_bytes(b"&lt;");   pos += 1; }
-            b'>' => { out.extend_bytes(b"&gt;");   pos += 1; }
-            b'"' => { out.extend_bytes(b"&quot;"); pos += 1; }
-            _ => {
-                let start = pos;
-                pos += 1;
-                while pos < bytes.len()
-                    && !matches!(bytes[pos], b'&' | b'<' | b'>' | b'"')
-                {
-                    pos += 1;
-                }
-                out.extend_bytes(&bytes[start..pos]);
-            }
-        }
-    }
-}
-
-/// Write XML-escaped `str` slice into `out`.
-#[inline]
-pub fn write_xml_escaped_str<B: XmlBuffer + ?Sized>(out: &mut B, s: &str) {
-    write_xml_escaped(out, s.as_bytes());
-}
-
-// ── ASCII utilities ───────────────────────────────────────────────────────────
-
-/// Trim ASCII whitespace from both ends of byte slice (const-compatible).
-#[inline]
-#[must_use]
-pub const fn trim_ascii(mut b: &[u8]) -> &[u8] {
-    while let Some((&first, rest)) = b.split_first() {
-        if first.is_ascii_whitespace() {
-            b = rest;
-        } else {
-            break;
-        }
-    }
-    while let Some((&last, rest)) = b.split_last() {
-        if last.is_ascii_whitespace() {
-            b = rest;
-        } else {
-            break;
-        }
-    }
-    b
-}
-
-// ── SVG integer/float emitters (zero fmt overhead) ───────────────────────────
-
-/// Write a `u32` decimal into `out` without any heap allocation.
-#[inline]
-pub fn push_u32(out: &mut Vec<u8>, mut v: u32) {
-    let mut buf = [0u8; 10];
-    let mut i = 10usize;
-    if v == 0 {
-        out.push(b'0');
-        return;
-    }
-    while v > 0 {
-        i -= 1;
-        buf[i] = b'0' + u8::try_from(v % 10).unwrap_or(0);
-        v /= 10;
-    }
-    out.extend_from_slice(&buf[i..]);
-}
-
-/// Write an `f64` with one decimal place into `out` (no `core::fmt` overhead).
-///
-/// Precision adequate for SVG pixel coordinates (sub-pixel).
-#[inline]
-pub fn push_f64_1(out: &mut Vec<u8>, v: f64) {
-    let neg = v < 0.0;
-    let v = v.abs();
-    let int = v as u64;
-    let frac = ((v - int as f64) * 10.0 + 0.5) as u64 % 10;
-    if neg {
-        out.push(b'-');
-    }
-    push_u64(out, int);
-    out.push(b'.');
-    out.push(b'0' + u8::try_from(frac).unwrap_or(0));
-}
-
-/// Write an `f64` with zero decimal places (rounded integer) into `out`.
-#[inline]
-pub fn push_f64_0(out: &mut Vec<u8>, v: f64) {
-    let neg = v < 0.0;
-    let v = v.abs() + 0.5;
-    if neg {
-        out.push(b'-');
-    }
-    push_u64(out, v as u64);
-}
-
-#[inline]
-fn push_u64(out: &mut Vec<u8>, mut v: u64) {
-    let mut buf = [0u8; 20];
-    let mut i = 20usize;
-    if v == 0 {
-        out.push(b'0');
-        return;
-    }
-    while v > 0 {
-        i -= 1;
-        buf[i] = b'0' + u8::try_from(v % 10).unwrap_or(0);
-        v /= 10;
-    }
-    out.extend_from_slice(&buf[i..]);
-}
-
-// ── Format dispatch registry ──────────────────────────────────────────────────
-
-pub type ParserFn = fn(src: &[u8], scene: &mut Scene) -> Result<(), Error>;
-
-#[derive(Debug)]
-pub struct FormatEntry {
-    pub name:       &'static str,
-    pub magic:      &'static [u8],
-    pub extensions: &'static [&'static str],
-    pub parse:      ParserFn,
-}
-
-pub static FORMAT_REGISTRY: &[FormatEntry] = &[
-    FormatEntry {
-        name:       "csv",
-        magic:      b"",
-        extensions: &["csv", "tsv"],
-        parse:      csv::parse_into_scene,
-    },
-    FormatEntry {
-        name:       "md",
-        magic:      b"",
-        extensions: &["md", "markdown"],
-        parse:      md::parse_into_scene,
-    },
-    FormatEntry {
-        name:       "ipynb",
-        magic:      b"{\n \"cells\":",
-        extensions: &["ipynb"],
-        parse:      ipynb::parse_into_scene,
-    },
-    FormatEntry {
-        name:       "dot",
-        magic:      b"digraph",
-        extensions: &["dot", "gv"],
-        parse:      dot::parse_into_scene,
-    },
-    FormatEntry {
-        name:       "svg",
-        magic:      b"<svg",
-        extensions: &["svg"],
-        parse:      svg::parse_into_scene,
-    },
-    FormatEntry {
-        name:       "tex",
-        magic:      b"\\",
-        extensions: &["tex", "latex"],
-        parse:      tex::parse_into_scene,
-    },
-    FormatEntry {
-        name:       "chem",
-        magic:      b"",
-        extensions: &["mol", "sdf", "rxn"],
-        parse:      chem::parse_into_scene,
-    },
+const EXT_MAP: &[(&[&str], Kind)] = &[
+    (&["md", "qmd", "mdx", "rmd", "typ"], Kind::Md),
+    (&["ipynb"], Kind::Ipynb),
+    (&["tex", "latex"], Kind::Tex),
+    (&["chem", "mhchem"], Kind::Chem),
+    (&["mmd", "mermaid"], Kind::Mermaid),
+    (&["dot", "gv"], Kind::Dot),
+    (&["svg"], Kind::Svg),
+    (&["csv"], Kind::Csv),
+    (&["tsv"], Kind::Tsv),
+    (&["vl", "vega-lite", "plotly"], Kind::Chart),
+    (
+        &["zip", "jar", "whl", "tar", "tgz", "tbz2", "txz", "tzst"],
+        Kind::Archive,
+    ),
 ];
 
-/// Table-driven O(entries) format dispatch by extension then magic bytes.
+/// Map a file extension or Markdown fence tag (ASCII case-insensitive) to canonical `Kind`.
+#[must_use]
+pub fn kind_from_ext(ext: &str) -> Option<Kind> {
+    if ext.is_empty() {
+        return None;
+    }
+    EXT_MAP.iter().find_map(|&(exts, kind)| {
+        exts.iter()
+            .any(|candidate| ext.eq_ignore_ascii_case(candidate))
+            .then_some(kind)
+    })
+}
+
+/// Resolve `Kind` by extension first, falling back to zero-copy magic-byte sniffing.
+#[must_use]
+pub fn detect_kind(src: &[u8], ext: &str) -> Kind {
+    if let Some(kind) = kind_from_ext(ext) {
+        return kind;
+    }
+    let head = trim_ascii(src);
+    if archive::looks_like_archive(src) {
+        return Kind::Archive;
+    }
+    if head.starts_with(b"<svg") || head.starts_with(b"<?xml") {
+        return Kind::Svg;
+    }
+    if head.starts_with(b"digraph") || head.starts_with(b"graph ") || head.starts_with(b"strict ") {
+        return Kind::Dot;
+    }
+    if head.starts_with(b"{") {
+        return if head.windows(7).take(64).any(|w| w == b"\"cells\"") {
+            Kind::Ipynb
+        } else {
+            Kind::Chart
+        };
+    }
+    Kind::Md
+}
+
+/// Dispatch bytes by resolved `Kind` into `Scene` (single closed-enum routing boundary).
+///
+/// # Errors
+/// Propagates parser errors from the selected format adapter.
+pub fn dispatch_kind(kind: Kind, src: &[u8], scene: &mut Scene) -> Result<(), Error> {
+    match kind {
+        Kind::Md => md::parse_into_scene(src, scene),
+        Kind::Ipynb => ipynb::parse_into_scene(src, scene),
+        Kind::Tex => tex::parse_into_scene(src, scene),
+        Kind::TexInline => tex::parse_inline_into_scene(src, scene),
+        Kind::Chem => tex::parse_chem_into_scene(src, scene),
+        Kind::Mermaid => mermaid::parse_into_scene(src, scene),
+        Kind::Dot => dot::parse_into_scene(src, scene),
+        Kind::Svg => svg::parse_into_scene(src, scene),
+        Kind::Csv => csv::parse_into_scene(src, scene),
+        Kind::Tsv => csv::parse_tsv_into_scene(src, scene),
+        Kind::Chart => chart::parse_into_scene(src, scene),
+        Kind::Archive => archive::parse_into_scene(src, scene),
+    }
+}
+
+/// Dispatch raw document bytes into `Scene` by extension or magic sniffing.
+///
+/// # Errors
+/// Propagates parser errors from the selected format adapter.
 pub fn dispatch_into_scene(src: &[u8], ext: &str, scene: &mut Scene) -> Result<(), Error> {
-    // Extension match first (O(1) for small registry, branch predictor-friendly).
-    if !ext.is_empty() {
-        for entry in FORMAT_REGISTRY {
-            if entry.extensions.iter().any(|&e| e.eq_ignore_ascii_case(ext)) {
-                return (entry.parse)(src, scene);
-            }
+    dispatch_kind(detect_kind(src, ext), src, scene)
+}
+
+#[inline]
+#[must_use]
+pub const fn trim_ascii(bytes: &[u8]) -> &[u8] {
+    bytes.trim_ascii()
+}
+
+#[inline]
+pub fn push_u32(out: &mut Vec<u8>, n: u32) {
+    push_u64(out, u64::from(n));
+}
+
+#[inline]
+pub fn push_u64(out: &mut Vec<u8>, mut n: u64) {
+    let mut buf = [0u8; 20];
+    let mut idx = 20;
+    loop {
+        idx -= 1;
+        buf[idx] = b'0' + u8::try_from(n % 10).unwrap_or(0);
+        n /= 10;
+        if n == 0 {
+            break;
         }
     }
-    // Magic-byte fallback.
-    for entry in FORMAT_REGISTRY {
-        if !entry.magic.is_empty() && src.starts_with(entry.magic) {
-            return (entry.parse)(src, scene);
-        }
+    out.extend_from_slice(&buf[idx..]);
+}
+
+/// Append `val` formatted to 1 decimal place into `out` without heap allocation.
+#[inline]
+pub fn push_f64_1(out: &mut Vec<u8>, val: f64) {
+    if !val.is_finite() {
+        out.extend_from_slice(b"0.0");
+        return;
     }
-    Ok(())
+    let abs = if val.is_sign_negative() {
+        out.push(b'-');
+        -val
+    } else {
+        val
+    };
+    let clamped = abs.min(900_719_925_474_099.0);
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped non-negative finite f64 fits in u64 after * 10"
+    )]
+    let tenths = clamped.mul_add(10.0, 0.5) as u64;
+    push_u64(out, tenths / 10);
+    out.push(b'.');
+    out.push(b'0' + u8::try_from(tenths % 10).unwrap_or(0));
+}
+
+/// Write XML-escaped bytes into `out` using batched slice copies.
+pub fn write_xml_escaped(src: &[u8], out: &mut Vec<u8>) {
+    out.reserve(src.len());
+    let mut start = 0usize;
+    for (idx, &byte) in src.iter().enumerate() {
+        let esc: &[u8] = match byte {
+            b'&' => b"&amp;",
+            b'<' => b"&lt;",
+            b'>' => b"&gt;",
+            b'"' => b"&quot;",
+            b'\'' => b"&apos;",
+            _ => continue,
+        };
+        if idx > start {
+            out.extend_from_slice(&src[start..idx]);
+        }
+        out.extend_from_slice(esc);
+        start = idx + 1;
+    }
+    if start < src.len() {
+        out.extend_from_slice(&src[start..]);
+    }
 }

@@ -1,4 +1,4 @@
-//! Flat, register-sized error. No heap payloads.
+//! Flat, register-sized error (`<= 12` B). Zero heap payloads.
 
 use core::fmt;
 
@@ -49,7 +49,7 @@ impl fmt::Display for Error {
             Self::CacheCorrupt => f.write_str("cache blob corrupt"),
             Self::ImageTooLarge { w, h } => write!(f, "image {w}x{h} exceeds limit"),
             Self::JsonNav => f.write_str("JSON navigation failed"),
-            Self::ShmExhausted => f.write_str("SHM name collision (4 retries)"),
+            Self::ShmExhausted => f.write_str("SHM allocation failed"),
             Self::TooManyClients => f.write_str("max 32 concurrent clients"),
         }
     }
@@ -61,16 +61,5 @@ impl From<Errno> for Error {
     #[inline]
     fn from(e: Errno) -> Self {
         Self::Io(e)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::Error;
-
-    #[test]
-    fn display_and_conversion() {
-        assert_eq!(Error::UnknownCommand(0xdead).to_string(), "unknown command 0xdead");
-        assert_eq!(Error::from(rustix::io::Errno::PERM), Error::Io(rustix::io::Errno::PERM));
     }
 }

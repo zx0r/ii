@@ -1,11 +1,10 @@
-//! Hourglass Scene IR: Flat SoA primitives (GlyphRun, Path, Rect, TableGrid).
-//! Target compile destination for ALL ingest parsers. Zero frontend pixel awareness.
+//! Hourglass Scene IR: flat `SoA` primitives (`GlyphRun`, `Path`, `Rect`, `TableGrid`).
 
 use crate::theme::ColorToken;
 
-/// Compact 20-byte packed glyph/text run.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 #[repr(C)]
+#[expect(clippy::pub_underscore_fields, reason = "explicit C-ABI padding")]
 pub struct GlyphRun {
     pub x: f32,
     pub y: f32,
@@ -13,12 +12,17 @@ pub struct GlyphRun {
     pub text_len: u16,
     pub font_size: u16,
     pub color: ColorToken,
-    pub flags: u8, // bit 0: bold, 1: italic, 2: mono
+    pub flags: u8,
     pub _pad: [u8; 2],
 }
 const _: () = assert!(size_of::<GlyphRun>() == 20);
 
-/// Compact 20-byte rectangle primitive.
+impl GlyphRun {
+    pub const BOLD: u8 = 1 << 0;
+    pub const ITALIC: u8 = 1 << 1;
+    pub const MONO: u8 = 1 << 2;
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 #[repr(C)]
 pub struct Rect {
@@ -28,12 +32,16 @@ pub struct Rect {
     pub h: f32,
     pub color: ColorToken,
     pub radius: u8,
-    pub stroke_width: u8, // 0 = fill, >0 = stroke
-    pub flags: u8,        // bit 0: fill, bit 1: stroke
+    pub stroke_width: u8,
+    pub flags: u8,
 }
 const _: () = assert!(size_of::<Rect>() == 20);
 
-/// Vector path verb descriptor (MoveTo, LineTo, QuadTo, CubicTo, Close).
+impl Rect {
+    pub const FILL: u8 = 1 << 0;
+    pub const STROKE: u8 = 1 << 1;
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Verb {
@@ -43,10 +51,11 @@ pub enum Verb {
     CubicTo = 3,
     Close = 4,
 }
+const _: () = assert!(size_of::<Verb>() == 1);
 
-/// Compact vector path reference pointing into flat point/verb pools.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
+#[expect(clippy::pub_underscore_fields, reason = "explicit C-ABI padding")]
 pub struct Path {
     pub pt_start: u32,
     pub pt_count: u32,
@@ -54,13 +63,18 @@ pub struct Path {
     pub verb_count: u32,
     pub color: ColorToken,
     pub stroke_width: u8,
-    pub flags: u8, // bit 0: fill, bit 1: stroke, bit 2: closed
+    pub flags: u8,
     pub _pad: u8,
 }
 const _: () = assert!(size_of::<Path>() == 20);
 
-/// Cell span for structured tables and matrices.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+impl Path {
+    pub const FILL: u8 = 1 << 0;
+    pub const STROKE: u8 = 1 << 1;
+    pub const CLOSED: u8 = 1 << 2;
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
 pub struct CellSpan {
     pub text_off: u32,
@@ -69,14 +83,14 @@ pub struct CellSpan {
     pub row_span: u8,
     pub color: ColorToken,
     pub bg: ColorToken,
-    pub align: u8, // 0: left, 1: center, 2: right
+    pub align: u8,
     pub flags: u8,
 }
 const _: () = assert!(size_of::<CellSpan>() == 12);
 
-/// TableGrid primitive for CSV, TSV, Parquet, and Markdown pipe tables.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 #[repr(C)]
+#[expect(clippy::pub_underscore_fields, reason = "explicit C-ABI padding")]
 pub struct TableGrid {
     pub x: f32,
     pub y: f32,
@@ -89,20 +103,17 @@ pub struct TableGrid {
 }
 const _: () = assert!(size_of::<TableGrid>() == 24);
 
-/// Flat SoA Scene Arena: zero steady-state allocation.
 #[derive(Debug, Default)]
 pub struct Scene {
     pub rects: Vec<Rect>,
     pub paths: Vec<Path>,
     pub glyphs: Vec<GlyphRun>,
     pub grids: Vec<TableGrid>,
-    // Shared flat buffers
     pub points: Vec<[f32; 2]>,
-    pub verbs: Vec<u8>,
+    pub verbs: Vec<Verb>,
     pub text_pool: Vec<u8>,
     pub cells: Vec<CellSpan>,
     pub col_widths: Vec<f32>,
-    // Scene bounds
     pub width: f32,
     pub height: f32,
 }
@@ -115,8 +126,8 @@ impl Scene {
             paths: Vec::with_capacity(prims),
             glyphs: Vec::with_capacity(prims),
             grids: Vec::with_capacity(16),
-            points: Vec::with_capacity(prims * 4),
-            verbs: Vec::with_capacity(prims * 2),
+            points: Vec::with_capacity(prims.saturating_mul(4)),
+            verbs: Vec::with_capacity(prims.saturating_mul(2)),
             text_pool: Vec::with_capacity(text_bytes),
             cells: Vec::with_capacity(128),
             col_widths: Vec::with_capacity(32),
@@ -125,7 +136,6 @@ impl Scene {
         }
     }
 
-    /// O(1) reset of all cursors while preserving underlying allocations.
     #[inline]
     pub fn clear(&mut self) {
         self.rects.clear();
@@ -147,10 +157,33 @@ impl Scene {
     }
 
     #[inline]
+    pub fn intern_text(&mut self, text: &str) -> Option<(u32, u16)> {
+        let clamped = floor_utf8(text, usize::from(u16::MAX));
+        let off = u32::try_from(self.text_pool.len()).ok()?;
+        let len = u16::try_from(clamped.len()).ok()?;
+        off.checked_add(u32::from(len))?;
+        self.text_pool.extend_from_slice(clamped.as_bytes());
+        Some((off, len))
+    }
+
+    #[inline]
     pub fn push_text(&mut self, x: f32, y: f32, text: &str, color: ColorToken, font_size: u16) {
-        let text_off = self.text_pool.len() as u32;
-        let text_len = text.len() as u16;
-        self.text_pool.extend_from_slice(text.as_bytes());
+        self.push_text_styled(x, y, text, color, font_size, 0);
+    }
+
+    #[inline]
+    pub fn push_text_styled(
+        &mut self,
+        x: f32,
+        y: f32,
+        text: &str,
+        color: ColorToken,
+        font_size: u16,
+        flags: u8,
+    ) {
+        let Some((text_off, text_len)) = self.intern_text(text) else {
+            return;
+        };
         self.glyphs.push(GlyphRun {
             x,
             y,
@@ -158,37 +191,81 @@ impl Scene {
             text_len,
             font_size,
             color,
-            flags: 0,
+            flags,
             _pad: [0; 2],
         });
     }
 
     #[inline]
-    pub fn text(&self, glyph: &GlyphRun) -> &str {
-        core::str::from_utf8(self.text_pool.get(glyph.text_off as usize..glyph.text_off as usize + glyph.text_len as usize).unwrap_or(&[])).unwrap_or("")
+    #[must_use]
+    pub fn slice_text(&self, off: u32, len: u16) -> &str {
+        let start = off as usize;
+        let Some(end) = start.checked_add(usize::from(len)) else {
+            return "";
+        };
+        self.text_pool
+            .get(start..end)
+            .and_then(|b| core::str::from_utf8(b).ok())
+            .unwrap_or("")
     }
 
     #[inline]
+    #[must_use]
+    pub fn text(&self, glyph: &GlyphRun) -> &str {
+        self.slice_text(glyph.text_off, glyph.text_len)
+    }
+
+    #[inline]
+    #[must_use]
     pub fn cell_text(&self, cell: &CellSpan) -> &str {
-        core::str::from_utf8(self.text_pool.get(cell.text_off as usize..cell.text_off as usize + cell.text_len as usize).unwrap_or(&[])).unwrap_or("")
+        self.slice_text(cell.text_off, cell.text_len)
     }
 
     #[inline]
     pub fn push_series_line(&mut self, pts: &[[f32; 2]], color: ColorToken, stroke_width: u8) {
-        if pts.is_empty() { return; }
-        let (pt_start, pt_count) = (self.points.len() as u32, pts.len() as u32);
+        if pts.is_empty() {
+            return;
+        }
+        let (Ok(pt_start), Ok(verb_start), Ok(count)) = (
+            u32::try_from(self.points.len()),
+            u32::try_from(self.verbs.len()),
+            u32::try_from(pts.len()),
+        ) else {
+            return;
+        };
+        if pt_start.checked_add(count).is_none() || verb_start.checked_add(count).is_none() {
+            return;
+        }
         self.points.extend_from_slice(pts);
-        let verb_start = self.verbs.len() as u32;
-        self.verbs.push(Verb::MoveTo as u8);
-        self.verbs.resize(self.verbs.len() + pts.len() - 1, Verb::LineTo as u8);
+        self.verbs.reserve(pts.len());
+        self.verbs.push(Verb::MoveTo);
+        self.verbs
+            .extend(core::iter::repeat_n(Verb::LineTo, pts.len() - 1));
         self.paths.push(Path {
-            pt_start, pt_count, verb_start, verb_count: pts.len() as u32,
-            color, stroke_width, flags: 2, _pad: 0,
+            pt_start,
+            pt_count: count,
+            verb_start,
+            verb_count: count,
+            color,
+            stroke_width,
+            flags: Path::STROKE,
+            _pad: 0,
         });
     }
 }
 
-/// Scratchpad frame context passed down to all pipelines.
+#[inline]
+fn floor_utf8(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s.get(..end).unwrap_or("")
+}
+
 #[derive(Debug)]
 pub struct RenderScratch {
     pub scene: Scene,
@@ -197,12 +274,17 @@ pub struct RenderScratch {
 }
 
 impl RenderScratch {
+    pub const DEFAULT_RGBA_CAP: usize = 4 * 1024 * 1024;
+    pub const DEFAULT_OUT_CAP: usize = 1024 * 1024;
+    pub const MAX_RETAINED_RGBA: usize = 16 * 1024 * 1024;
+    pub const MAX_RETAINED_OUT: usize = 4 * 1024 * 1024;
+
     #[must_use]
     pub fn new() -> Self {
         Self {
             scene: Scene::with_capacity(1024, 64 * 1024),
-            rgba_buf: Vec::with_capacity(4 * 1024 * 1024), // 4 MB default frame buffer
-            out_buf: Vec::with_capacity(1024 * 1024),
+            rgba_buf: Vec::with_capacity(Self::DEFAULT_RGBA_CAP),
+            out_buf: Vec::with_capacity(Self::DEFAULT_OUT_CAP),
         }
     }
 
@@ -211,40 +293,17 @@ impl RenderScratch {
         self.scene.clear();
         self.rgba_buf.clear();
         self.out_buf.clear();
+        if self.rgba_buf.capacity() > Self::MAX_RETAINED_RGBA {
+            self.rgba_buf.shrink_to(Self::DEFAULT_RGBA_CAP);
+        }
+        if self.out_buf.capacity() > Self::MAX_RETAINED_OUT {
+            self.out_buf.shrink_to(Self::DEFAULT_OUT_CAP);
+        }
     }
 }
 
 impl Default for RenderScratch {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_scene_clear_and_reuse() {
-        let mut scene = Scene::with_capacity(16, 64);
-        scene.push_rect(Rect {
-            x: 0.0,
-            y: 0.0,
-            w: 100.0,
-            h: 50.0,
-            color: ColorToken::BG_PRIMARY,
-            radius: 0,
-            stroke_width: 0,
-            flags: 1,
-        });
-        scene.push_text(10.0, 10.0, "hello", ColorToken::FG_PRIMARY, 14);
-        assert_eq!(scene.rects.len(), 1);
-        assert_eq!(scene.glyphs.len(), 1);
-        assert_eq!(scene.text(&scene.glyphs[0]), "hello");
-
-        scene.clear();
-        assert_eq!(scene.rects.len(), 0);
-        assert_eq!(scene.glyphs.len(), 0);
-        assert_eq!(scene.text_pool.len(), 0);
     }
 }

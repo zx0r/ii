@@ -1,328 +1,220 @@
-//! Zero-allocation `&[u8]` JSON navigator with sound lifetimes.
+//! Zero-copy single-pass JSON byte-slice navigator with bounded nesting depth (`MAX_DEPTH = 64`).
 
-use memchr::memchr;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Nav<'a> {
-    src: &'a [u8],
-    pos: u32,
-    end: u32,
-}
-
-#[derive(Clone, Debug)]
-pub struct Items<'a> {
-    src: &'a [u8],
-    pos: u32,
-    end: u32,
-}
+const MAX_DEPTH: u8 = 64;
 
 #[inline]
-const fn is_ws(b: u8) -> bool {
-    matches!(b, b' ' | b'\t' | b'\n' | b'\r')
-}
-
-#[inline]
-const fn skip_ws(src: &[u8], mut p: usize, end: usize) -> usize {
-    while p < end && is_ws(src[p]) {
-        p += 1;
+#[must_use]
+pub fn skip_ws(src: &[u8], mut pos: usize) -> usize {
+    while let Some(&byte) = src.get(pos) {
+        if matches!(byte, b' ' | b'\t' | b'\n' | b'\r') {
+            pos += 1;
+        } else {
+            break;
+        }
     }
-    p
+    pos
 }
 
-/// Advance past a JSON string starting at `p` (where `src[p] == b'"'`).
-/// Returns index one byte past closing `"` or `None` on malformed input.
 #[inline]
-fn skip_str(src: &[u8], p: usize, end: usize) -> Option<usize> {
-    if p >= end || src[p] != b'"' {
+#[must_use]
+pub fn skip_string(src: &[u8], pos: usize) -> Option<usize> {
+    if src.get(pos) != Some(&b'"') {
         return None;
     }
-    let mut cur = p + 1;
-    while cur < end {
-        let rem = &src[cur..end];
-        let off = memchr::memchr2(b'"', b'\\', rem)?;
+    let mut cur = pos + 1;
+    while cur < src.len() {
+        let off = memchr::memchr2(b'"', b'\\', &src[cur..])?;
         cur += off;
         if src[cur] == b'"' {
             return Some(cur + 1);
         }
-        cur += 2;
+        cur = cur.checked_add(2)?;
     }
     None
 }
 
-/// Advance past one JSON value starting at `p` (already whitespace-skipped).
-/// Returns `(val_start, val_end)`.
-fn skip_val(src: &[u8], p: usize, end: usize) -> Option<(usize, usize)> {
-    let start = skip_ws(src, p, end);
-    if start >= end {
+#[must_use]
+pub fn skip_value(src: &[u8], start: usize, depth: u8) -> Option<usize> {
+    if depth >= MAX_DEPTH {
         return None;
     }
-    match src[start] {
-        b'"' => {
-            let stop = skip_str(src, start, end)?;
-            Some((start, stop))
-        }
-        b'{' | b'[' => {
-            let open = src[start];
-            let close = if open == b'{' { b'}' } else { b']' };
-            let mut depth = 1u32;
-            let mut cur = start + 1;
-            while cur < end {
-                match src[cur] {
-                    b'"' => cur = skip_str(src, cur, end)?,
-                    b if b == open => {
-                        depth += 1;
-                        cur += 1;
-                    }
-                    b if b == close => {
-                        depth -= 1;
-                        cur += 1;
-                        if depth == 0 {
-                            return Some((start, cur));
-                        }
-                    }
-                    _ => cur += 1,
+    let pos = skip_ws(src, start);
+    match *src.get(pos)? {
+        b'"' => skip_string(src, pos),
+        b'{' => {
+            let mut cur = skip_ws(src, pos + 1);
+            if src.get(cur) == Some(&b'}') {
+                return Some(cur + 1);
+            }
+            loop {
+                cur = skip_string(src, cur)?;
+                cur = skip_ws(src, cur);
+                if src.get(cur) != Some(&b':') {
+                    return None;
+                }
+                cur = skip_value(src, cur + 1, depth + 1)?;
+                cur = skip_ws(src, cur);
+                match *src.get(cur)? {
+                    b',' => cur = skip_ws(src, cur + 1),
+                    b'}' => return Some(cur + 1),
+                    _ => return None,
                 }
             }
-            None
+        }
+        b'[' => {
+            let mut cur = skip_ws(src, pos + 1);
+            if src.get(cur) == Some(&b']') {
+                return Some(cur + 1);
+            }
+            loop {
+                cur = skip_value(src, cur, depth + 1)?;
+                cur = skip_ws(src, cur);
+                match *src.get(cur)? {
+                    b',' => cur = skip_ws(src, cur + 1),
+                    b']' => return Some(cur + 1),
+                    _ => return None,
+                }
+            }
         }
         _ => {
-            let mut cur = start;
-            while cur < end && !is_ws(src[cur]) && !matches!(src[cur], b',' | b'}' | b']') {
+            let mut cur = pos;
+            while let Some(&byte) = src.get(cur) {
+                if matches!(byte, b',' | b'}' | b']' | b' ' | b'\t' | b'\n' | b'\r') {
+                    break;
+                }
                 cur += 1;
             }
-            if cur > start {
-                Some((start, cur))
-            } else {
-                None
-            }
+            (cur > pos).then_some(cur)
         }
     }
 }
 
+/// Lookup raw byte slice of field `key` in a JSON object without allocating.
+#[must_use]
+pub fn get_field<'a>(obj: &'a [u8], key: &[u8]) -> Option<&'a [u8]> {
+    let pos = skip_ws(obj, 0);
+    if obj.get(pos) != Some(&b'{') {
+        return None;
+    }
+    let mut cur = skip_ws(obj, pos + 1);
+    if obj.get(cur) == Some(&b'}') {
+        return None;
+    }
+    loop {
+        let key_end = skip_string(obj, cur)?;
+        let raw_key = &obj[cur + 1..key_end - 1];
+        cur = skip_ws(obj, key_end);
+        if obj.get(cur) != Some(&b':') {
+            return None;
+        }
+        let val_start = skip_ws(obj, cur + 1);
+        let val_end = skip_value(obj, val_start, 1)?;
+        if raw_key == key {
+            return Some(&obj[val_start..val_end]);
+        }
+        cur = skip_ws(obj, val_end);
+        match *obj.get(cur)? {
+            b',' => cur = skip_ws(obj, cur + 1),
+            _ => return None,
+        }
+    }
+}
 
-impl<'a> Nav<'a> {
-    #[inline]
-    #[must_use]
-    pub const fn new(src: &'a [u8]) -> Self {
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "input payload bounded to <= 64 MiB"
-        )]
-        let len = if src.len() > u32::MAX as usize {
-            u32::MAX
-        } else {
-            src.len() as u32
+/// Zero-copy iterator over raw element slices of a JSON array.
+#[derive(Debug)]
+pub struct ArrayIter<'a> {
+    src: &'a [u8],
+    pos: usize,
+    done: bool,
+}
+
+#[must_use]
+pub fn iter_array(arr: &[u8]) -> ArrayIter<'_> {
+    let pos = skip_ws(arr, 0);
+    if arr.get(pos) != Some(&b'[') {
+        return ArrayIter {
+            src: arr,
+            pos: arr.len(),
+            done: true,
         };
-        Self {
-            src,
-            pos: 0,
-            end: len,
-        }
     }
-
-    #[inline]
-    #[must_use]
-    pub const fn span(&self) -> (u32, u32) {
-        (self.pos, self.end)
-    }
-
-    #[inline]
-    #[must_use]
-    pub fn raw(&self) -> &'a [u8] {
-        let p = skip_ws(self.src, self.pos as usize, self.end as usize);
-        let mut e = self.end as usize;
-        while e > p && is_ws(self.src[e - 1]) {
-            e -= 1;
-        }
-        &self.src[p..e]
-    }
-
-    #[must_use]
-    pub fn get(&self, key: &[u8]) -> Option<Self> {
-        let end = self.end as usize;
-        let mut cur = skip_ws(self.src, self.pos as usize, end);
-        if cur >= end || self.src[cur] != b'{' {
-            return None;
-        }
-        cur += 1;
-        loop {
-            cur = skip_ws(self.src, cur, end);
-            if cur >= end || self.src[cur] == b'}' {
-                return None;
-            }
-            if self.src[cur] == b',' {
-                cur = skip_ws(self.src, cur + 1, end);
-            }
-            if cur >= end || self.src[cur] != b'"' {
-                return None;
-            }
-            let k_end = skip_str(self.src, cur, end)?;
-            let k_bytes = &self.src[cur + 1..k_end - 1];
-            cur = skip_ws(self.src, k_end, end);
-            if cur >= end || self.src[cur] != b':' {
-                return None;
-            }
-            let (v_start, v_end) = skip_val(self.src, cur + 1, end)?;
-            if k_bytes == key {
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "v_start and v_end are <= self.end which is u32"
-                )]
-                return Some(Self {
-                    src: self.src,
-                    pos: v_start as u32,
-                    end: v_end as u32,
-                });
-            }
-            cur = v_end;
-        }
-    }
-
-    #[must_use]
-    pub const fn items(&self) -> Items<'a> {
-        let end = self.end as usize;
-        let cur = skip_ws(self.src, self.pos as usize, end);
-        if cur < end && self.src[cur] == b'[' {
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "cur + 1 <= self.end which is u32"
-            )]
-            Items {
-                src: self.src,
-                pos: (cur + 1) as u32,
-                end: self.end,
-            }
-        } else {
-            Items {
-                src: self.src,
-                pos: self.end,
-                end: self.end,
-            }
-        }
-    }
-
-    #[must_use]
-    pub fn str_raw(&self) -> Option<&'a [u8]> {
-        let end = self.end as usize;
-        let start = skip_ws(self.src, self.pos as usize, end);
-        if start >= end || self.src[start] != b'"' {
-            return None;
-        }
-        let stop = skip_str(self.src, start, end)?;
-        Some(&self.src[start + 1..stop - 1])
-    }
-
-    /// Zero-copy fast path when string contains no backslash escapes;
-    /// otherwise unescapes into `scratch` and returns a slice tied to `'b`.
-    pub fn str_of<'b>(&self, scratch: &'b mut Vec<u8>) -> Option<&'b [u8]>
-    where
-        'a: 'b,
-    {
-        let raw = self.str_raw()?;
-        if memchr(b'\\', raw).is_none() {
-            return Some(raw);
-        }
-        let base = scratch.len();
-        let mut i = 0;
-        while i < raw.len() {
-            if raw[i] != b'\\' {
-                scratch.push(raw[i]);
-                i += 1;
-                continue;
-            }
-            i += 1;
-            if i >= raw.len() { break; }
-            let esc = match raw[i] {
-                b'"' | b'\\' | b'/' => raw[i],
-                b'n' => b'\n', b'r' => b'\r', b't' => b'\t', b'b' => 0x08, b'f' => 0x0C,
-                b'u' if i + 4 < raw.len() => {
-                    let hex = [raw[i + 1], raw[i + 2], raw[i + 3], raw[i + 4]];
-                    if let Ok(s) = core::str::from_utf8(&hex)
-                        && let Ok(cp) = u32::from_str_radix(s, 16)
-                        && let Some(ch) = char::from_u32(cp)
-                    {
-                        scratch.extend_from_slice(ch.encode_utf8(&mut [0; 4]).as_bytes());
-                    }
-                    i += 5;
-                    continue;
-                }
-                other => other,
-            };
-            scratch.push(esc);
-            i += 1;
-        }
-        Some(&scratch[base..])
-    }
-
-    #[must_use]
-    pub fn num_of(&self) -> Option<f64> {
-        let s = core::str::from_utf8(self.raw()).ok()?;
-        s.parse::<f64>().ok()
-    }
-
-    #[must_use]
-    pub fn int_of(&self) -> Option<i64> {
-        let s = core::str::from_utf8(self.raw()).ok()?;
-        s.parse::<i64>().ok()
+    let first = skip_ws(arr, pos + 1);
+    let done = arr.get(first) == Some(&b']');
+    ArrayIter {
+        src: arr,
+        pos: first,
+        done,
     }
 }
 
-impl<'a> Iterator for Items<'a> {
-    type Item = Nav<'a>;
+impl<'a> Iterator for ArrayIter<'a> {
+    type Item = &'a [u8];
 
     fn next(&mut self) -> Option<Self::Item> {
-        let end = self.end as usize;
-        let mut cur = skip_ws(self.src, self.pos as usize, end);
-        if cur < end && self.src[cur] == b',' {
-            cur = skip_ws(self.src, cur + 1, end);
-        }
-        if cur >= end || self.src[cur] == b']' {
-            self.pos = self.end;
+        if self.done {
             return None;
         }
-        let Some((v_start, v_end)) = skip_val(self.src, cur, end) else {
-            self.pos = self.end;
-            return None;
-        };
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "v_start and v_end are <= self.end which is u32"
-        )]
-        {
-            self.pos = v_end as u32;
-            Some(Nav {
-                src: self.src,
-                pos: v_start as u32,
-                end: v_end as u32,
-            })
+        let start = skip_ws(self.src, self.pos);
+        let end = skip_value(self.src, start, 1)?;
+        let item = &self.src[start..end];
+        let after = skip_ws(self.src, end);
+        match self.src.get(after) {
+            Some(&b',') => self.pos = skip_ws(self.src, after + 1),
+            _ => self.done = true,
         }
+        Some(item)
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::Nav;
-
-    #[test]
-    fn nav_nested_and_str_lifetimes() {
-        let doc = br#"{"mark":"bar","data":{"values":[{"x":"A\nB","y":42.5},{"x":"C","y":-7}]}}"#;
-        let root = Nav::new(doc);
-        let mut scratch = Vec::new();
-        assert_eq!(
-            root.get(b"mark").and_then(|n| n.str_raw()),
-            Some(&b"bar"[..])
-        );
-        let vals = root
-            .get(b"data")
-            .and_then(|d| d.get(b"values"))
-            .map(|v| v.items().collect::<Vec<_>>())
-            .unwrap_or_default();
-        assert_eq!(vals.len(), 2);
-        assert_eq!(
-            vals[0].get(b"x").and_then(|n| n.str_of(&mut scratch)),
-            Some(&b"A\nB"[..])
-        );
-        assert_eq!(vals[0].get(b"y").and_then(|n| n.num_of()), Some(42.5));
-        assert_eq!(vals[1].get(b"y").and_then(|n| n.int_of()), Some(-7));
+/// Unescape a JSON string token (`"..."`) directly into `out`.
+pub fn unescape_str(raw: &[u8], out: &mut Vec<u8>) -> bool {
+    let trimmed = raw.trim_ascii();
+    if trimmed.len() < 2 || trimmed[0] != b'"' || trimmed[trimmed.len() - 1] != b'"' {
+        return false;
     }
+    let body = &trimmed[1..trimmed.len() - 1];
+    out.reserve(body.len());
+    let mut pos = 0usize;
+    while pos < body.len() {
+        let Some(off) = memchr::memchr(b'\\', &body[pos..]) else {
+            out.extend_from_slice(&body[pos..]);
+            return true;
+        };
+        out.extend_from_slice(&body[pos..pos + off]);
+        pos += off + 1;
+        let Some(&esc) = body.get(pos) else {
+            return false;
+        };
+        match esc {
+            b'n' => out.push(b'\n'),
+            b'r' => out.push(b'\r'),
+            b't' => out.push(b'\t'),
+            b'b' => out.push(0x08),
+            b'f' => out.push(0x0C),
+            b'u' => {
+                if let Some(hex) = body.get(pos + 1..pos + 5)
+                    && let Ok(s) = core::str::from_utf8(hex)
+                    && let Ok(code) = u32::from_str_radix(s, 16)
+                    && let Some(ch) = char::from_u32(code)
+                {
+                    let mut utf8 = [0u8; 4];
+                    out.extend_from_slice(ch.encode_utf8(&mut utf8).as_bytes());
+                }
+                pos += 4;
+            }
+            _ => out.push(esc),
+        }
+        pos += 1;
+    }
+    true
+}
+
+#[inline]
+#[must_use]
+pub fn parse_f64(raw: &[u8]) -> Option<f64> {
+    core::str::from_utf8(raw.trim_ascii())
+        .ok()?
+        .parse::<f64>()
+        .ok()
+        .filter(|v| v.is_finite())
 }

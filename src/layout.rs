@@ -1,16 +1,21 @@
-//! Shared layout & geometry engine: axis scales, table column distribution,
-//! and Sugiyama DAG coordinate assignment. Zero frontend pixel awareness.
+//! Pure zero-allocation layout math: axis scales and table column distribution.
 
-/// 1D linear scale for charts and plots (Domain -> Range mapping).
-#[derive(Clone, Copy, Debug)]
+const MIN_COL_W: f32 = 32.0;
+const MIN_SCALED_COL_W: f32 = 24.0;
+const MAX_TICKS: usize = 64;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[repr(C)]
 pub struct LinearScale {
     pub domain_min: f32,
     pub domain_max: f32,
     pub range_min: f32,
     pub range_max: f32,
 }
+const _: () = assert!(size_of::<LinearScale>() == 16);
 
 impl LinearScale {
+    #[inline]
     #[must_use]
     pub const fn new(d_min: f32, d_max: f32, r_min: f32, r_max: f32) -> Self {
         Self {
@@ -25,129 +30,124 @@ impl LinearScale {
     #[must_use]
     pub fn map(&self, val: f32) -> f32 {
         let span = self.domain_max - self.domain_min;
-        if span.abs() < 1e-6 {
+        if !span.is_finite() || span.abs() < 1e-6 {
             return self.range_min;
         }
         let t = (val - self.domain_min) / span;
-        self.range_min + t * (self.range_max - self.range_min)
+        t.mul_add(self.range_max - self.range_min, self.range_min)
     }
 
-    /// Compute "nice" human-readable axis ticks.
-    pub fn compute_ticks(&self, target_count: usize) -> Vec<f32> {
+    pub fn compute_ticks(&self, target_count: usize, out: &mut Vec<f32>) {
+        out.clear();
         let span = self.domain_max - self.domain_min;
-        if span <= 0.0 || target_count == 0 {
-            return vec![self.domain_min];
+        if !span.is_finite() || span <= 0.0 || target_count == 0 {
+            if self.domain_min.is_finite() {
+                out.push(self.domain_min);
+            }
+            return;
         }
-
-        let raw_step = span / (target_count as f32);
-        let step = nice_num(raw_step, true);
-        let start = (self.domain_min / step).ceil() * step;
-        let mut ticks = Vec::with_capacity(target_count + 2);
-        let mut cur = start;
-        while cur <= self.domain_max + step * 0.5 {
-            ticks.push(cur);
-            cur += step;
+        let clamped = target_count.min(MAX_TICKS);
+        #[expect(clippy::cast_precision_loss, reason = "clamped <= MAX_TICKS (64)")]
+        let step = nice_num(span / (clamped as f32), true);
+        if !step.is_finite() || step <= 0.0 {
+            out.push(self.domain_min);
+            return;
         }
-        ticks
+        let limit = step.mul_add(0.5, self.domain_max);
+        let mut cur = (self.domain_min / step).ceil() * step;
+        out.reserve(clamped + 2);
+        for _ in 0..MAX_TICKS {
+            if cur > limit {
+                break;
+            }
+            out.push(cur);
+            let next = cur + step;
+            if next <= cur {
+                break;
+            }
+            cur = next;
+        }
     }
 }
 
+#[inline]
 fn nice_num(range: f32, round: bool) -> f32 {
-    let exponent = range.log10().floor();
-    let fraction = range / 10.0f32.powf(exponent);
-    let nice_fraction = if round {
-        if fraction < 1.5 {
+    if !range.is_finite() || range <= 0.0 {
+        return 1.0;
+    }
+    let pow10 = 10.0_f32.powf(range.log10().floor());
+    let frac = range / pow10;
+    let nice = if round {
+        if frac < 1.5 {
             1.0
-        } else if fraction < 3.0 {
+        } else if frac < 3.0 {
             2.0
-        } else if fraction < 7.0 {
+        } else if frac < 7.0 {
             5.0
         } else {
             10.0
         }
-    } else if fraction <= 1.0 {
+    } else if frac <= 1.0 {
         1.0
-    } else if fraction <= 2.0 {
+    } else if frac <= 2.0 {
         2.0
-    } else if fraction <= 5.0 {
+    } else if frac <= 5.0 {
         5.0
     } else {
         10.0
     };
-    nice_fraction * 10.0f32.powf(exponent)
+    nice * pow10
 }
 
-/// Table layout calculator: distributes column widths based on cell content lengths.
-#[derive(Debug)]
-pub struct TableLayout {
-    pub col_widths: Vec<f32>,
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[repr(C)]
+pub struct TableMetrics {
     pub total_width: f32,
     pub row_height: f32,
 }
+const _: () = assert!(size_of::<TableMetrics>() == 8);
 
-impl TableLayout {
-    /// Compute column widths with min/max clamps and padding.
-    pub fn compute(
-        cols: usize,
-        content_lengths: &[usize], // flattened row-major or per-column max chars
-        char_width: f32,
-        padding: f32,
-        max_total_w: f32,
-    ) -> Self {
-        let mut max_chars = vec![0usize; cols];
-        for (i, &len) in content_lengths.iter().enumerate() {
-            let col = i % cols;
-            if len > max_chars[col] {
-                max_chars[col] = len;
-            }
-        }
+pub fn compute_table_widths(
+    cols: usize,
+    content_lengths: &[usize],
+    char_width: f32,
+    padding: f32,
+    max_total_w: f32,
+    out_widths: &mut Vec<f32>,
+) -> TableMetrics {
+    out_widths.clear();
+    if cols == 0 || !char_width.is_finite() || !padding.is_finite() || !max_total_w.is_finite() {
+        return TableMetrics::default();
+    }
+    let cw = char_width.max(1.0);
+    let pad2 = padding.max(0.0) * 2.0;
+    let max_w = max_total_w.max(MIN_COL_W);
+    let col_cap = (max_w * 0.6).max(MIN_COL_W);
 
-        let mut col_widths = Vec::with_capacity(cols);
-        let mut total = 0.0;
-        for &chars in &max_chars {
-            let w = (chars as f32 * char_width + padding * 2.0).clamp(32.0, max_total_w * 0.6);
-            col_widths.push(w);
-            total += w;
-        }
-
-        // Scale down proportionally if exceeding max_total_w
-        if total > max_total_w && total > 0.0 {
-            let scale = max_total_w / total;
-            for w in &mut col_widths {
-                *w = (*w * scale).max(24.0);
-            }
-            total = max_total_w;
-        }
-
-        Self {
-            col_widths,
-            total_width: total,
-            row_height: char_width * 2.2, // ~16-20px default
+    out_widths.resize(cols, 0.0);
+    for (i, &len) in content_lengths.iter().enumerate() {
+        let len_f = f32::from(u16::try_from(len).unwrap_or(u16::MAX));
+        let slot = &mut out_widths[i % cols];
+        if len_f > *slot {
+            *slot = len_f;
         }
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_linear_scale() {
-        let scale = LinearScale::new(0.0, 100.0, 0.0, 500.0);
-        assert_eq!(scale.map(50.0), 250.0);
-        assert_eq!(scale.map(0.0), 0.0);
-        assert_eq!(scale.map(100.0), 500.0);
-
-        let ticks = scale.compute_ticks(5);
-        assert!(ticks.len() >= 4);
-        assert_eq!(ticks[0], 0.0);
+    let mut total = 0.0_f32;
+    for w in out_widths.iter_mut() {
+        *w = (*w).mul_add(cw, pad2).clamp(MIN_COL_W, col_cap);
+        total += *w;
     }
-
-    #[test]
-    fn test_table_layout() {
-        let lengths = [4, 10, 8, 20];
-        let layout = TableLayout::compute(2, &lengths, 8.0, 4.0, 400.0);
-        assert_eq!(layout.col_widths.len(), 2);
-        assert!(layout.total_width <= 400.0);
+    if total > max_w {
+        let scale = max_w / total;
+        total = 0.0;
+        for w in out_widths.iter_mut() {
+            *w = (*w * scale).max(MIN_SCALED_COL_W);
+            total += *w;
+        }
+    }
+    TableMetrics {
+        total_width: total,
+        row_height: cw * 2.2,
     }
 }

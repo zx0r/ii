@@ -140,7 +140,12 @@ fn bench_cache_hit_zero_alloc(c: &mut Criterion) {
             let hit = tbl.lookup(black_box(tag));
             arena.clear();
             if let Some(p) = hit {
-                kitty::emit_placeholder(p.image_id, black_box(p.cols), black_box(p.rows), &mut arena);
+                kitty::emit_placeholder(
+                    p.image_id,
+                    black_box(p.cols),
+                    black_box(p.rows),
+                    &mut arena,
+                );
             }
             black_box((hit, arena.len()))
         });
@@ -159,14 +164,8 @@ fn bench_full_pipeline_warm(c: &mut Criterion) {
         b.iter(|| {
             scratch.reset();
             let _ = md::parse_into_scene(black_box(doc), &mut scratch.scene);
-            let res = raster::rasterize_scene(
-                &scratch.scene,
-                &DARK,
-                8,
-                16,
-                640,
-                &mut scratch.rgba_buf,
-            );
+            let res =
+                raster::rasterize_scene(&scratch.scene, &DARK, 8, 16, 640, &mut scratch.rgba_buf);
             black_box(res)
         });
     });

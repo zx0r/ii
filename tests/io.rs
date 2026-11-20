@@ -163,7 +163,7 @@ fn posix_shm_stage_roundtrip_and_unlink() -> Result<(), Box<dyn core::error::Err
     kitty::stage_shm(&rgba, params, &mut seq, pid, &mut apc)?;
 
     let text = core::str::from_utf8(&apc)?;
-    assert!(text.starts_with("\x1b_Ga=t,t=s,f=32,q=2,i=77,s=8,v=8;"));
+    assert!(text.starts_with("\x1b_Ga=t,t=s,f=32,q=2,i=77,s=8,v=8,S=256;"));
     assert!(text.ends_with("\x1b_Ga=p,U=1,q=2,i=77,c=1,r=1\x1b\\"));
 
     let fd = shm::open(shm_name.as_c_str(), ShmFlags::RDONLY, Mode::empty())?;

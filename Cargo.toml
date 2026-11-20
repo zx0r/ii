@@ -27,6 +27,14 @@ harness = false
 name = "daemon"
 harness = false
 
+[[test]]
+name = "core"
+path = "tests/core.rs"
+
+[[test]]
+name = "fmt"
+path = "tests/fmt.rs"
+
 [dependencies]
 blake3 = "1.8.7"
 lz4_flex = { version = "0.14.2", default-features = false }
@@ -50,7 +58,7 @@ rustix = { version = "1.1.6", features = [
 tiny-skia = "0.12.0"
 
 [dev-dependencies]
-criterion = "0.5.1"
+criterion = "0.8.2"
 divan = "0.1.21"
 proptest = "1.12"
 

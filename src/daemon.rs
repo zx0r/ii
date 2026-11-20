@@ -1,4 +1,4 @@
-//! Non-blocking `poll(2)` Unix-socket reactor (`MAX_CLIENTS = 32`). Zero `unsafe`, zero hot-loop allocs.
+//! Non-blocking `poll(2)` Unix-socket reactor (`MAX_CLIENTS = 32`) with full L0/L1/L2 KGP pipeline.
 
 use std::{
     ffi::OsString,
@@ -14,7 +14,7 @@ use rustix::{
     },
     io::{Errno, FdFlags, fcntl_setfd, read, write},
     net::{AddressFamily, SocketAddrUnix, SocketType, accept, bind, listen, socket, sockopt},
-    process::getuid,
+    process::{getpid, getuid},
 };
 
 pub use crate::ipc::{
@@ -22,9 +22,16 @@ pub use crate::ipc::{
     encode_extmarks,
 };
 use crate::{
+    cache,
     err::Error,
-    ipc::{self, MAX_CLIENTS},
+    fmt::{self, Kind, md},
+    ipc::{self, MAX_CLIENTS, SpanCoord},
+    kitty::{self, StageParams},
+    raster,
     scene::RenderScratch,
+    theme::{self, ColorToken, Palette},
+    tty::{self, Metrics},
+    vram,
 };
 
 const READ_CHUNK: usize = 64 * 1024;
@@ -40,6 +47,101 @@ const DRAIN_TIMEOUT: Timespec = Timespec {
     tv_sec: 1,
     tv_nsec: 0,
 };
+
+const FLAG_LIGHT: u32 = 1 << 0;
+const FLAG_TMUX: u32 = 1 << 1;
+const FLAG_REMOTE: u32 = 1 << 2;
+
+#[derive(Clone, Copy)]
+struct RenderCtx {
+    cell_w: u16,
+    cell_h: u16,
+    cols: u16,
+    max_w: u16,
+    palette: &'static Palette,
+    is_tmux: bool,
+    is_remote: bool,
+}
+
+impl RenderCtx {
+    fn from_header(h: Header) -> Self {
+        let cell_w = if h.cell_w > 0 {
+            h.cell_w
+        } else {
+            Metrics::FALLBACK.cell_w
+        };
+        let cell_h = if h.cell_h > 0 {
+            h.cell_h
+        } else {
+            Metrics::FALLBACK.cell_h
+        };
+        let cols = if h.cols > 0 {
+            h.cols
+        } else {
+            Metrics::FALLBACK.cols
+        };
+        Self {
+            cell_w,
+            cell_h,
+            cols,
+            max_w: cols.saturating_mul(cell_w),
+            palette: if (h.flags & FLAG_LIGHT) != 0 {
+                &theme::LIGHT
+            } else {
+                &theme::DARK
+            },
+            is_tmux: (h.flags & FLAG_TMUX) != 0,
+            is_remote: (h.flags & FLAG_REMOTE) != 0,
+        }
+    }
+}
+
+struct DaemonState {
+    scratch: RenderScratch,
+    vram: Box<vram::Table>,
+    l1: vram::Cache,
+    l2_dir: Option<OwnedFd>,
+    lz4_buf: Vec<u8>,
+    b64_buf: Vec<u8>,
+    apc_buf: Vec<u8>,
+    text_buf: Vec<u8>,
+    spans: Vec<md::Span>,
+    span_coords: Vec<SpanCoord>,
+    line_starts: Vec<usize>,
+    extmarks: Vec<Extmark>,
+    shm_seq: u32,
+    pid: u32,
+}
+
+impl DaemonState {
+    fn new() -> Self {
+        Self {
+            scratch: RenderScratch::new(),
+            vram: Box::new(vram::Table::new()),
+            l1: vram::Cache::new(),
+            l2_dir: cache::ensure_dirs().ok(),
+            lz4_buf: Vec::with_capacity(256 * 1024),
+            b64_buf: Vec::with_capacity(256 * 1024),
+            apc_buf: Vec::with_capacity(64 * 1024),
+            text_buf: Vec::with_capacity(64 * 1024),
+            spans: Vec::with_capacity(32),
+            span_coords: Vec::with_capacity(32),
+            line_starts: Vec::with_capacity(256),
+            extmarks: Vec::with_capacity(32),
+            shm_seq: 0,
+            pid: getpid().as_raw_nonzero().get().unsigned_abs(),
+        }
+    }
+
+    fn reset_request(&mut self) {
+        self.scratch.reset();
+        self.apc_buf.clear();
+        self.text_buf.clear();
+        self.spans.clear();
+        self.span_coords.clear();
+        self.extmarks.clear();
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 enum Phase {
@@ -180,10 +282,285 @@ fn bind_listener() -> Result<(OwnedFd, DaemonGuard), Error> {
     ))
 }
 
+fn stage_rgba(
+    rgba: &[u8],
+    params: StageParams,
+    is_remote: bool,
+    shm_seq: &mut u32,
+    pid: u32,
+    apc: &mut Vec<u8>,
+    b64: &mut Vec<u8>,
+) {
+    if is_remote || kitty::stage_shm(rgba, params, shm_seq, pid, apc).is_err() {
+        kitty::stage_base64(rgba, params, apc, b64);
+    }
+}
+
+fn render_block(
+    state: &mut DaemonState,
+    ctx: RenderCtx,
+    kind: Kind,
+    payload: &[u8],
+) -> Result<vram::Payload, Error> {
+    let fg = ctx.palette.color(ColorToken::FG_PRIMARY);
+    let fg_rgb = [fg.r(), fg.g(), fg.b()];
+    let tag = vram::compute_tag(
+        ctx.cell_w, ctx.cell_h, ctx.cols, kind as u8, fg_rgb, payload,
+    );
+
+    // L0 VRAM hit: terminal already holds pixel buffer.
+    if let Some(hit) = state.vram.lookup(tag) {
+        return Ok(hit);
+    }
+
+    let image_id = tag.image_id().get();
+    // L1 RAM replica hit.
+    if let Some(rep) = state.l1.lookup(tag) {
+        let entry = vram::Payload {
+            image_id,
+            cols: rep.cols,
+            rows: rep.rows,
+        };
+        if let Some(evicted) = state.vram.insert(tag, entry) {
+            kitty::emit_delete(evicted.image_id, ctx.is_tmux, &mut state.apc_buf);
+        }
+        let params = StageParams {
+            image_id,
+            w: rep.w,
+            h: rep.h,
+            cols: rep.cols,
+            rows: rep.rows,
+            is_tmux: ctx.is_tmux,
+        };
+        stage_rgba(
+            &rep.rgba,
+            params,
+            ctx.is_remote,
+            &mut state.shm_seq,
+            state.pid,
+            &mut state.apc_buf,
+            &mut state.b64_buf,
+        );
+        return Ok(entry);
+    }
+
+    // L2 disk cache hit (`PX03` / LZ4).
+    let b3 = cache::blake3_key(
+        ctx.cell_w,
+        ctx.cell_h,
+        ctx.max_w,
+        kind as u8,
+        fg_rgb,
+        ctx.palette.is_dark,
+        payload,
+    );
+    let dims = if let Some(ref dir_fd) = state.l2_dir
+        && let Ok(Some((w32, h32))) = cache::read_blob(
+            dir_fd.as_fd(),
+            &b3,
+            &mut state.scratch.rgba_buf,
+            &mut state.lz4_buf,
+        )
+        && let (Ok(w), Ok(h)) = (u16::try_from(w32), u16::try_from(h32))
+    {
+        let cols = w.div_ceil(ctx.cell_w.max(1)).max(1);
+        let rows = h.div_ceil(ctx.cell_h.max(1)).max(1);
+        Some((w, h, cols, rows))
+    } else {
+        None
+    };
+
+    let (w, h, cols, rows) = if let Some(hit) = dims {
+        hit
+    } else {
+        state.scratch.scene.clear();
+        fmt::dispatch_kind(kind, payload, &mut state.scratch.scene)?;
+        let res = raster::rasterize_scene(
+            &state.scratch.scene,
+            ctx.palette,
+            ctx.cell_w,
+            ctx.cell_h,
+            ctx.max_w,
+            &mut state.scratch.rgba_buf,
+        )?;
+        if let Some(ref dir_fd) = state.l2_dir {
+            let _ = cache::write_blob(
+                dir_fd.as_fd(),
+                &b3,
+                u32::from(res.0),
+                u32::from(res.1),
+                &state.scratch.rgba_buf,
+                &mut state.lz4_buf,
+            );
+        }
+        res
+    };
+
+    state
+        .l1
+        .insert(tag, cols, rows, w, h, &state.scratch.rgba_buf);
+    let entry = vram::Payload {
+        image_id,
+        cols,
+        rows,
+    };
+    if let Some(evicted) = state.vram.insert(tag, entry) {
+        kitty::emit_delete(evicted.image_id, ctx.is_tmux, &mut state.apc_buf);
+    }
+    let params = StageParams {
+        image_id,
+        w,
+        h,
+        cols,
+        rows,
+        is_tmux: ctx.is_tmux,
+    };
+    stage_rgba(
+        &state.scratch.rgba_buf,
+        params,
+        ctx.is_remote,
+        &mut state.shm_seq,
+        state.pid,
+        &mut state.apc_buf,
+        &mut state.b64_buf,
+    );
+    Ok(entry)
+}
+
+fn read_bounded_file(path: &str, out: &mut Vec<u8>) -> Result<(), Errno> {
+    let fd = openat(CWD, path, OFlags::RDONLY | OFlags::CLOEXEC, Mode::empty())?;
+    let st = fstat(&fd)?;
+    if FileType::from_raw_mode(st.st_mode) != FileType::RegularFile {
+        return Err(Errno::INVAL);
+    }
+    let size = usize::try_from(st.st_size).map_err(|_| Errno::FBIG)?;
+    if size > MAX_FILE_BYTES {
+        return Err(Errno::FBIG);
+    }
+    out.clear();
+    out.resize(size, 0);
+    let mut got = 0usize;
+    while got < size {
+        match read(&fd, &mut out[got..]) {
+            Ok(0) => break,
+            Ok(n) => got += n,
+            Err(Errno::INTR) => {}
+            Err(e) => return Err(e),
+        }
+    }
+    out.truncate(got);
+    Ok(())
+}
+
+fn handle_render_file(
+    slot: &mut ClientSlot,
+    ctx: RenderCtx,
+    state: &mut DaemonState,
+    file_buf: &mut Vec<u8>,
+) {
+    if slot.buf.is_empty() || slot.buf.len() > MAX_PATH_BYTES {
+        encode_error(
+            Cmd::RenderFile as u16,
+            b"invalid path length",
+            &mut slot.buf,
+        );
+        return;
+    }
+    let Ok(path_str) = core::str::from_utf8(&slot.buf) else {
+        encode_error(Cmd::RenderFile as u16, b"non-utf8 path", &mut slot.buf);
+        return;
+    };
+    let ext = Path::new(path_str)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    if read_bounded_file(path_str, file_buf).is_err() {
+        encode_error(Cmd::RenderFile as u16, b"file read failed", &mut slot.buf);
+        return;
+    }
+    let kind = fmt::detect_kind(file_buf, ext);
+    let Ok(entry) = render_block(state, ctx, kind, file_buf) else {
+        encode_error(Cmd::RenderFile as u16, b"render failed", &mut slot.buf);
+        return;
+    };
+    kitty::emit_placeholder(entry.image_id, entry.cols, entry.rows, &mut state.text_buf);
+    encode_dual_response(
+        Cmd::RenderFile,
+        &state.apc_buf,
+        &state.text_buf,
+        &mut slot.buf,
+    );
+}
+
+fn handle_compose(slot: &mut ClientSlot, cmd: Cmd, ctx: RenderCtx, state: &mut DaemonState) {
+    md::scan(&slot.buf, &mut state.spans);
+    let count = state.spans.len();
+    for idx in 0..count {
+        let sp = state.spans[idx];
+        let payload = &slot.buf[sp.inner_start as usize..sp.inner_end as usize];
+        if let Ok(entry) = render_block(state, ctx, sp.kind, payload) {
+            state.span_coords.push(SpanCoord {
+                outer_start: sp.outer_start,
+                outer_end: sp.outer_end,
+                image_id: entry.image_id,
+                cols: entry.cols,
+                rows: entry.rows,
+            });
+        }
+    }
+
+    if cmd == Cmd::ComposeAnsi {
+        tty::render_ansi(
+            &slot.buf,
+            &state.span_coords,
+            ctx.palette.is_dark,
+            &mut state.text_buf,
+        );
+    } else {
+        ipc::compose_extmarks(
+            &slot.buf,
+            &state.span_coords,
+            &mut state.line_starts,
+            &mut state.extmarks,
+        );
+        encode_extmarks(&state.extmarks, &mut state.text_buf);
+    }
+    encode_dual_response(cmd, &state.apc_buf, &state.text_buf, &mut slot.buf);
+}
+
+fn dispatch_and_respond(
+    slot: &mut ClientSlot,
+    header: Header,
+    state: &mut DaemonState,
+    file_buf: &mut Vec<u8>,
+    shutting_down: &mut bool,
+) {
+    state.reset_request();
+    let Ok(cmd) = Cmd::from_u16(header.command) else {
+        encode_error(header.command, b"unknown command", &mut slot.buf);
+        step_write_resp(slot, 0);
+        return;
+    };
+    let ctx = RenderCtx::from_header(header);
+    match cmd {
+        Cmd::Ping => {
+            encode_dual_response(Cmd::Ping, b"", b"", &mut slot.buf);
+        }
+        Cmd::Shutdown => {
+            *shutting_down = true;
+            encode_dual_response(Cmd::Shutdown, b"", b"", &mut slot.buf);
+        }
+        Cmd::RenderFile => handle_render_file(slot, ctx, state, file_buf),
+        Cmd::ComposeAnsi | Cmd::ComposeExtmarks => handle_compose(slot, cmd, ctx, state),
+    }
+    step_write_resp(slot, 0);
+}
+
 fn step_read_header(
     slot: &mut ClientSlot,
     mut got: u8,
-    scratch: &mut RenderScratch,
+    state: &mut DaemonState,
+    file_buf: &mut Vec<u8>,
     shutting_down: &mut bool,
 ) {
     let Some(fd) = slot.fd.as_ref() else { return };
@@ -203,13 +580,13 @@ fn step_read_header(
             }
             slot.buf.clear();
             if hdr.payload_len == 0 {
-                dispatch_and_respond(slot, hdr, scratch, shutting_down);
+                dispatch_and_respond(slot, hdr, state, file_buf, shutting_down);
             } else {
                 slot.phase = Phase::ReadPayload {
                     header: hdr,
                     got: 0,
                 };
-                step_read_payload(slot, hdr, 0, scratch, shutting_down);
+                step_read_payload(slot, hdr, 0, state, file_buf, shutting_down);
             }
         }
         Err(Errno::AGAIN | Errno::INTR) => {}
@@ -221,7 +598,8 @@ fn step_read_payload(
     slot: &mut ClientSlot,
     header: Header,
     mut got: u32,
-    scratch: &mut RenderScratch,
+    state: &mut DaemonState,
+    file_buf: &mut Vec<u8>,
     shutting_down: &mut bool,
 ) {
     let next_end = (got as usize)
@@ -236,7 +614,7 @@ fn step_read_payload(
         Ok(n) => {
             got += u32::try_from(n).unwrap_or(0);
             if got == header.payload_len {
-                dispatch_and_respond(slot, header, scratch, shutting_down);
+                dispatch_and_respond(slot, header, state, file_buf, shutting_down);
             } else {
                 slot.phase = Phase::ReadPayload { header, got };
             }
@@ -276,7 +654,8 @@ fn step_write_resp(slot: &mut ClientSlot, mut sent: usize) {
 fn step_client(
     slot: &mut ClientSlot,
     rev: PollFlags,
-    scratch: &mut RenderScratch,
+    state: &mut DaemonState,
+    file_buf: &mut Vec<u8>,
     shutting_down: &mut bool,
 ) {
     if rev.intersects(PollFlags::ERR | PollFlags::NVAL) {
@@ -285,9 +664,11 @@ fn step_client(
     }
     if rev.contains(PollFlags::IN) {
         match slot.phase {
-            Phase::ReadHeader { got } => step_read_header(slot, got, scratch, shutting_down),
+            Phase::ReadHeader { got } => {
+                step_read_header(slot, got, state, file_buf, shutting_down);
+            }
             Phase::ReadPayload { header, got } => {
-                step_read_payload(slot, header, got, scratch, shutting_down);
+                step_read_payload(slot, header, got, state, file_buf, shutting_down);
             }
             Phase::WriteResp { .. } => {}
         }
@@ -322,7 +703,8 @@ fn accept_pending(listener: BorrowedFd<'_>, slots: &mut [ClientSlot; MAX_CLIENTS
 pub fn run() -> Result<(), Error> {
     let (listener, _guard) = bind_listener()?;
     let mut slots: [ClientSlot; MAX_CLIENTS] = [const { ClientSlot::empty() }; MAX_CLIENTS];
-    let mut scratch = RenderScratch::new();
+    let mut state = DaemonState::new();
+    let mut file_buf = Vec::with_capacity(64 * 1024);
     let mut shutting_down = false;
 
     loop {
@@ -386,91 +768,12 @@ pub fn run() -> Result<(), Error> {
                 step_client(
                     &mut slots[usize::from(idx)],
                     rev,
-                    &mut scratch,
+                    &mut state,
+                    &mut file_buf,
                     &mut shutting_down,
                 );
             }
         }
     }
     Ok(())
-}
-
-fn read_bounded_file(path: &str, out: &mut Vec<u8>) -> Result<(), Errno> {
-    let fd = openat(CWD, path, OFlags::RDONLY | OFlags::CLOEXEC, Mode::empty())?;
-    let st = fstat(&fd)?;
-    if FileType::from_raw_mode(st.st_mode) != FileType::RegularFile {
-        return Err(Errno::INVAL);
-    }
-    let size = usize::try_from(st.st_size).map_err(|_| Errno::FBIG)?;
-    if size > MAX_FILE_BYTES {
-        return Err(Errno::FBIG);
-    }
-    out.clear();
-    out.resize(size, 0);
-    let mut got = 0usize;
-    while got < size {
-        match read(&fd, &mut out[got..]) {
-            Ok(0) => break,
-            Ok(n) => got += n,
-            Err(Errno::INTR) => {}
-            Err(e) => return Err(e),
-        }
-    }
-    out.truncate(got);
-    Ok(())
-}
-
-fn handle_render_file(slot: &mut ClientSlot, scratch: &mut RenderScratch) {
-    if slot.buf.is_empty() || slot.buf.len() > MAX_PATH_BYTES {
-        encode_error(
-            Cmd::RenderFile as u16,
-            b"invalid path length",
-            &mut slot.buf,
-        );
-        return;
-    }
-    let Ok(path_str) = core::str::from_utf8(&slot.buf) else {
-        encode_error(Cmd::RenderFile as u16, b"non-utf8 path", &mut slot.buf);
-        return;
-    };
-    let ext = Path::new(path_str)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
-    scratch.reset();
-    if read_bounded_file(path_str, &mut scratch.out_buf).is_err() {
-        encode_error(Cmd::RenderFile as u16, b"file read failed", &mut slot.buf);
-        return;
-    }
-    if crate::fmt::dispatch_into_scene(&scratch.out_buf, ext, &mut scratch.scene).is_err() {
-        encode_error(Cmd::RenderFile as u16, b"parse failed", &mut slot.buf);
-        return;
-    }
-    encode_dual_response(Cmd::RenderFile, b"", b"", &mut slot.buf);
-}
-
-fn dispatch_and_respond(
-    slot: &mut ClientSlot,
-    header: Header,
-    scratch: &mut RenderScratch,
-    shutting_down: &mut bool,
-) {
-    scratch.reset();
-    let Ok(cmd) = Cmd::from_u16(header.command) else {
-        encode_error(header.command, b"unknown command", &mut slot.buf);
-        step_write_resp(slot, 0);
-        return;
-    };
-    match cmd {
-        Cmd::Ping => encode_dual_response(Cmd::Ping, b"", b"", &mut slot.buf),
-        Cmd::Shutdown => {
-            *shutting_down = true;
-            encode_dual_response(Cmd::Shutdown, b"", b"", &mut slot.buf);
-        }
-        Cmd::RenderFile => handle_render_file(slot, scratch),
-        Cmd::ComposeAnsi | Cmd::ComposeExtmarks => {
-            encode_dual_response(cmd, b"", b"", &mut slot.buf);
-        }
-    }
-    step_write_resp(slot, 0);
 }

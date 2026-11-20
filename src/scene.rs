@@ -1,4 +1,4 @@
-//! Hourglass Scene IR: flat `SoA` primitives (`GlyphRun`, `Path`, `Rect`, `TableGrid`).
+//! Hourglass `Scene` IR: flat `SoA` primitives (`GlyphRun`, `Path`, `Rect`, `TableGrid`, `SvgEmbed`).
 
 use crate::theme::ColorToken;
 
@@ -103,12 +103,26 @@ pub struct TableGrid {
 }
 const _: () = assert!(size_of::<TableGrid>() == 24);
 
+/// Embedded vector SVG staged inside `Scene::text_pool` (`u32` byte span, no 64 `KiB` cap).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[repr(C)]
+pub struct SvgEmbed {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub data_off: u32,
+    pub data_len: u32,
+}
+const _: () = assert!(size_of::<SvgEmbed>() == 24);
+
 #[derive(Debug, Default)]
 pub struct Scene {
     pub rects: Vec<Rect>,
     pub paths: Vec<Path>,
     pub glyphs: Vec<GlyphRun>,
     pub grids: Vec<TableGrid>,
+    pub svgs: Vec<SvgEmbed>,
     pub points: Vec<[f32; 2]>,
     pub verbs: Vec<Verb>,
     pub text_pool: Vec<u8>,
@@ -126,6 +140,7 @@ impl Scene {
             paths: Vec::with_capacity(prims),
             glyphs: Vec::with_capacity(prims),
             grids: Vec::with_capacity(16),
+            svgs: Vec::with_capacity(8),
             points: Vec::with_capacity(prims.saturating_mul(4)),
             verbs: Vec::with_capacity(prims.saturating_mul(2)),
             text_pool: Vec::with_capacity(text_bytes),
@@ -142,6 +157,7 @@ impl Scene {
         self.paths.clear();
         self.glyphs.clear();
         self.grids.clear();
+        self.svgs.clear();
         self.points.clear();
         self.verbs.clear();
         self.text_pool.clear();
@@ -154,6 +170,36 @@ impl Scene {
     #[inline]
     pub fn push_rect(&mut self, rect: Rect) {
         self.rects.push(rect);
+    }
+
+    #[inline]
+    pub fn commit_svg(&mut self, x: f32, y: f32, w: f32, h: f32, start: usize) -> bool {
+        let len = self.text_pool.len().saturating_sub(start);
+        let (Ok(data_off), Ok(data_len)) = (u32::try_from(start), u32::try_from(len)) else {
+            return false;
+        };
+        if data_off.checked_add(data_len).is_none() {
+            return false;
+        }
+        self.svgs.push(SvgEmbed {
+            x,
+            y,
+            w,
+            h,
+            data_off,
+            data_len,
+        });
+        true
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn svg_bytes(&self, embed: &SvgEmbed) -> &[u8] {
+        let start = embed.data_off as usize;
+        let Some(end) = start.checked_add(embed.data_len as usize) else {
+            return b"";
+        };
+        self.text_pool.get(start..end).unwrap_or(b"")
     }
 
     #[inline]

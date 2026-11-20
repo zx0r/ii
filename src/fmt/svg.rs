@@ -2,8 +2,8 @@
 
 use crate::{
     err::Error,
-    scene::{GlyphRun, Scene},
-    theme::{self, ColorToken, Idx, Palette},
+    scene::Scene,
+    theme::{self, Idx, Palette},
 };
 
 /// Rewrite `currentColor` and hardcoded black strokes/fills to match active `palette`.
@@ -91,32 +91,21 @@ pub fn extract_svg_dimensions(src: &[u8]) -> (f32, f32) {
     (width, height)
 }
 
-/// Stage color-normalized SVG payload into `Scene::text_pool` and record bounds.
+/// Stage color-normalized SVG payload directly into `Scene::svgs` without 64 `KiB` truncation.
 ///
 /// # Errors
-/// Returns `Error::SvgParse` if `src` contains no `<svg` marker.
+/// Returns `Error::SvgParse` if `src` contains no `<svg` marker or pool overflows `u32`.
 pub fn parse_into_scene(src: &[u8], scene: &mut Scene) -> Result<(), Error> {
     if !src.windows(4).any(|w| w == b"<svg") {
         return Err(Error::SvgParse);
     }
-    let Ok(start) = u32::try_from(scene.text_pool.len()) else {
-        return Err(Error::SvgParse);
-    };
+    let start = scene.text_pool.len();
     rewrite_colors(src, &theme::DARK, &mut scene.text_pool);
-    let end = scene.text_pool.len();
-    let len = end.saturating_sub(start as usize);
-    let (svg_w, svg_h) = extract_svg_dimensions(&scene.text_pool[start as usize..end]);
-
-    scene.glyphs.push(GlyphRun {
-        x: 0.0,
-        y: scene.height,
-        text_off: start,
-        text_len: u16::try_from(len).unwrap_or(u16::MAX),
-        font_size: 0,
-        color: ColorToken::FG_PRIMARY,
-        flags: 0,
-        _pad: [0; 2],
-    });
+    let (svg_w, svg_h) = extract_svg_dimensions(&scene.text_pool[start..]);
+    if !scene.commit_svg(0.0, scene.height, svg_w, svg_h, start) {
+        scene.text_pool.truncate(start);
+        return Err(Error::SvgParse);
+    }
     scene.width = scene.width.max(svg_w);
     scene.height += svg_h;
     Ok(())

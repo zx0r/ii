@@ -1,10 +1,10 @@
-//! `Latex` / `mhchem` math compiler backed by `ratex-*`.
+//! `LaTeX` / `mhchem` math compiler backed by `ratex-*`.
 //! Zero-copy fast-path when no `\ce{...}` macro is present.
 
 use crate::{
     err::Error,
     fmt::{font, svg, trim_ascii},
-    scene::{GlyphRun, Scene},
+    scene::Scene,
     theme::{self, ColorToken, Palette},
 };
 
@@ -12,8 +12,8 @@ use crate::{
 fn strip_delims(src: &[u8]) -> &[u8] {
     let trimmed = trim_ascii(src);
     if let Some(inner) = trimmed
-        .strip_prefix(b"$$")
-        .and_then(|s| s.strip_suffix(b"$$"))
+        .strip_prefix(b"\x24\x24")
+        .and_then(|s| s.strip_suffix(b"\x24\x24"))
     {
         return trim_ascii(inner);
     }
@@ -144,7 +144,7 @@ fn compile_expr(
     Ok(())
 }
 
-/// Compile `Latex` (with optional inline `\ce{...}`) into theme-adapted SVG inside `out_svg`.
+/// Compile `LaTeX` (with optional inline `\ce{...}`) into theme-adapted SVG inside `out_svg`.
 ///
 /// # Errors
 /// Returns `Error::LatexCompile` if UTF-8 validation or `ratex_parser::parse` fails.
@@ -167,10 +167,7 @@ pub fn compile_latex(
 }
 
 fn stage_or_fallback(raw_src: &[u8], display: bool, is_chem: bool, scene: &mut Scene) {
-    let Ok(svg_start) = u32::try_from(scene.text_pool.len()) else {
-        return;
-    };
-
+    let start = scene.text_pool.len();
     let compiled = if is_chem {
         let mut buf = Vec::with_capacity(raw_src.len().saturating_mul(2));
         transpile_ce(trim_ascii(raw_src), &mut buf);
@@ -182,32 +179,23 @@ fn stage_or_fallback(raw_src: &[u8], display: bool, is_chem: bool, scene: &mut S
     };
 
     if compiled.is_ok() {
-        let end = scene.text_pool.len();
-        let len = end.saturating_sub(svg_start as usize);
-        let (svg_w, svg_h) = svg::extract_svg_dimensions(&scene.text_pool[svg_start as usize..end]);
-        scene.glyphs.push(GlyphRun {
-            x: 0.0,
-            y: scene.height,
-            text_off: svg_start,
-            text_len: u16::try_from(len).unwrap_or(u16::MAX),
-            font_size: 0,
-            color: ColorToken::FG_PRIMARY,
-            flags: 0,
-            _pad: [0; 2],
-        });
-        scene.width = scene.width.max(svg_w);
-        scene.height += svg_h;
-    } else {
-        scene.text_pool.truncate(svg_start as usize);
-        let fallback = core::str::from_utf8(trim_ascii(raw_src)).unwrap_or("");
-        let cursor_y = scene.height + 16.0;
-        scene.push_text(8.0, cursor_y, fallback, ColorToken::FG_MUTED, 14);
-        scene.width = scene.width.max(font::measure_str(fallback, 14.0) + 16.0);
-        scene.height = cursor_y + 8.0;
+        let (svg_w, svg_h) = svg::extract_svg_dimensions(&scene.text_pool[start..]);
+        if scene.commit_svg(0.0, scene.height, svg_w, svg_h, start) {
+            scene.width = scene.width.max(svg_w);
+            scene.height += svg_h;
+            return;
+        }
     }
+
+    scene.text_pool.truncate(start);
+    let fallback = core::str::from_utf8(trim_ascii(raw_src)).unwrap_or("");
+    let cursor_y = scene.height + 16.0;
+    scene.push_text(8.0, cursor_y, fallback, ColorToken::FG_MUTED, 14);
+    scene.width = scene.width.max(font::measure_str(fallback, 14.0) + 16.0);
+    scene.height = cursor_y + 8.0;
 }
 
-/// Compile `Latex` math block into `Scene` (honest degradation to literal text on syntax error).
+/// Compile `LaTeX` math block into `Scene` (honest degradation to literal text on syntax error).
 ///
 /// # Errors
 /// Never fails hard; returns `Ok(())`.
@@ -216,7 +204,7 @@ pub fn parse_into_scene(src: &[u8], scene: &mut Scene) -> Result<(), Error> {
     Ok(())
 }
 
-/// Compile inline `Latex` math (`$...$`) into `Scene`.
+/// Compile inline `LaTeX` math (`$...$`) into `Scene`.
 ///
 /// # Errors
 /// Never fails hard; returns `Ok(())`.
@@ -225,7 +213,7 @@ pub fn parse_inline_into_scene(src: &[u8], scene: &mut Scene) -> Result<(), Erro
     Ok(())
 }
 
-/// Compile bare `mhchem` block (` ```chem `) into `Scene` via `ratex-*`.
+/// Compile bare `mhchem` block into `Scene` via `ratex-*`.
 ///
 /// # Errors
 /// Never fails hard; returns `Ok(())`.

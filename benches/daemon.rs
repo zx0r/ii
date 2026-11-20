@@ -55,7 +55,7 @@ struct TempArtifactGuard {
 }
 
 impl TempArtifactGuard {
-    fn new(paths: Vec<PathBuf>) -> Self {
+    const fn new(paths: Vec<PathBuf>) -> Self {
         Self { paths }
     }
 }
@@ -302,17 +302,13 @@ fn run_yazi_navigation_benchmark() {
 
     // 1. Process Fork/Exec Model
     for _ in 0..WARMUP_ITERS {
-        let _ = Command::new(&ii_bin)
-            .arg(&temp_doc_path)
-            .output();
+        let _ = Command::new(&ii_bin).arg(&temp_doc_path).output();
     }
 
     let mut fork_metrics = MetricsAggregator::with_capacity(ITERATIONS);
     for _ in 0..ITERATIONS {
         let t0 = get_time_ns();
-        let output = Command::new(&ii_bin)
-            .arg(&temp_doc_path)
-            .output();
+        let output = Command::new(&ii_bin).arg(&temp_doc_path).output();
         let t1 = get_time_ns();
         if let Ok(out) = output
             && out.status.success()
@@ -443,9 +439,21 @@ fn render_executive_telemetry_dashboard(
     let bar_uds_60 = format_utilization_bar(uds.p99_us / 16_666.67, 24);
     let bar_uds_120 = format_utilization_bar(uds.p99_us / 8_333.33, 24);
 
-    let fork_60_color = if fork.miss_rate_60hz > 0.0 { ui.bad() } else { ui.good() };
-    let uds_60_color = if uds.miss_rate_60hz > 0.0 { ui.bad() } else { ui.good() };
-    let uds_col_color = if uds.miss_rate_120hz > 0.0 { ui.warn() } else { ui.good() };
+    let fork_60_color = if fork.miss_rate_60hz > 0.0 {
+        ui.bad()
+    } else {
+        ui.good()
+    };
+    let uds_60_color = if uds.miss_rate_60hz > 0.0 {
+        ui.bad()
+    } else {
+        ui.good()
+    };
+    let uds_col_color = if uds.miss_rate_120hz > 0.0 {
+        ui.warn()
+    } else {
+        ui.good()
+    };
 
     let mut out = String::with_capacity(4096);
     let _ = writeln!(
@@ -482,17 +490,26 @@ fn render_executive_telemetry_dashboard(
     let _ = writeln!(
         out,
         "{b}│{r} {:<22} {b}│{r} {:>20.2} µs {b}│{r} {:>20.2} µs {b}│{r} {:>17} {b}│{r}",
-        "Median (p50)", fork.p50_us, uds.p50_us, format!("{:.1}x", fork.p50_us / uds.p50_us.max(0.1))
+        "Median (p50)",
+        fork.p50_us,
+        uds.p50_us,
+        format!("{:.1}x", fork.p50_us / uds.p50_us.max(0.1))
     );
     let _ = writeln!(
         out,
         "{b}│{r} {:<22} {b}│{r} {:>20.2} µs {b}│{r} {:>20.2} µs {b}│{r} {:>17} {b}│{r}",
-        "p90 Latency", fork.p90_us, uds.p90_us, format!("{:.1}x", fork.p90_us / uds.p90_us.max(0.1))
+        "p90 Latency",
+        fork.p90_us,
+        uds.p90_us,
+        format!("{:.1}x", fork.p90_us / uds.p90_us.max(0.1))
     );
     let _ = writeln!(
         out,
         "{b}│{r} {:<22} {b}│{r} {:>20.2} µs {b}│{r} {:>20.2} µs {b}│{r} {:>17} {b}│{r}",
-        "p95 Latency", fork.p95_us, uds.p95_us, format!("{:.1}x", fork.p95_us / uds.p95_us.max(0.1))
+        "p95 Latency",
+        fork.p95_us,
+        uds.p95_us,
+        format!("{:.1}x", fork.p95_us / uds.p95_us.max(0.1))
     );
     let _ = writeln!(
         out,
@@ -502,7 +519,10 @@ fn render_executive_telemetry_dashboard(
     let _ = writeln!(
         out,
         "{b}│{r} {:<22} {b}│{r} {:>20.2} µs {b}│{r} {:>20.2} µs {b}│{r} {:>17} {b}│{r}",
-        "p99.9 Latency", fork.p999_us, uds.p999_us, format!("{:.1}x", fork.p999_us / uds.p999_us.max(0.1))
+        "p99.9 Latency",
+        fork.p999_us,
+        uds.p999_us,
+        format!("{:.1}x", fork.p999_us / uds.p999_us.max(0.1))
     );
     let _ = writeln!(
         out,
@@ -532,12 +552,26 @@ fn render_executive_telemetry_dashboard(
     let _ = writeln!(
         out,
         "{b}│{r} {:<22} {b}│{r} {:>20.1}%  {b}│{r} {:>20.1}%  {b}│{r} {:>18} {b}│{r}",
-        "60 Hz Miss Rate (>16ms)", fork.miss_rate_60hz, uds.miss_rate_60hz, if uds.miss_rate_60hz == 0.0 { "ZERO MISS" } else { "-" }
+        "60 Hz Miss Rate (>16ms)",
+        fork.miss_rate_60hz,
+        uds.miss_rate_60hz,
+        if uds.miss_rate_60hz == 0.0 {
+            "ZERO MISS"
+        } else {
+            "-"
+        }
     );
     let _ = writeln!(
         out,
         "{b}│{r} {:<22} {b}│{r} {:>20.1}%  {b}│{r} {:>20.1}%  {b}│{r} {:>18} {b}│{r}",
-        "120 Hz Miss Rate (>8ms)", fork.miss_rate_120hz, uds.miss_rate_120hz, if uds.miss_rate_120hz == 0.0 { "ZERO MISS" } else { "-" }
+        "120 Hz Miss Rate (>8ms)",
+        fork.miss_rate_120hz,
+        uds.miss_rate_120hz,
+        if uds.miss_rate_120hz == 0.0 {
+            "ZERO MISS"
+        } else {
+            "-"
+        }
     );
     let _ = writeln!(
         out,

@@ -1,4 +1,4 @@
-//! `ii` entry point: CLI, daemon control, and local KGP pipeline.
+//! `ii` entry point: CLI, daemon control, and local L2-cached KGP pipeline.
 
 use std::path::Path;
 
@@ -11,14 +11,15 @@ use rustix::{
 };
 
 use ii::{
-    daemon,
+    cache, daemon,
     err::Error,
     fmt,
     ipc::{self, Cmd, MAX_PAYLOAD},
     kitty::{self, StageParams},
     raster,
     scene::RenderScratch,
-    tty,
+    theme::ColorToken,
+    tty, vram,
 };
 
 const VERSION_LINE: &[u8] = concat!("ii ", env!("CARGO_PKG_VERSION"), "\n").as_bytes();
@@ -102,21 +103,73 @@ fn read_file_bounded(path: &Path) -> Result<Vec<u8>, Error> {
 }
 
 fn render_file_local(data: &[u8], ext: &str) -> Result<(), Error> {
-    let mut scratch = RenderScratch::new();
-    fmt::dispatch_into_scene(data, ext, &mut scratch.scene)?;
-
     let (metrics, palette, tty_fd) = tty::probe();
-    let (w, h, cols, rows) = raster::rasterize_scene(
-        &scratch.scene,
-        palette,
+    let kind = fmt::detect_kind(data, ext);
+    let fg = palette.color(ColorToken::FG_PRIMARY);
+    let fg_rgb = [fg.r(), fg.g(), fg.b()];
+    let image_id = vram::compute_tag(
+        metrics.cell_w,
+        metrics.cell_h,
+        metrics.cols,
+        kind as u8,
+        fg_rgb,
+        data,
+    )
+    .image_id()
+    .get();
+
+    let mut scratch = RenderScratch::new();
+    let mut lz4 = Vec::new();
+    let l2_dir = cache::ensure_dirs().ok();
+    let b3 = cache::blake3_key(
         metrics.cell_w,
         metrics.cell_h,
         metrics.max_width_px(),
-        &mut scratch.rgba_buf,
-    )?;
+        kind as u8,
+        fg_rgb,
+        palette.is_dark,
+        data,
+    );
+
+    let cached = if let Some(ref dir_fd) = l2_dir
+        && let Ok(Some((w32, h32))) =
+            cache::read_blob(dir_fd.as_fd(), &b3, &mut scratch.rgba_buf, &mut lz4)
+        && let (Ok(w), Ok(h)) = (u16::try_from(w32), u16::try_from(h32))
+    {
+        let cols = w.div_ceil(metrics.cell_w.max(1)).max(1);
+        let rows = h.div_ceil(metrics.cell_h.max(1)).max(1);
+        Some((w, h, cols, rows))
+    } else {
+        None
+    };
+
+    let (w, h, cols, rows) = if let Some(hit) = cached {
+        hit
+    } else {
+        fmt::dispatch_kind(kind, data, &mut scratch.scene)?;
+        let res = raster::rasterize_scene(
+            &scratch.scene,
+            palette,
+            metrics.cell_w,
+            metrics.cell_h,
+            metrics.max_width_px(),
+            &mut scratch.rgba_buf,
+        )?;
+        if let Some(ref dir_fd) = l2_dir {
+            let _ = cache::write_blob(
+                dir_fd.as_fd(),
+                &b3,
+                u32::from(res.0),
+                u32::from(res.1),
+                &scratch.rgba_buf,
+                &mut lz4,
+            );
+        }
+        res
+    };
 
     let params = StageParams {
-        image_id: 1,
+        image_id,
         w,
         h,
         cols,
@@ -148,7 +201,7 @@ fn render_file_local(data: &[u8], ext: &str) -> Result<(), Error> {
     }
 
     scratch.out_buf.clear();
-    kitty::emit_placeholder(params.image_id, cols, rows, &mut scratch.out_buf);
+    kitty::emit_placeholder(image_id, cols, rows, &mut scratch.out_buf);
     write_all(stdout.as_fd(), &scratch.out_buf)
 }
 

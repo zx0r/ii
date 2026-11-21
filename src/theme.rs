@@ -1,5 +1,11 @@
 //! Static palette tables, 1-byte `ColorToken`, and compile-time SGR escape sequences.
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThemeChoice {
+    Dark,
+    Light,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[repr(transparent)]
 pub struct ColorToken(u8);

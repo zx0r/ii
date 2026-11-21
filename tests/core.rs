@@ -174,27 +174,41 @@ fn prop_ipc_wire_codecs_and_validation() {
         any::<u16>(),
         any::<u16>(),
         any::<u32>(),
-        any::<u16>(),
-        any::<u16>(),
-        any::<u16>(),
-        any::<u16>(),
         any::<u32>(),
-        any::<u64>(),
+        any::<u32>(),
+        any::<u32>(),
+        any::<u16>(),
+        any::<u16>(),
+        any::<u16>(),
+        any::<u16>(),
     );
     let res = runner().run(
         &strat,
-        |(magic, version, command, flags, cols, rows, cell_w, cell_h, payload_len, reserved)| {
+        |(
+            magic,
+            version,
+            command,
+            req_id_lo,
+            req_id_hi,
+            flags,
+            payload_len,
+            cols,
+            rows,
+            cell_w,
+            cell_h,
+        )| {
             let hdr = Header {
                 magic,
                 version,
                 command,
+                req_id_lo,
+                req_id_hi,
                 flags,
+                payload_len,
                 cols,
                 rows,
                 cell_w,
                 cell_h,
-                payload_len,
-                reserved,
             };
             prop_assert_eq!(Header::from_le_bytes(&hdr.to_le_bytes()), hdr);
             Ok(())
@@ -221,16 +235,20 @@ fn prop_ipc_wire_codecs_and_validation() {
     let mut hdr_bytes = [0u8; 32];
     hdr_bytes.copy_from_slice(&wire[..32]);
     let resp = Header::from_le_bytes(&hdr_bytes);
-    assert_eq!(resp.command, (Cmd::RenderFile as u16) | RESP_FLAG);
-    assert_eq!(resp.payload_len, 10);
-    assert_eq!(&wire[32..36], &3u32.to_le_bytes());
-    assert_eq!(&wire[36..39], b"APC");
-    assert_eq!(&wire[39..42], b"TXT");
+    let resp_cmd = resp.command;
+    let resp_payload_len = resp.payload_len;
+    let resp_flags = resp.flags;
+    assert_eq!(resp_cmd, (Cmd::RenderFile as u16) | RESP_FLAG);
+    assert_eq!(resp_payload_len, 6);
+    assert_eq!(resp_flags, 3);
+    assert_eq!(&wire[32..35], b"APC");
+    assert_eq!(&wire[35..38], b"TXT");
 
     encode_error(Cmd::Ping as u16, b"boom", &mut wire);
     hdr_bytes.copy_from_slice(&wire[..32]);
     let err_hdr = Header::from_le_bytes(&hdr_bytes);
-    assert_eq!(err_hdr.command, (Cmd::Ping as u16) | RESP_FLAG | ERR_FLAG);
+    let err_cmd = err_hdr.command;
+    assert_eq!(err_cmd, (Cmd::Ping as u16) | RESP_FLAG | ERR_FLAG);
     assert_eq!(&wire[32..], b"boom");
 }
 

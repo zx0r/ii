@@ -1,11 +1,8 @@
 //! Terminal geometry (`TIOCGWINSZ`), OSC 11 background probe, and Rec. 709 luminance.
 
 use rustix::{
-    event::{PollFd, PollFlags, Timespec, poll},
-    fd::{AsFd, BorrowedFd, OwnedFd},
-    fs::{Mode, OFlags, open},
-    io::{Errno, read, write},
-    termios::{OptionalActions, Termios, tcgetattr, tcgetwinsize, tcsetattr},
+    fd::{AsFd, OwnedFd},
+    termios::{Winsize, tcgetwinsize},
 };
 
 use crate::theme::{self, Palette};
@@ -77,27 +74,6 @@ impl Default for Term {
     }
 }
 
-struct RawModeGuard<'fd> {
-    fd: BorrowedFd<'fd>,
-    orig: Termios,
-}
-
-impl<'fd> RawModeGuard<'fd> {
-    fn enter(fd: BorrowedFd<'fd>) -> Option<Self> {
-        let orig = tcgetattr(fd).ok()?;
-        let mut raw = orig.clone();
-        raw.make_raw();
-        tcsetattr(fd, OptionalActions::Now, &raw).ok()?;
-        Some(Self { fd, orig })
-    }
-}
-
-impl Drop for RawModeGuard<'_> {
-    fn drop(&mut self) {
-        let _ = tcsetattr(self.fd, OptionalActions::Now, &self.orig);
-    }
-}
-
 #[inline]
 #[must_use]
 #[expect(
@@ -130,98 +106,94 @@ pub fn parse_osc_rgb(buf: &[u8]) -> Option<(u8, u8, u8)> {
     ))
 }
 
-fn query_osc_color(fd: BorrowedFd<'_>, mut query: &[u8]) -> Option<(u8, u8, u8)> {
-    let _raw = RawModeGuard::enter(fd)?;
-    while !query.is_empty() {
-        match write(fd, query) {
-            Ok(0) => return None,
-            Ok(n) => query = &query[n..],
-            Err(Errno::INTR) => {}
-            Err(_) => return None,
-        }
-    }
-
-    let mut buf = [0u8; 64];
-    let mut filled = 0usize;
-    let timeout = Timespec {
-        tv_sec: 0,
-        tv_nsec: 25_000_000,
-    };
-    for _ in 0..4 {
-        let ready = loop {
-            let mut pfd = [PollFd::new(&fd, PollFlags::IN)];
-            match poll(&mut pfd, Some(&timeout)) {
-                Ok(n) => break n,
-                Err(Errno::INTR) => {}
-                Err(_) => return None,
-            }
-        };
-        if ready == 0 {
-            break;
-        }
-        let n = loop {
-            match read(fd, &mut buf[filled..]) {
-                Ok(n) => break n,
-                Err(Errno::INTR) => {}
-                Err(_) => return None,
-            }
-        };
-        if n == 0 {
-            break;
-        }
-        filled += n;
-        if let Some(rgb) = parse_osc_rgb(&buf[..filled]) {
-            return Some(rgb);
-        }
-        if filled >= buf.len() {
-            break;
-        }
-    }
-    parse_osc_rgb(&buf[..filled])
-}
+#[cfg(target_os = "macos")]
+pub const DEFAULT_CELL: (u16, u16) = (18, 36);
+#[cfg(not(target_os = "macos"))]
+pub const DEFAULT_CELL: (u16, u16) = (9, 18);
 
 #[must_use]
-pub fn probe() -> (Metrics, &'static Palette, Option<OwnedFd>) {
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "px_w and px_h are clamped to u16::MAX"
+)]
+pub fn resolve_metrics(
+    size_arg: Option<(u16, u16)>,
+    cell_size_arg: Option<(u16, u16)>,
+    is_interactive: bool,
+) -> Metrics {
     let is_remote = std::env::var_os("SSH_CONNECTION").is_some()
         || std::env::var_os("SSH_CLIENT").is_some()
         || std::env::var_os("SSH_TTY").is_some();
     let is_tmux = std::env::var_os("TMUX").is_some();
-    let tty_fd = open(
-        "/dev/tty",
-        OFlags::RDWR | OFlags::NOCTTY | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .ok();
 
-    let mut metrics = Metrics::FALLBACK.with_env(is_remote, is_tmux);
-    let mut palette: &'static Palette = &theme::DARK;
+    let (cols, rows, cell_w, cell_h) = if is_interactive {
+        let ws = tcgetwinsize(std::io::stdout().as_fd()).unwrap_or(Winsize {
+            ws_row: 0,
+            ws_col: 0,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        });
 
-    if let Some(ref fd) = tty_fd {
-        if let Ok(ws) = tcgetwinsize(fd)
-            && ws.ws_col > 0
-            && ws.ws_row > 0
-        {
-            metrics.cols = ws.ws_col;
-            metrics.rows = ws.ws_row;
-            if ws.ws_xpixel > 0 && ws.ws_ypixel > 0 {
-                metrics.px_w = ws.ws_xpixel;
-                metrics.px_h = ws.ws_ypixel;
-                metrics.cell_w = (ws.ws_xpixel / ws.ws_col).max(1);
-                metrics.cell_h = (ws.ws_ypixel / ws.ws_row).max(1);
+        let cols = size_arg.map_or(if ws.ws_col > 0 { ws.ws_col } else { 80 }, |(w, _)| w);
+        let rows = size_arg.map_or(if ws.ws_row > 0 { ws.ws_row } else { 24 }, |(_, h)| h);
+
+        let (cell_w, cell_h) = cell_size_arg.unwrap_or_else(|| {
+            if !is_tmux && ws.ws_col > 0 && ws.ws_xpixel > 0 && ws.ws_row > 0 && ws.ws_ypixel > 0 {
+                (
+                    (ws.ws_xpixel / ws.ws_col).max(4),
+                    (ws.ws_ypixel / ws.ws_row).max(8),
+                )
             } else {
-                metrics.px_w = metrics.cols.saturating_mul(metrics.cell_w);
-                metrics.px_h = metrics.rows.saturating_mul(metrics.cell_h);
+                DEFAULT_CELL
             }
-        }
-        if !is_remote && let Some((r, g, b)) = query_osc_color(fd.as_fd(), b"\x1b]11;?\x1b\\") {
-            palette = if luminance(r, g, b) < 128 {
-                &theme::DARK
-            } else {
-                &theme::LIGHT
-            };
-        }
+        });
+        (cols, rows, cell_w, cell_h)
+    } else {
+        let (cols, rows) = size_arg.unwrap_or((80, 24));
+        let (cell_w, cell_h) = cell_size_arg.unwrap_or(DEFAULT_CELL);
+        (cols, rows, cell_w, cell_h)
+    };
+
+    let px_w = (u32::from(cols) * u32::from(cell_w)).min(u32::from(u16::MAX)) as u16;
+    let px_h = (u32::from(rows) * u32::from(cell_h)).min(u32::from(u16::MAX)) as u16;
+
+    Metrics {
+        cols,
+        rows,
+        cell_w,
+        cell_h,
+        px_w,
+        px_h,
+        is_remote: u8::from(is_remote),
+        is_tmux: u8::from(is_tmux),
+        _pad: [0; 2],
     }
-    (metrics, palette, tty_fd)
+}
+
+#[must_use]
+pub fn resolve_theme(theme_arg: Option<theme::ThemeChoice>) -> &'static Palette {
+    if let Some(choice) = theme_arg {
+        return match choice {
+            theme::ThemeChoice::Dark => &theme::DARK,
+            theme::ThemeChoice::Light => &theme::LIGHT,
+        };
+    }
+    if let Some(colorfgbg) = std::env::var_os("COLORFGBG").and_then(|v| v.into_string().ok())
+        && let Some((_, bg)) = colorfgbg.rsplit_once(';')
+        && let Ok(bg_num) = bg.trim().parse::<u8>()
+        && (bg_num == 15 || bg_num == 7)
+    {
+        return &theme::LIGHT;
+    }
+    &theme::DARK
+}
+
+#[must_use]
+pub fn probe() -> (Metrics, &'static Palette, Option<OwnedFd>) {
+    let is_interactive = rustix::termios::isatty(std::io::stdout());
+    let metrics = resolve_metrics(None, None, is_interactive);
+    let palette = resolve_theme(None);
+    (metrics, palette, None)
 }
 
 pub fn render_ansi(src: &[u8], spans: &[crate::ipc::SpanCoord], dark: bool, out: &mut Vec<u8>) {

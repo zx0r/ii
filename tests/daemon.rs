@@ -149,7 +149,8 @@ fn daemon_lifecycle_lock_ping_render_bad_magic_and_shutdown()
 
     // Raw IXPC v1 `Cmd::Ping`.
     let (resp_hdr, _) = send_raw(&sock, &Header::new(Cmd::Ping, 0), &[])?;
-    assert_eq!(resp_hdr.command, (Cmd::Ping as u16) | RESP_FLAG);
+    let ping_cmd = resp_hdr.command;
+    assert_eq!(ping_cmd, (Cmd::Ping as u16) | RESP_FLAG);
 
     // Raw IXPC v1 `Cmd::RenderFile` against a real CSV file.
     let csv_path = rt.0.join("sample.csv");
@@ -157,13 +158,15 @@ fn daemon_lifecycle_lock_ping_render_bad_magic_and_shutdown()
     let path_bytes = csv_path.to_string_lossy().as_bytes().to_vec();
     let render_hdr = Header::new(Cmd::RenderFile, u32::try_from(path_bytes.len())?);
     let (resp_hdr, _) = send_raw(&sock, &render_hdr, &path_bytes)?;
-    assert_eq!(resp_hdr.command, (Cmd::RenderFile as u16) | RESP_FLAG);
+    let render_cmd = resp_hdr.command;
+    assert_eq!(render_cmd, (Cmd::RenderFile as u16) | RESP_FLAG);
 
     // Corrupt magic frame must yield `ERR_FLAG` without crashing the reactor.
     let mut bad_hdr = Header::new(Cmd::Ping, 0);
     bad_hdr.magic = 0xDEAD_BEEF;
     let (err_hdr, err_body) = send_raw(&sock, &bad_hdr, &[])?;
-    assert_ne!(err_hdr.command & ERR_FLAG, 0);
+    let err_cmd = err_hdr.command;
+    assert_ne!(err_cmd & ERR_FLAG, 0);
     assert_eq!(err_body, b"invalid header");
 
     // Graceful `--shutdown` exits 0 and RAII `DaemonGuard` unlinks socket.

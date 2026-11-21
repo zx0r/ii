@@ -193,11 +193,7 @@ struct TextDraw {
     color: Rgba,
 }
 
-fn draw_vector_text(
-    text: &str,
-    cfg: TextDraw,
-    pixmap: &mut tiny_skia::PixmapMut<'_>,
-) {
+fn draw_vector_text(text: &str, cfg: TextDraw, pixmap: &mut tiny_skia::PixmapMut<'_>) {
     if text.is_empty() || cfg.font_px <= 0.0 {
         return;
     }
@@ -664,4 +660,124 @@ pub fn decode_png(src: &[u8], rgba: &mut Vec<u8>) -> Result<(u32, u32), Error> {
     }
     rgba.truncate(rgba_len);
     Ok((width, height))
+}
+
+/// Layout metrics computed for quantized cell-snapped rasterization.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CanvasLayout {
+    pub scale: f32,
+    pub grid_cols: u16,
+    pub grid_rows: u16,
+    pub snap_w: u32,
+    pub snap_h: u32,
+    pub off_x: f32,
+    pub off_y: f32,
+}
+
+/// Compute scale-down layout snapped to terminal character cell dimensions.
+///
+/// # Errors
+/// Returns `Error::SvgParse` if intrinsic dimensions are not finite and positive,
+/// or `Error::ImageTooLarge` if snapped bounds exceed `MAX_DIM`.
+#[expect(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "bounded positive dimension conversions"
+)]
+pub fn scale_down_and_snap(
+    intrinsic_w: f32,
+    intrinsic_h: f32,
+    cols: u16,
+    rows: u16,
+    cell_w: u16,
+    cell_h: u16,
+) -> Result<CanvasLayout, Error> {
+    if !(intrinsic_w.is_finite()
+        && intrinsic_h.is_finite()
+        && intrinsic_w > 0.0
+        && intrinsic_h > 0.0)
+    {
+        return Err(Error::SvgParse);
+    }
+
+    let max_px_w = f32::from(cols) * f32::from(cell_w);
+    let max_px_h = f32::from(rows) * f32::from(cell_h);
+
+    let scale_x = max_px_w / intrinsic_w;
+    let scale_y = max_px_h / intrinsic_h;
+    let scale = 1.0_f32.min(scale_x).min(scale_y);
+
+    let content_w = ((intrinsic_w * scale).ceil() as u32)
+        .min(max_px_w as u32)
+        .max(1);
+    let content_h = ((intrinsic_h * scale).ceil() as u32)
+        .min(max_px_h as u32)
+        .max(1);
+
+    let grid_cols = content_w.div_ceil(u32::from(cell_w)).max(1) as u16;
+    let grid_rows = content_h.div_ceil(u32::from(cell_h)).max(1) as u16;
+
+    let snap_w = u32::from(grid_cols) * u32::from(cell_w);
+    let snap_h = u32::from(grid_rows) * u32::from(cell_h);
+
+    if snap_w > MAX_DIM || snap_h > MAX_DIM {
+        return Err(Error::ImageTooLarge {
+            w: snap_w,
+            h: snap_h,
+        });
+    }
+
+    let off_x = ((snap_w - content_w) / 2) as f32;
+    let off_y = ((snap_h - content_h) / 2) as f32;
+
+    Ok(CanvasLayout {
+        scale,
+        grid_cols,
+        grid_rows,
+        snap_w,
+        snap_h,
+        off_x,
+        off_y,
+    })
+}
+
+/// Rasterize SVG into cell-snapped transparent RGBA8 with aspect-ratio preservation.
+///
+/// # Errors
+/// Returns `Error::SvgParse` or `Error::ImageTooLarge`.
+pub fn rasterize_svg_snapped(
+    svg_data: &[u8],
+    cols: u16,
+    rows: u16,
+    cell_w: u16,
+    cell_h: u16,
+    rgba_out: &mut Vec<u8>,
+) -> Result<(u16, u16), Error> {
+    let tree = resvg::usvg::Tree::from_data(svg_data, &resvg::usvg::Options::default())
+        .map_err(|_| Error::SvgParse)?;
+    let (src_w, src_h) = (tree.size().width(), tree.size().height());
+
+    let layout = scale_down_and_snap(src_w, src_h, cols, rows, cell_w, cell_h)?;
+    let byte_len = (layout.snap_w as usize)
+        .checked_mul(layout.snap_h as usize)
+        .and_then(|px| px.checked_mul(4))
+        .ok_or(Error::ImageTooLarge {
+            w: layout.snap_w,
+            h: layout.snap_h,
+        })?;
+
+    rgba_out.clear();
+    rgba_out.resize(byte_len, 0);
+
+    let mut pixmap = tiny_skia::PixmapMut::from_bytes(rgba_out, layout.snap_w, layout.snap_h)
+        .ok_or(Error::SvgParse)?;
+
+    let ts = tiny_skia::Transform::from_scale(layout.scale, layout.scale)
+        .post_translate(layout.off_x, layout.off_y);
+    resvg::render(&tree, ts, &mut pixmap);
+
+    unpremultiply(rgba_out);
+
+    Ok((layout.grid_cols, layout.grid_rows))
 }

@@ -1,0 +1,6 @@
+# ii — Yazi adapter. Append to ~/.config/yazi/yazi.toml (or `ii init yazi`).
+# Plugin: ln -snf <repo>/plugins/ii.yazi ~/.config/yazi/plugins/ii.yazi
+[plugin]
+prepend_previewers = [
+  { url = "*.{md,markdown,mdx,qmd,rmd,ipynb,mmd,mermaid,dot,gv,svg,tex,latex,typ,csv,tsv,png,vl,vegalite,plotly,zip,tar,gz,tgz,bz2,tbz2,xz,txz,zst,tzst,7z,rar,iso,dmg,pkg,deb,rpm,jar,whl}", run = "ii" },
+]

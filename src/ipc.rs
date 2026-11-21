@@ -46,19 +46,24 @@ impl Cmd {
     }
 }
 
+pub const FLAG_THEME_LIGHT: u32 = 1 << 0; // 0 = dark, 1 = light
+pub const FLAG_TMUX: u32 = 1 << 1; // Client in tmux (wrap in DCS passthrough)
+pub const FLAG_REMOTE: u32 = 1 << 2; // Client remote/SSH (enforce Base64, no SHM)
+
+#[repr(C, packed)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(C)]
 pub struct Header {
     pub magic: u32,
     pub version: u16,
     pub command: u16,
+    pub req_id_lo: u32,
+    pub req_id_hi: u32,
     pub flags: u32,
+    pub payload_len: u32,
     pub cols: u16,
     pub rows: u16,
     pub cell_w: u16,
     pub cell_h: u16,
-    pub payload_len: u32,
-    pub reserved: u64,
 }
 const _: () = assert!(size_of::<Header>() == 32);
 
@@ -70,13 +75,14 @@ impl Header {
             magic: MAGIC,
             version: VERSION,
             command: cmd as u16,
+            req_id_lo: 0,
+            req_id_hi: 0,
             flags: 0,
+            payload_len,
             cols: 80,
             rows: 24,
             cell_w: 8,
             cell_h: 16,
-            payload_len,
-            reserved: 0,
         }
     }
 
@@ -87,13 +93,14 @@ impl Header {
             magic: u32::from_le_bytes([b[0], b[1], b[2], b[3]]),
             version: u16::from_le_bytes([b[4], b[5]]),
             command: u16::from_le_bytes([b[6], b[7]]),
-            flags: u32::from_le_bytes([b[8], b[9], b[10], b[11]]),
-            cols: u16::from_le_bytes([b[12], b[13]]),
-            rows: u16::from_le_bytes([b[14], b[15]]),
-            cell_w: u16::from_le_bytes([b[16], b[17]]),
-            cell_h: u16::from_le_bytes([b[18], b[19]]),
+            req_id_lo: u32::from_le_bytes([b[8], b[9], b[10], b[11]]),
+            req_id_hi: u32::from_le_bytes([b[12], b[13], b[14], b[15]]),
+            flags: u32::from_le_bytes([b[16], b[17], b[18], b[19]]),
             payload_len: u32::from_le_bytes([b[20], b[21], b[22], b[23]]),
-            reserved: u64::from_le_bytes([b[24], b[25], b[26], b[27], b[28], b[29], b[30], b[31]]),
+            cols: u16::from_le_bytes([b[24], b[25]]),
+            rows: u16::from_le_bytes([b[26], b[27]]),
+            cell_w: u16::from_le_bytes([b[28], b[29]]),
+            cell_h: u16::from_le_bytes([b[30], b[31]]),
         }
     }
 
@@ -103,16 +110,17 @@ impl Header {
         let [m0, m1, m2, m3] = self.magic.to_le_bytes();
         let [v0, v1] = self.version.to_le_bytes();
         let [c0, c1] = self.command.to_le_bytes();
+        let [rlo0, rlo1, rlo2, rlo3] = self.req_id_lo.to_le_bytes();
+        let [rhi0, rhi1, rhi2, rhi3] = self.req_id_hi.to_le_bytes();
         let [f0, f1, f2, f3] = self.flags.to_le_bytes();
+        let [pl0, pl1, pl2, pl3] = self.payload_len.to_le_bytes();
         let [co0, co1] = self.cols.to_le_bytes();
-        let [ro0, ro1] = self.rows.to_le_bytes();
+        let [rw0, rw1] = self.rows.to_le_bytes();
         let [cw0, cw1] = self.cell_w.to_le_bytes();
         let [ch0, ch1] = self.cell_h.to_le_bytes();
-        let [pl0, pl1, pl2, pl3] = self.payload_len.to_le_bytes();
-        let [r0, r1, r2, r3, r4, r5, r6, r7] = self.reserved.to_le_bytes();
         [
-            m0, m1, m2, m3, v0, v1, c0, c1, f0, f1, f2, f3, co0, co1, ro0, ro1, cw0, cw1, ch0, ch1,
-            pl0, pl1, pl2, pl3, r0, r1, r2, r3, r4, r5, r6, r7,
+            m0, m1, m2, m3, v0, v1, c0, c1, rlo0, rlo1, rlo2, rlo3, rhi0, rhi1, rhi2, rhi3, f0, f1,
+            f2, f3, pl0, pl1, pl2, pl3, co0, co1, rw0, rw1, cw0, cw1, ch0, ch1,
         ]
     }
 
@@ -136,7 +144,7 @@ impl Header {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(C)]
+#[repr(C, packed)]
 pub struct Extmark {
     pub image_id: u32,
     pub start_row: u16,
@@ -147,6 +155,8 @@ pub struct Extmark {
     pub rows: u16,
 }
 const _: () = assert!(size_of::<Extmark>() == 16);
+
+pub type ExtmarkRecord = Extmark;
 
 impl Extmark {
     #[inline]
@@ -180,7 +190,7 @@ impl Extmark {
 }
 
 pub fn encode_dual_response(cmd: Cmd, apc: &[u8], text: &[u8], out: &mut Vec<u8>) {
-    let total = 4usize.saturating_add(apc.len()).saturating_add(text.len());
+    let total = apc.len().saturating_add(text.len());
     let (Ok(payload_len), Ok(apc_len)) = (u32::try_from(total), u32::try_from(apc.len())) else {
         encode_error(cmd as u16, b"response too large", out);
         return;
@@ -191,10 +201,10 @@ pub fn encode_dual_response(cmd: Cmd, apc: &[u8], text: &[u8], out: &mut Vec<u8>
     }
     let mut hdr = Header::new(cmd, payload_len);
     hdr.command = (cmd as u16) | RESP_FLAG;
+    hdr.flags = apc_len;
     out.clear();
     out.reserve(32 + total);
     out.extend_from_slice(&hdr.to_le_bytes());
-    out.extend_from_slice(&apc_len.to_le_bytes());
     out.extend_from_slice(apc);
     out.extend_from_slice(text);
 }

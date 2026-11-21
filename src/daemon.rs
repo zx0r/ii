@@ -48,10 +48,6 @@ const DRAIN_TIMEOUT: Timespec = Timespec {
     tv_nsec: 0,
 };
 
-const FLAG_LIGHT: u32 = 1 << 0;
-const FLAG_TMUX: u32 = 1 << 1;
-const FLAG_REMOTE: u32 = 1 << 2;
-
 #[derive(Clone, Copy)]
 struct RenderCtx {
     cell_w: u16,
@@ -64,6 +60,10 @@ struct RenderCtx {
 }
 
 impl RenderCtx {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "max_w is clamped to u16::MAX"
+    )]
     fn from_header(h: Header) -> Self {
         let cell_w = if h.cell_w > 0 {
             h.cell_w
@@ -84,14 +84,14 @@ impl RenderCtx {
             cell_w,
             cell_h,
             cols,
-            max_w: cols.saturating_mul(cell_w),
-            palette: if (h.flags & FLAG_LIGHT) != 0 {
+            max_w: (u32::from(cols) * u32::from(cell_w)).min(u32::from(u16::MAX)) as u16,
+            palette: if (h.flags & ipc::FLAG_THEME_LIGHT) != 0 {
                 &theme::LIGHT
             } else {
                 &theme::DARK
             },
-            is_tmux: (h.flags & FLAG_TMUX) != 0,
-            is_remote: (h.flags & FLAG_REMOTE) != 0,
+            is_tmux: (h.flags & ipc::FLAG_TMUX) != 0,
+            is_remote: (h.flags & ipc::FLAG_REMOTE) != 0,
         }
     }
 }
@@ -538,6 +538,10 @@ fn dispatch_and_respond(
     state.reset_request();
     let Ok(cmd) = Cmd::from_u16(header.command) else {
         encode_error(header.command, b"unknown command", &mut slot.buf);
+        if slot.buf.len() >= 16 {
+            slot.buf[8..12].copy_from_slice(&header.req_id_lo.to_le_bytes());
+            slot.buf[12..16].copy_from_slice(&header.req_id_hi.to_le_bytes());
+        }
         step_write_resp(slot, 0);
         return;
     };
@@ -552,6 +556,10 @@ fn dispatch_and_respond(
         }
         Cmd::RenderFile => handle_render_file(slot, ctx, state, file_buf),
         Cmd::ComposeAnsi | Cmd::ComposeExtmarks => handle_compose(slot, cmd, ctx, state),
+    }
+    if slot.buf.len() >= 16 {
+        slot.buf[8..12].copy_from_slice(&header.req_id_lo.to_le_bytes());
+        slot.buf[12..16].copy_from_slice(&header.req_id_hi.to_le_bytes());
     }
     step_write_resp(slot, 0);
 }
@@ -575,6 +583,10 @@ fn step_read_header(
             let hdr = Header::from_le_bytes(&slot.hdr);
             if hdr.validate().is_err() {
                 encode_error(hdr.command, b"invalid header", &mut slot.buf);
+                if slot.buf.len() >= 16 {
+                    slot.buf[8..12].copy_from_slice(&hdr.req_id_lo.to_le_bytes());
+                    slot.buf[12..16].copy_from_slice(&hdr.req_id_hi.to_le_bytes());
+                }
                 step_write_resp(slot, 0);
                 return;
             }

@@ -1,6 +1,6 @@
 //! `ii` entry point: CLI, daemon control, and local L2-cached KGP pipeline.
 
-use std::path::Path;
+use std::{ffi::OsString, path::Path};
 
 use rustix::{
     fd::{AsFd, BorrowedFd},
@@ -18,7 +18,7 @@ use ii::{
     kitty::{self, StageParams},
     raster,
     scene::RenderScratch,
-    theme::ColorToken,
+    theme::{ColorToken, ThemeChoice},
     tty, vram,
 };
 
@@ -28,14 +28,134 @@ const USAGE: &[u8] = concat!(
     env!("CARGO_PKG_VERSION"),
     " - Terminal graphical coprocessor\n\
 Usage: ii [OPTIONS] [FILE]\n\
-Options:\n\
-  --daemon       Run background IXPC v1 coprocessor daemon\n\
-  --ping         Ping running daemon\n\
-  --shutdown     Gracefully shut down running daemon\n\
-  -h, --help     Show this help message\n\
-  -V, --version  Show version\n"
+\n\
+Geometry:\n\
+  -s, --size <WxH>        Viewport bounds in cells (cols x rows)\n\
+      --cell-size <WxH>   Physical cell size in pixels (cell_w x cell_h)\n\
+      --skip <N>          Vertical line offset for paging\n\
+\n\
+Theme:\n\
+  -t, --theme <THEME>     Palette polarity: [dark | light]\n\
+\n\
+Daemon & Socket:\n\
+      --daemon            Run background IXPC v1 coprocessor daemon\n\
+      --socket <PATH>     UNIX socket path (default: $XDG_RUNTIME_DIR/ii/ii.sock)\n\
+      --ping              Ping running daemon\n\
+      --shutdown          Gracefully shut down running daemon\n\
+\n\
+Info:\n\
+  -h, --help              Show this help message\n\
+  -V, --version           Show version\n"
 )
 .as_bytes();
+
+#[derive(Debug)]
+pub struct CliArgs<'a> {
+    pub size: Option<(u16, u16)>,
+    pub cell_size: Option<(u16, u16)>,
+    pub skip: usize,
+    pub theme: Option<ThemeChoice>,
+    pub is_daemon: bool,
+    pub is_ping: bool,
+    pub is_shutdown: bool,
+    pub socket_path: Option<&'a Path>,
+    pub file_path: Option<&'a Path>,
+}
+
+fn parse_wxh(s: &str) -> Result<(u16, u16), Error> {
+    let mut parts = s.splitn(2, 'x');
+    let w = parts
+        .next()
+        .and_then(|v| v.parse::<u16>().ok())
+        .ok_or(Error::InvalidCli)?;
+    let h = parts
+        .next()
+        .and_then(|v| v.parse::<u16>().ok())
+        .ok_or(Error::InvalidCli)?;
+    if w == 0 || h == 0 {
+        return Err(Error::InvalidCli);
+    }
+    Ok((w, h))
+}
+
+impl<'a> CliArgs<'a> {
+    /// Parse command-line arguments into `CliArgs`.
+    ///
+    /// # Errors
+    /// Returns `Error::InvalidCli` on malformed or unrecognized arguments.
+    pub fn parse(args: &'a [OsString]) -> Result<Self, Error> {
+        let mut parsed = Self {
+            size: None,
+            cell_size: None,
+            skip: 0,
+            theme: None,
+            is_daemon: false,
+            is_ping: false,
+            is_shutdown: false,
+            socket_path: None,
+            file_path: None,
+        };
+
+        let mut it = args.iter();
+        while let Some(arg) = it.next() {
+            let Some(s) = arg.to_str() else { continue };
+            match s {
+                "-s" | "--size" => {
+                    let val = it
+                        .next()
+                        .and_then(|v| v.to_str())
+                        .ok_or(Error::InvalidCli)?;
+                    parsed.size = Some(parse_wxh(val)?);
+                }
+                "--cell-size" => {
+                    let val = it
+                        .next()
+                        .and_then(|v| v.to_str())
+                        .ok_or(Error::InvalidCli)?;
+                    parsed.cell_size = Some(parse_wxh(val)?);
+                }
+                "--skip" => {
+                    let val = it
+                        .next()
+                        .and_then(|v| v.to_str())
+                        .ok_or(Error::InvalidCli)?;
+                    parsed.skip = val.parse::<usize>().map_err(|_| Error::InvalidCli)?;
+                }
+                "-t" | "--theme" => {
+                    let val = it
+                        .next()
+                        .and_then(|v| v.to_str())
+                        .ok_or(Error::InvalidCli)?;
+                    parsed.theme = match val {
+                        "dark" => Some(ThemeChoice::Dark),
+                        "light" => Some(ThemeChoice::Light),
+                        _ => return Err(Error::InvalidCli),
+                    };
+                }
+                "--daemon" => parsed.is_daemon = true,
+                "--ping" => parsed.is_ping = true,
+                "--shutdown" => parsed.is_shutdown = true,
+                "--socket" => {
+                    let val = it.next().ok_or(Error::InvalidCli)?;
+                    parsed.socket_path = Some(Path::new(val));
+                }
+                "-h" | "--help" => {
+                    let _ = write_all(std::io::stdout().as_fd(), USAGE);
+                    std::process::exit(0);
+                }
+                "-V" | "--version" => {
+                    let _ = write_all(std::io::stdout().as_fd(), VERSION_LINE);
+                    std::process::exit(0);
+                }
+                pos if !pos.starts_with('-') => {
+                    parsed.file_path = Some(Path::new(arg));
+                }
+                _ => return Err(Error::InvalidCli),
+            }
+        }
+        Ok(parsed)
+    }
+}
 
 fn write_all(fd: BorrowedFd<'_>, mut buf: &[u8]) -> Result<(), Error> {
     while !buf.is_empty() {
@@ -46,6 +166,19 @@ fn write_all(fd: BorrowedFd<'_>, mut buf: &[u8]) -> Result<(), Error> {
             Err(e) => return Err(Error::Io(e)),
         }
     }
+    Ok(())
+}
+
+fn emit_dual_channel(
+    stdout_fd: BorrowedFd<'_>,
+    apc_bytes: &[u8],
+    text_bytes: &[u8],
+) -> Result<(), Error> {
+    let apc_len = u32::try_from(apc_bytes.len()).map_err(|_| Error::PayloadTooLarge(0))?;
+    let prefix = apc_len.to_le_bytes();
+    write_all(stdout_fd, &prefix)?;
+    write_all(stdout_fd, apc_bytes)?;
+    write_all(stdout_fd, text_bytes)?;
     Ok(())
 }
 
@@ -102,8 +235,14 @@ fn read_file_bounded(path: &Path) -> Result<Vec<u8>, Error> {
     Ok(buf)
 }
 
-fn render_file_local(data: &[u8], ext: &str) -> Result<(), Error> {
-    let (metrics, palette, tty_fd) = tty::probe();
+fn render_file_local(
+    data: &[u8],
+    ext: &str,
+    args: &CliArgs<'_>,
+    is_interactive: bool,
+) -> Result<(), Error> {
+    let metrics = tty::resolve_metrics(args.size, args.cell_size, is_interactive);
+    let palette = tty::resolve_theme(args.theme);
     let kind = fmt::detect_kind(data, ext);
     let fg = palette.color(ColorToken::FG_PRIMARY);
     let fg_rgb = [fg.r(), fg.g(), fg.b()];
@@ -178,57 +317,75 @@ fn render_file_local(data: &[u8], ext: &str) -> Result<(), Error> {
     };
     let mut seq = 0u32;
     let pid = getpid().as_raw_nonzero().get().unsigned_abs();
+    let mut apc_buf = Vec::new();
     if metrics.is_remote != 0
-        || kitty::stage_shm(
-            &scratch.rgba_buf,
-            params,
-            &mut seq,
-            pid,
-            &mut scratch.out_buf,
-        )
-        .is_err()
+        || kitty::stage_shm(&scratch.rgba_buf, params, &mut seq, pid, &mut apc_buf).is_err()
     {
-        scratch.out_buf.clear();
+        apc_buf.clear();
         let mut b64 = Vec::new();
-        kitty::stage_base64(&scratch.rgba_buf, params, &mut scratch.out_buf, &mut b64);
+        kitty::stage_base64(&scratch.rgba_buf, params, &mut apc_buf, &mut b64);
     }
+
+    let mut text_buf = Vec::new();
+    kitty::emit_placeholder(image_id, cols, rows, &mut text_buf);
 
     let stdout = std::io::stdout();
-    if let Some(ref tfd) = tty_fd {
-        write_all(tfd.as_fd(), &scratch.out_buf)?;
-    } else {
-        write_all(stdout.as_fd(), &scratch.out_buf)?;
-    }
+    let stdout_fd = stdout.as_fd();
 
-    scratch.out_buf.clear();
-    kitty::emit_placeholder(image_id, cols, rows, &mut scratch.out_buf);
-    write_all(stdout.as_fd(), &scratch.out_buf)
+    if is_interactive {
+        write_all(stdout_fd, &apc_buf)?;
+        write_all(stdout_fd, &text_buf)?;
+    } else {
+        emit_dual_channel(stdout_fd, &apc_buf, &text_buf)?;
+    }
+    Ok(())
 }
 
 fn run_cli() -> Result<(), Error> {
-    let mut args = std::env::args_os();
-    let _ = args.next();
+    let raw_args: Vec<OsString> = std::env::args_os().skip(1).collect();
     let (stdin, stdout) = (std::io::stdin(), std::io::stdout());
+    let is_interactive = isatty(&stdout);
 
-    let Some(first) = args.next() else {
+    if raw_args.is_empty() {
         return if isatty(&stdin) {
             write_all(stdout.as_fd(), USAGE)
         } else {
-            render_file_local(&read_stdin_bounded()?, "")
+            let empty_args = CliArgs {
+                size: None,
+                cell_size: None,
+                skip: 0,
+                theme: None,
+                is_daemon: false,
+                is_ping: false,
+                is_shutdown: false,
+                socket_path: None,
+                file_path: None,
+            };
+            render_file_local(&read_stdin_bounded()?, "", &empty_args, is_interactive)
         };
-    };
+    }
 
-    match first.to_str() {
-        Some("-h" | "--help") => write_all(stdout.as_fd(), USAGE),
-        Some("-V" | "--version") => write_all(stdout.as_fd(), VERSION_LINE),
-        Some("--daemon") => daemon::run(),
-        Some("--ping") => write_all(stdout.as_fd(), &ipc::client_send(Cmd::Ping, &[])?),
-        Some("--shutdown") => ipc::client_send(Cmd::Shutdown, &[]).map(|_| ()),
-        _ => {
-            let p = Path::new(&first);
-            let ext = p.extension().and_then(|s| s.to_str()).unwrap_or("");
-            render_file_local(&read_file_bounded(p)?, ext)
-        }
+    let args = CliArgs::parse(&raw_args)?;
+
+    if args.is_daemon {
+        return daemon::run();
+    }
+    if args.is_ping {
+        return write_all(stdout.as_fd(), &ipc::client_send(Cmd::Ping, &[])?);
+    }
+    if args.is_shutdown {
+        return ipc::client_send(Cmd::Shutdown, &[]).map(|_| ());
+    }
+
+    if let Some(file_path) = args.file_path {
+        let ext = file_path.extension().and_then(|s| s.to_str()).unwrap_or("");
+        let data = read_file_bounded(file_path)?;
+        render_file_local(&data, ext, &args, is_interactive)
+    } else if !isatty(&stdin) {
+        let data = read_stdin_bounded()?;
+        render_file_local(&data, "", &args, is_interactive)
+    } else {
+        write_all(stdout.as_fd(), USAGE)
     }
 }
 

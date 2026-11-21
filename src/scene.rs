@@ -21,6 +21,8 @@ impl GlyphRun {
     pub const BOLD: u8 = 1 << 0;
     pub const ITALIC: u8 = 1 << 1;
     pub const MONO: u8 = 1 << 2;
+    pub const UNDERLINE: u8 = 1 << 3;
+    pub const STRIKE: u8 = 1 << 4;
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -130,6 +132,9 @@ pub struct Scene {
     pub col_widths: Vec<f32>,
     pub width: f32,
     pub height: f32,
+    /// Logical reflow width for prose (`0.0` => `Scene::DEFAULT_WRAP_W`). Set by the caller from
+    /// client geometry *before* dispatch; never reset by `clear()`.
+    pub wrap_w: f32,
 }
 
 impl Scene {
@@ -148,6 +153,20 @@ impl Scene {
             col_widths: Vec::with_capacity(32),
             width: 0.0,
             height: 0.0,
+            wrap_w: 0.0,
+        }
+    }
+
+    /// Reference logical page width (CSS px) when no client geometry is supplied.
+    pub const DEFAULT_WRAP_W: f32 = 760.0;
+
+    #[inline]
+    #[must_use]
+    pub fn wrap_width(&self) -> f32 {
+        if self.wrap_w.is_finite() && self.wrap_w >= 160.0 {
+            self.wrap_w
+        } else {
+            Self::DEFAULT_WRAP_W
         }
     }
 

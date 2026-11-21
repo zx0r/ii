@@ -1,4 +1,5 @@
-//! Fast ASCII proportional glyph advance-width LUT (`0.01 em` units). Zero allocations.
+//! Glyph advance metrics shared by layout (`fmt::*`) and the stroke-font rasterizer (`raster`).
+//! Single source of truth: what layout measures is exactly what `raster` advances. Zero allocations.
 
 #[rustfmt::skip]
 const ADVANCE_PCT: [u8; 128] = [
@@ -12,25 +13,34 @@ const ADVANCE_PCT: [u8; 128] = [
     58,58,38,50,36,58,52,74,52,52,48,38,28,38,60,0,
 ];
 
-/// Estimate pixel width of UTF-8 text at `font_px` without shaping overhead.
+/// Stroke glyph cap height and cell width as fractions of the font size (`raster` grid is 4x6).
+pub const GLYPH_H_EM: f32 = 0.68;
+pub const GLYPH_W_EM: f32 = GLYPH_H_EM * 0.54;
+/// Monospace advance of the stroke font; proportional advances are blended toward it so that
+/// narrow/wide glyphs keep visual rhythm without overlapping the fixed 4-unit stroke box.
+const MONO_EM: f32 = GLYPH_W_EM * 1.32;
+const NON_ASCII_EM: f32 = 1.0;
+
+/// Advance of `ch` in em units (`font_px` multiplier).
+#[inline]
+#[must_use]
+pub fn advance_em(ch: char) -> f32 {
+    let code = ch as u32;
+    if code >= 128 {
+        return NON_ASCII_EM;
+    }
+    let pct = ADVANCE_PCT[code as usize];
+    if pct == 0 {
+        return 0.0;
+    }
+    MONO_EM.mul_add(0.75, f32::from(pct) * 0.0025)
+}
+
+/// Estimate pixel width of UTF-8 text at `font_px` (exactly what `raster` will advance).
 #[inline]
 #[must_use]
 pub fn measure_str(text: &str, font_px: f32) -> f32 {
-    let mut sum = 0u32;
-    for ch in text.chars() {
-        let code = ch as u32;
-        sum = sum.saturating_add(if code < 128 {
-            u32::from(ADVANCE_PCT[code as usize])
-        } else {
-            100
-        });
-    }
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "display string pixel width fits f32 precision"
-    )]
-    let width = (sum as f32) * font_px * 0.01;
-    width
+    text.chars().map(advance_em).sum::<f32>() * font_px
 }
 
 #[inline]

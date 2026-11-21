@@ -233,8 +233,12 @@ fn open_secure_runtime_dir(dir: &Path) -> Result<OwnedFd, Error> {
     Ok(dir_fd)
 }
 
-fn bind_listener() -> Result<(OwnedFd, DaemonGuard), Error> {
-    let (sock_path, lock_path) = (ipc::socket_path(), ipc::lock_path());
+fn bind_listener(sock_override: Option<&Path>) -> Result<(OwnedFd, DaemonGuard), Error> {
+    let sock_path = sock_override
+        .map(Path::to_path_buf)
+        .unwrap_or_else(ipc::socket_path);
+    let mut lock_path = sock_path.clone();
+    lock_path.set_file_name("ii.lock");
     let dir = sock_path.parent().map_or_else(
         || PathBuf::from(format!("/tmp/ii-{}", getuid().as_raw())),
         Path::to_path_buf,
@@ -712,8 +716,8 @@ fn accept_pending(listener: BorrowedFd<'_>, slots: &mut [ClientSlot; MAX_CLIENTS
 ///
 /// # Errors
 /// Returns `Error::DaemonLocked`, `Error::SocketSymlink`, `Error::SocketUidMismatch`, or `Error::Io`.
-pub fn run() -> Result<(), Error> {
-    let (listener, _guard) = bind_listener()?;
+pub fn run(sock_override: Option<&Path>) -> Result<(), Error> {
+    let (listener, _guard) = bind_listener(sock_override)?;
     let mut slots: [ClientSlot; MAX_CLIENTS] = [const { ClientSlot::empty() }; MAX_CLIENTS];
     let mut state = DaemonState::new();
     let mut file_buf = Vec::with_capacity(64 * 1024);

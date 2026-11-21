@@ -368,7 +368,7 @@ fn run_cli() -> Result<(), Error> {
     let args = CliArgs::parse(&raw_args)?;
 
     if args.is_daemon {
-        return daemon::run();
+        return daemon::run(args.socket_path);
     }
     if args.is_ping {
         return write_all(stdout.as_fd(), &ipc::client_send(Cmd::Ping, &[])?);

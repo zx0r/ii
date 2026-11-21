@@ -87,9 +87,8 @@ local function get_socket_path()
   if xdg and #xdg > 0 and vim.uv.fs_stat(xdg) then
     return xdg .. "/ii/ii.sock"
   end
-  local tmp = (vim.env.TMPDIR or "/tmp"):gsub("/+$", "")
   local uid = vim.uv.getuid and vim.uv.getuid() or 1000
-  return string.format("%s/ii-%d/ii.sock", tmp, uid)
+  return string.format("/tmp/ii-%d/ii.sock", uid)
 end
 
 -- Terminal cell size probe with tmux split protection

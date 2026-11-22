@@ -2,8 +2,9 @@
 
 use crate::{
     err::Error,
+    layout::StyleMetrics,
     scene::{GlyphRun, Path, Rect, Scene, TableGrid, Verb},
-    theme::{ColorToken, Palette, Rgba},
+    theme::{Palette, Rgba},
 };
 
 pub const MAX_DIM: u32 = 4096;
@@ -71,14 +72,79 @@ fn snap_dims(
     ))
 }
 
+/// Vector path command for building in-memory icon shapes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[repr(C)]
+pub enum PathCmd {
+    MoveTo(f32, f32),
+    LineTo(f32, f32),
+    QuadTo(f32, f32, f32, f32),
+    CubicTo(f32, f32, f32, f32, f32, f32),
+    Close,
+}
+
+/// Warning icon (Lucide `AlertTriangle`, 16x16 grid).
+pub const ICON_WARN: &[PathCmd] = &[
+    PathCmd::MoveTo(8.0, 2.0),
+    PathCmd::LineTo(14.5, 13.5),
+    PathCmd::LineTo(1.5, 13.5),
+    PathCmd::Close,
+    PathCmd::MoveTo(8.0, 6.0),
+    PathCmd::LineTo(8.0, 9.5),
+    PathCmd::MoveTo(8.0, 11.5),
+    PathCmd::LineTo(8.0, 12.0),
+];
+
+/// Information icon (Lucide Info, 16x16 grid).
+pub const ICON_INFO: &[PathCmd] = &[
+    PathCmd::MoveTo(8.0, 1.5),
+    PathCmd::CubicTo(4.41, 1.5, 1.5, 4.41, 1.5, 8.0),
+    PathCmd::CubicTo(1.5, 11.59, 4.41, 14.5, 8.0, 14.5),
+    PathCmd::CubicTo(11.59, 14.5, 14.5, 11.59, 14.5, 8.0),
+    PathCmd::CubicTo(14.5, 4.41, 11.59, 1.5, 8.0, 1.5),
+    PathCmd::Close,
+    PathCmd::MoveTo(8.0, 5.0),
+    PathCmd::LineTo(8.0, 5.5),
+    PathCmd::MoveTo(8.0, 7.5),
+    PathCmd::LineTo(8.0, 11.0),
+];
+
+/// Checkmark icon (Lucide Check, 16x16 grid).
+pub const ICON_CHECK: &[PathCmd] = &[
+    PathCmd::MoveTo(3.0, 8.0),
+    PathCmd::LineTo(6.5, 11.5),
+    PathCmd::LineTo(13.0, 4.5),
+];
+
+/// Build a `tiny_skia::Path` directly from an in-memory command slice without parsing allocations.
+#[inline]
+#[must_use]
+pub fn build_icon_path(cmds: &[PathCmd]) -> Option<tiny_skia::Path> {
+    let mut pb = tiny_skia::PathBuilder::new();
+    for cmd in cmds {
+        match *cmd {
+            PathCmd::MoveTo(x, y) => pb.move_to(x, y),
+            PathCmd::LineTo(x, y) => pb.line_to(x, y),
+            PathCmd::QuadTo(x1, y1, x, y) => pb.quad_to(x1, y1, x, y),
+            PathCmd::CubicTo(x1, y1, x2, y2, x, y) => pb.cubic_to(x1, y1, x2, y2, x, y),
+            PathCmd::Close => pb.close(),
+        }
+    }
+    pb.finish()
+}
+
 #[inline]
 fn make_paint(c: Rgba) -> tiny_skia::Paint<'static> {
-    let mut paint = tiny_skia::Paint {
+    tiny_skia::Paint {
+        shader: tiny_skia::Shader::SolidColor(tiny_skia::Color::from_rgba8(
+            c.r(),
+            c.g(),
+            c.b(),
+            c.a(),
+        )),
         anti_alias: true,
-        ..tiny_skia::Paint::default()
-    };
-    paint.set_color_rgba8(c.r(), c.g(), c.b(), c.a());
-    paint
+        ..Default::default()
+    }
 }
 
 /// Minimalist geometric vector stroke definitions on a `4x6` grid (`(x0<<4|y0, x1<<4|y1)`).
@@ -246,7 +312,7 @@ fn draw_vector_text(text: &str, cfg: TextDraw, pixmap: &mut tiny_skia::PixmapMut
         width: (glyph_h * bold_factor).max(1.0),
         line_cap: tiny_skia::LineCap::Round,
         line_join: tiny_skia::LineJoin::Round,
-        ..tiny_skia::Stroke::default()
+        ..StyleMetrics::BASE_STROKE
     };
     pixmap.stroke_path(
         &path,
@@ -295,7 +361,7 @@ fn draw_scene_rects(
         if (r.flags & Rect::STROKE) != 0 {
             let stroke = tiny_skia::Stroke {
                 width: f32::from(r.stroke_width.max(1)),
-                ..tiny_skia::Stroke::default()
+                ..StyleMetrics::BASE_STROKE
             };
             pixmap.stroke_path(&path, &paint, &stroke, ts, None);
         }
@@ -308,6 +374,7 @@ fn draw_scene_grid(
     palette: &Palette,
     scale: f32,
     ts: tiny_skia::Transform,
+    metrics: &StyleMetrics,
     pixmap: &mut tiny_skia::PixmapMut<'_>,
 ) {
     let cols = usize::from(grid.cols);
@@ -320,10 +387,7 @@ fn draw_scene_grid(
         return;
     };
     let border_paint = make_paint(palette.color(grid.border_color));
-    let border_stroke = tiny_skia::Stroke {
-        width: 1.0,
-        ..tiny_skia::Stroke::default()
-    };
+    let border_stroke = metrics.grid_stroke();
     let font_px = 11.5 * scale;
 
     for row in 0..rows {
@@ -428,7 +492,9 @@ fn draw_scene_path(
     if (p.flags & Path::STROKE) != 0 || (p.flags & Path::FILL) == 0 {
         let stroke = tiny_skia::Stroke {
             width: f32::from(p.stroke_width.max(1)),
-            ..tiny_skia::Stroke::default()
+            line_cap: tiny_skia::LineCap::Round,
+            line_join: tiny_skia::LineJoin::Round,
+            ..StyleMetrics::BASE_STROKE
         };
         pixmap.stroke_path(&path, &paint, &stroke, ts, None);
     }
@@ -566,13 +632,12 @@ pub fn rasterize_scene(
 
     let mut pixmap = tiny_skia::PixmapMut::from_bytes(rgba, u32::from(w), u32::from(h))
         .ok_or(Error::SvgParse)?;
-    let bg = palette.color(ColorToken::BG_PRIMARY);
-    pixmap.fill(tiny_skia::Color::from_rgba8(bg.r(), bg.g(), bg.b(), bg.a()));
 
+    let metrics = StyleMetrics::from_cell_geometry(cell_w, cell_h);
     let ts = tiny_skia::Transform::from_scale(scale, scale);
     draw_scene_rects(scene, palette, ts, &mut pixmap);
     for grid in &scene.grids {
-        draw_scene_grid(scene, grid, palette, scale, ts, &mut pixmap);
+        draw_scene_grid(scene, grid, palette, scale, ts, &metrics, &mut pixmap);
     }
     for p in &scene.paths {
         draw_scene_path(scene, p, palette, ts, &mut pixmap);

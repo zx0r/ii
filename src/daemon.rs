@@ -234,9 +234,7 @@ fn open_secure_runtime_dir(dir: &Path) -> Result<OwnedFd, Error> {
 }
 
 fn bind_listener(sock_override: Option<&Path>) -> Result<(OwnedFd, DaemonGuard), Error> {
-    let sock_path = sock_override
-        .map(Path::to_path_buf)
-        .unwrap_or_else(ipc::socket_path);
+    let sock_path = sock_override.map_or_else(ipc::socket_path, Path::to_path_buf);
     let mut lock_path = sock_path.clone();
     lock_path.set_file_name("ii.lock");
     let dir = sock_path.parent().map_or_else(

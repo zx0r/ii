@@ -1,15 +1,16 @@
 [package]
 name = "ii"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2024"
-rust-version = "1.99"
+rust-version = "1.100"
 resolver = "3"
-description = "Terminal graphical coprocessor: math, diagrams and charts over the Kitty graphics protocol"
+readme = "README.md"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/zx0r/ii"
-readme = "README.md"
-keywords = ["terminal", "kitty", "latex", "svg", "tui"]
 categories = ["command-line-utilities", "graphics"]
+keywords = ["terminal", "kitty", "latex", "svg", "tui"]
+description = "Terminal graphical coprocessor: math, diagrams and charts over the Kitty graphics protocol"
+
 
 [lib]
 name = "ii"
@@ -32,8 +33,20 @@ name = "core"
 path = "tests/core.rs"
 
 [[test]]
+name = "daemon"
+path = "tests/daemon.rs"
+
+[[test]]
 name = "fmt"
 path = "tests/fmt.rs"
+
+[[test]]
+name = "io"
+path = "tests/io.rs"
+
+[[test]]
+name = "render"
+path = "tests/render.rs"
 
 [dependencies]
 blake3 = "1.8.7"
@@ -63,35 +76,34 @@ divan = "0.1.21"
 proptest = "1.12"
 
 [profile.release]
-opt-level = 3
-codegen-units = 1
-incremental = false
 lto = "fat"
 panic = "abort"
 strip = "symbols"
+opt-level = 3
+codegen-units = 1
+incremental = false
 
 [profile.release-small]
-inherits = "release"
 opt-level = "z"
+inherits = "release"
 
 [lints.rust]
+trivial_casts = "warn"
+unreachable_pub = "warn"
+unused_lifetimes = "warn"
+trivial_numeric_casts = "warn"
+unused_qualifications = "warn"
 unsafe_op_in_unsafe_fn = "deny"
 unfulfilled_lint_expectations = "warn"
-unreachable_pub = "warn"
-unused_qualifications = "warn"
-unused_lifetimes = "warn"
-trivial_casts = "warn"
-trivial_numeric_casts = "warn"
 missing_debug_implementations = "warn"
 
 [lints.clippy]
-multiple_crate_versions = "allow"
 all = { level = "deny", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
 nursery = { level = "warn", priority = -1 }
 cargo = { level = "warn", priority = -1 }
+multiple_crate_versions = "allow"
 panic = "deny"
-todo = "deny"
 dbg_macro = "deny"
 unwrap_used = "deny"
 expect_used = "deny"
@@ -99,8 +111,8 @@ print_stdout = "deny"
 print_stderr = "deny"
 unimplemented = "deny"
 inline_always = "deny"
-needless_pass_by_value = "warn"
 allow_attributes = "deny"
-allow_attributes_without_reason = "deny"
-multiple_unsafe_ops_per_block = "deny"
+needless_pass_by_value = "warn"
 undocumented_unsafe_blocks = "deny"
+multiple_unsafe_ops_per_block = "deny"
+allow_attributes_without_reason = "deny"

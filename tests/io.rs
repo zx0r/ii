@@ -15,7 +15,10 @@ use ii::{
     cache::{self, blake3_key, read_blob, write_blob},
     err::Error,
     kitty::{self, StageParams},
-    raster::{MAX_DIM, decode_png, rasterize, rasterize_scene},
+    raster::{
+        ICON_CHECK, ICON_INFO, ICON_WARN, MAX_DIM, build_icon_path, decode_png, rasterize,
+        rasterize_scene,
+    },
     scene::{Path, Rect, Scene, Verb},
     theme::{ColorToken, DARK, LIGHT},
 };
@@ -261,6 +264,10 @@ fn raster_svg_and_scene_palettes() -> Result<(), Error> {
     assert_eq!(&rgba[..4], &DARK.color(ColorToken::BG_PRIMARY).to_array());
     let _ = rasterize_scene(&scene, &LIGHT, 8, 16, 640, &mut rgba)?;
     assert_eq!(&rgba[..4], &LIGHT.color(ColorToken::BG_PRIMARY).to_array());
+
+    assert!(build_icon_path(ICON_WARN).is_some());
+    assert!(build_icon_path(ICON_INFO).is_some());
+    assert!(build_icon_path(ICON_CHECK).is_some());
     Ok(())
 }
 

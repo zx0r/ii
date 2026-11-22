@@ -65,8 +65,7 @@ impl Graph {
 
     fn intern(&mut self, src: &[u8], span: (usize, usize)) -> Option<u8> {
         let id = src.get(span.0..span.1)?;
-        for idx in 0..self.node_len {
-            let cur = self.nodes[idx];
+        for (idx, cur) in self.nodes.iter().enumerate().take(self.node_len) {
             if src.get(cur.id_start as usize..cur.id_end as usize) == Some(id) {
                 return u8::try_from(idx).ok();
             }

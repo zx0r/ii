@@ -217,7 +217,7 @@ impl StyleMetrics {
         }
     }
 
-    #[inline(always)]
+    #[inline]
     #[must_use]
     pub const fn icon_size(&self) -> f32 {
         self.font_px

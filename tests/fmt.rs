@@ -194,9 +194,11 @@ fn svg_dot_chart_and_ipynb_emit_valid_scenes() -> Result<(), Error> {
     let raw_svg = br##"<svg viewBox="0 0 120 60"><path stroke="currentColor" fill="#000"/></svg>"##;
     let mut rewritten = Vec::new();
     svg::rewrite_colors(raw_svg, &DARK, &mut rewritten);
-    assert!(rewritten
-        .windows(7)
-        .any(|w| w == DARK.hex_str(ii::theme::SemanticRole::TextPrimary).as_bytes()));
+    assert!(rewritten.windows(7).any(|w| {
+        w == DARK
+            .hex_str(ii::theme::SemanticRole::TextPrimary)
+            .as_bytes()
+    }));
     assert_eq!(svg::extract_svg_dimensions(raw_svg), (120.0, 60.0));
 
     let mut scene = Scene::with_capacity(32, 1024);

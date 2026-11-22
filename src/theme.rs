@@ -1,4 +1,4 @@
-//! Static palette tables, 1-byte `ColorToken`, `SemanticRole`, and compile-time SGR escape sequences.
+//! Static palette tables, 1-byte `ColorToken`, `SemanticRole`, and compile-time SGR/Hex escape sequences.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ThemeChoice {
@@ -153,6 +153,60 @@ const fn make_sgr(color: Rgba) -> SgrSeq {
     SgrSeq { buf, len }
 }
 
+const fn build_sgr_table(colors: &[Rgba; 32]) -> [SgrSeq; 32] {
+    let mut table = [const {
+        SgrSeq {
+            buf: [0; 20],
+            len: 0,
+        }
+    }; 32];
+    let mut i = 0;
+    while i < 32 {
+        table[i] = make_sgr(colors[i]);
+        i += 1;
+    }
+    table
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct HexSeq(pub [u8; 7]);
+
+impl HexSeq {
+    #[inline]
+    #[must_use]
+    pub const fn as_str(&self) -> &str {
+        match core::str::from_utf8(&self.0) {
+            Ok(s) => s,
+            Err(_) => "",
+        }
+    }
+}
+
+const HEX_LUT: &[u8; 16] = b"0123456789ABCDEF";
+
+const fn make_hex(c: Rgba) -> HexSeq {
+    let [r, g, b, _] = c.to_array();
+    HexSeq([
+        b'#',
+        HEX_LUT[(r >> 4) as usize],
+        HEX_LUT[(r & 0x0F) as usize],
+        HEX_LUT[(g >> 4) as usize],
+        HEX_LUT[(g & 0x0F) as usize],
+        HEX_LUT[(b >> 4) as usize],
+        HEX_LUT[(b & 0x0F) as usize],
+    ])
+}
+
+const fn build_hex_table(colors: &[Rgba; 32]) -> [HexSeq; 32] {
+    let mut table = [HexSeq(*b"#000000"); 32];
+    let mut i = 0;
+    while i < 32 {
+        table[i] = make_hex(colors[i]);
+        i += 1;
+    }
+    table
+}
+
 const fn hash_palette(colors: &[Rgba; 32]) -> u32 {
     let mut h = 0x811c_9dc5_u32;
     let mut i = 0;
@@ -168,9 +222,10 @@ const fn hash_palette(colors: &[Rgba; 32]) -> u32 {
 #[repr(C, align(64))]
 pub struct Palette {
     pub colors: [Rgba; 32],
+    pub sgr: &'static [SgrSeq; 32],
+    pub hex: &'static [HexSeq; 32],
     pub theme_hash: u32,
     pub is_dark: bool,
-    _pad: [u8; 3],
 }
 
 const _: () = assert!(size_of::<Palette>() == 192);
@@ -192,75 +247,27 @@ impl Palette {
     #[inline]
     #[must_use]
     pub const fn hex_str(&self, role: SemanticRole) -> &'static str {
-        if self.is_dark {
-            DARK_HEX[role as usize]
-        } else {
-            LIGHT_HEX[role as usize]
-        }
+        self.hex[role as usize].as_str()
     }
 
     #[inline]
     #[must_use]
     pub const fn series_hex_str(&self, idx: usize) -> &'static str {
-        if self.is_dark {
-            DARK_SERIES_HEX[idx & 15]
-        } else {
-            LIGHT_SERIES_HEX[idx & 15]
-        }
+        self.hex[16 + (idx & 15)].as_str()
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn sgr_fg(&self, role: SemanticRole) -> &'static [u8] {
+        let entry = &self.sgr[role as usize];
+        entry.buf.split_at(entry.len as usize).0
     }
 
     #[inline]
     pub fn write_sgr_fg(&self, out: &mut Vec<u8>, role: SemanticRole) {
-        let sgr = if self.is_dark {
-            SGR_DARK[role as usize]
-        } else {
-            SGR_LIGHT[role as usize]
-        };
-        out.extend_from_slice(sgr);
+        out.extend_from_slice(self.sgr_fg(role));
     }
 }
-
-pub const DARK_HEX: [&str; 9] = [
-    "#E6EDF3", "#8B949E", "#161B22", "#30363D", "#FF6A00", "#58A6FF", "#3FB950", "#D29922", "#F85149",
-];
-pub const LIGHT_HEX: [&str; 9] = [
-    "#1F2328", "#656D76", "#F6F8FA", "#D0D7DE", "#E65100", "#0969DA", "#1A7F37", "#9A6700", "#CF222E",
-];
-
-pub const SGR_DARK: [&[u8]; 9] = [
-    b"\x1b[38;2;230;237;243m", // TextPrimary (#E6EDF3)
-    b"\x1b[38;2;139;148;158m", // TextMuted   (#8B949E)
-    b"\x1b[38;2;22;27;34m",    // Surface     (#161B22)
-    b"\x1b[38;2;48;54;61m",    // Border      (#30363D)
-    b"\x1b[38;2;255;106;0m",   // Accent      (#FF6A00)
-    b"\x1b[38;2;88;166;255m",  // Info        (#58A6FF)
-    b"\x1b[38;2;63;185;80m",   // Success     (#3FB950)
-    b"\x1b[38;2;210;153;34m",  // Warn        (#D29922)
-    b"\x1b[38;2;248;81;73m",   // Danger      (#F85149)
-];
-
-pub const SGR_LIGHT: [&[u8]; 9] = [
-    b"\x1b[38;2;31;35;40m",    // TextPrimary (#1F2328)
-    b"\x1b[38;2;101;109;118m", // TextMuted   (#656D76)
-    b"\x1b[38;2;246;248;250m", // Surface     (#F6F8FA)
-    b"\x1b[38;2;208;215;222m", // Border      (#D0D7DE)
-    b"\x1b[38;2;230;81;0m",    // Accent      (#E65100)
-    b"\x1b[38;2;9;105;218m",   // Info        (#0969DA)
-    b"\x1b[38;2;26;127;55m",   // Success     (#1A7F37)
-    b"\x1b[38;2;154;103;0m",   // Warn        (#9A6700)
-    b"\x1b[38;2;207;34;46m",   // Danger      (#CF222E)
-];
-
-#[rustfmt::skip]
-const DARK_SERIES_HEX: [&str; 16] = [
-    "#38bdf8", "#fb923c", "#4ade80", "#c084fc", "#f472b6", "#2dd4bf", "#facc15", "#a78bfa",
-    "#fb7185", "#60a5fa", "#34d399", "#f87171", "#818cf8", "#fbbf24", "#e879f9", "#94a3b8",
-];
-#[rustfmt::skip]
-const LIGHT_SERIES_HEX: [&str; 16] = [
-    "#0284c7", "#ea580c", "#16a34a", "#9333ea", "#db2777", "#0d9488", "#ca8a04", "#7c3aed",
-    "#e11d48", "#2563eb", "#059669", "#dc2626", "#4f46e5", "#d97706", "#c026d3", "#64748b",
-];
 
 #[rustfmt::skip]
 const DARK_COLORS: [Rgba; 32] = [
@@ -298,36 +305,27 @@ const LIGHT_COLORS: [Rgba; 32] = [
     Rgba::from_rgba(0x4F,0x46,0xE5,0xFF), Rgba::from_rgba(0xD9,0x77,0x06,0xFF), Rgba::from_rgba(0xC0,0x26,0xD3,0xFF), Rgba::from_rgba(0x64,0x74,0x8B,0xFF),
 ];
 
-pub static DARK: Palette = Palette {
-    colors: DARK_COLORS,
-    theme_hash: hash_palette(&DARK_COLORS),
-    is_dark: true,
-    _pad: [0; 3],
-};
-pub static LIGHT: Palette = Palette {
-    colors: LIGHT_COLORS,
-    theme_hash: hash_palette(&LIGHT_COLORS),
-    is_dark: false,
-    _pad: [0; 3],
-};
-
-const fn build_sgr_table(colors: &[Rgba; 32]) -> [SgrSeq; 32] {
-    let mut table = [const {
-        SgrSeq {
-            buf: [0; 20],
-            len: 0,
-        }
-    }; 32];
-    let mut i = 0;
-    while i < 32 {
-        table[i] = make_sgr(colors[i]);
-        i += 1;
-    }
-    table
-}
-
 pub static DARK_SGR: [SgrSeq; 32] = build_sgr_table(&DARK_COLORS);
 pub static LIGHT_SGR: [SgrSeq; 32] = build_sgr_table(&LIGHT_COLORS);
+pub static DARK_HEX: [HexSeq; 32] = build_hex_table(&DARK_COLORS);
+pub static LIGHT_HEX: [HexSeq; 32] = build_hex_table(&LIGHT_COLORS);
+
+pub static DARK: Palette = Palette {
+    colors: DARK_COLORS,
+    sgr: &DARK_SGR,
+    hex: &DARK_HEX,
+    theme_hash: hash_palette(&DARK_COLORS),
+    is_dark: true,
+};
+
+pub static LIGHT: Palette = Palette {
+    colors: LIGHT_COLORS,
+    sgr: &LIGHT_SGR,
+    hex: &LIGHT_HEX,
+    theme_hash: hash_palette(&LIGHT_COLORS),
+    is_dark: false,
+};
+
 pub const SGR_RESET: &[u8] = b"\x1b[0m";
 
 #[inline]
@@ -343,12 +341,9 @@ pub fn resolve_color(token: ColorToken, dark: bool) -> Rgba {
 #[inline]
 #[must_use]
 pub fn sgr(token: ColorToken, dark: bool) -> &'static [u8] {
-    let entry = if dark {
-        &DARK_SGR[token.index()]
-    } else {
-        &LIGHT_SGR[token.index()]
-    };
-    &entry.buf[..usize::from(entry.len)]
+    let palette = if dark { &DARK } else { &LIGHT };
+    let entry = &palette.sgr[token.index()];
+    entry.buf.split_at(entry.len as usize).0
 }
 
 #[inline]

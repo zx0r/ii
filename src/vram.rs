@@ -227,12 +227,12 @@ impl Cache {
     pub fn insert(&mut self, tag: Tag, cols: u16, rows: u16, w: u16, h: u16, rgba: &[u8]) {
         let idx = usize::from((tag.get() >> 6).to_le_bytes()[0] & 15);
         let mut chosen = None;
-        for way in 0..4 {
-            if self.tags[idx][way] == Some(tag) {
+        for (way, &slot_tag) in self.tags[idx].iter().enumerate() {
+            if slot_tag == Some(tag) {
                 chosen = Some(way);
                 break;
             }
-            if self.tags[idx][way].is_none() && chosen.is_none() {
+            if slot_tag.is_none() && chosen.is_none() {
                 chosen = Some(way);
             }
         }

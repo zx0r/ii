@@ -6,6 +6,31 @@ use crate::{
     theme::{self, Palette, SemanticRole},
 };
 
+#[inline]
+const fn has_byte(word: u64, byte: u8) -> bool {
+    let x = word ^ u64::from_ne_bytes([byte; 8]);
+    x.wrapping_sub(0x0101_0101_0101_0101) & !x & 0x8080_8080_8080_8080 != 0
+}
+
+#[inline]
+fn candidate(src: &[u8], mut pos: usize) -> usize {
+    while pos + 8 <= src.len() {
+        let bytes: [u8; 8] = match src[pos..pos + 8].try_into() {
+            Ok(bytes) => bytes,
+            Err(_) => break,
+        };
+        let word = u64::from_ne_bytes(bytes);
+        if has_byte(word, b'c') || has_byte(word, b'\"') {
+            break;
+        }
+        pos += 8;
+    }
+    while pos < src.len() && !matches!(src[pos], b'c' | b'\"') {
+        pos += 1;
+    }
+    pos
+}
+
 /// Rewrite `currentColor` and hardcoded black strokes/fills to match active `palette`.
 pub fn rewrite_colors(src: &[u8], palette: &Palette, dst: &mut Vec<u8>) {
     dst.reserve(src.len() + 64);
@@ -13,6 +38,12 @@ pub fn rewrite_colors(src: &[u8], palette: &Palette, dst: &mut Vec<u8>) {
     let mut pos = 0usize;
 
     while pos < src.len() {
+        let next = candidate(src, pos);
+        if next > pos {
+            dst.extend_from_slice(&src[pos..next]);
+            pos = next;
+            continue;
+        }
         let rest = &src[pos..];
         if rest.starts_with(b"currentColor") {
             dst.extend_from_slice(fg);

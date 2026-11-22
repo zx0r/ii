@@ -6,7 +6,56 @@ local M = {}
 local is_mac = vim.fn.has("mac") == 1
 local cached_cell_w, cached_cell_h = is_mac and 18 or 9, is_mac and 36 or 18
 local ns_id = vim.api.nvim_create_namespace("ii_renderer")
+local style_ns = vim.api.nvim_create_namespace("ii_presentation")
 local hl_cache = {}
+
+local function style_buffer(bufnr)
+  vim.api.nvim_buf_clear_namespace(bufnr, style_ns, 0, -1)
+  local ft = vim.bo[bufnr].filetype
+  if ft ~= "markdown" and ft ~= "md" and ft ~= "mdx" and ft ~= "quarto" and ft ~= "qmd" and ft ~= "rmd" then return end
+  local win = vim.fn.bufwinid(bufnr)
+  local cursor = win ~= -1 and vim.api.nvim_win_get_cursor(win)[1] - 1 or -1
+  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  local calls = {
+    NOTE = { "󰋽 Note", "IiInfo" }, TIP = { "󰌶 Tip", "IiSuccess" }, IMPORTANT = { "󰅾 Important", "IiAccent" },
+    WARNING = { "󰀪 Warning", "IiWarn" }, CAUTION = { "󰳦 Caution", "IiDanger" }, INFO = { "󰋽 Info", "IiInfo" },
+    ABSTRACT = { "󰨸 Abstract", "IiInfo" }, SUMMARY = { "󰨸 Summary", "IiInfo" }, TLDR = { "󰨸 TL;DR", "IiInfo" },
+    SUCCESS = { "󰄬 Success", "IiSuccess" }, TODO = { "󰗡 Todo", "IiWarn" }, QUESTION = { "󰘥 Question", "IiWarn" },
+    FAILURE = { "󱐌 Failure", "IiDanger" }, DANGER = { "󱐌 Danger", "IiDanger" }, BUG = { "󰨰 Bug", "IiDanger" },
+    EXAMPLE = { "󰉹 Example", "IiAccent" }, QUOTE = { "󱆨 Quote", "IiMuted" },
+  }
+  for row, line in ipairs(lines) do
+    local r = row - 1
+    if r ~= cursor then
+      local marks, body = line:match("^(#+)%s+(.*)$")
+      if marks and #marks <= 6 then
+        local icons = { "󰲡 ", "󰲣 ", "󰲥 ", "󰲧 ", "󰲩 ", "󰲫 " }
+        vim.api.nvim_buf_set_extmark(bufnr, style_ns, r, 0, { end_col = #marks + 1, virt_text = { { icons[#marks], "IiH" .. #marks } }, virt_text_pos = "overlay" })
+      else
+        local indent, tag = line:match("^(%s*)>%s*%[!([%w]+)%]")
+        local call = tag and calls[tag:upper()] or nil
+        if indent and call then
+          vim.api.nvim_buf_set_extmark(bufnr, style_ns, r, #indent, { end_col = #line, virt_text = { { "│ " .. call[1], call[2] } }, virt_text_pos = "overlay" })
+        else
+          local prefix, state = line:match("^(%s*[-*]%s+)%[([ xX%!~%-])%]")
+          if prefix and state then
+            local icon, group = "󰄱 ", "IiMuted"
+            if state == "x" or state == "X" then icon, group = "󰄵 ", "IiSuccess"
+            elseif state == "-" then icon, group = "󰥔 ", "IiWarn"
+            elseif state == "!" then icon, group = "󰀨 ", "IiDanger"
+            elseif state == "~" then icon = "󰰱 " end
+            vim.api.nvim_buf_set_extmark(bufnr, style_ns, r, #prefix, { end_col = #prefix + 3, virt_text = { { icon, group } }, virt_text_pos = "overlay" })
+          end
+        end
+      end
+    end
+  end
+end
+
+local function init_highlights()
+  local colors = { IiH1 = "#58a6ff", IiH2 = "#ff6a00", IiH3 = "#3fb950", IiH4 = "#d29922", IiH5 = "#8b949e", IiH6 = "#8b949e", IiInfo = "#58a6ff", IiAccent = "#ff6a00", IiSuccess = "#3fb950", IiWarn = "#d29922", IiDanger = "#f85149", IiMuted = "#8b949e" }
+  for name, fg in pairs(colors) do vim.api.nvim_set_hl(0, name, { fg = fg, bold = name:match("^IiH") ~= nil }) end
+end
 
 -- Kitty Graphics Protocol: 297 row combining diacritics for U=1 virtual placement
 local PLACEHOLDER = "\244\142\187\174" -- U+10EEEE (UTF-8: F4 8E BB AE)
@@ -249,6 +298,7 @@ function M.render(bufnr, win)
 
           -- 2. Clear old extmarks in buffer
           vim.api.nvim_buf_clear_namespace(bufnr, ns_id, 0, -1)
+          style_buffer(bufnr)
 
           -- 3. Parse 16-byte ExtmarkRecord array
           local extmarks_offset = 33 + apc_len
@@ -295,6 +345,7 @@ function M.clear(bufnr)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
   if vim.api.nvim_buf_is_valid(bufnr) then
     vim.api.nvim_buf_clear_namespace(bufnr, ns_id, 0, -1)
+    vim.api.nvim_buf_clear_namespace(bufnr, style_ns, 0, -1)
   end
 end
 
@@ -312,6 +363,7 @@ end
 function M.setup(opts)
   opts = opts or {}
   local debounce_ms = opts.debounce_ms or 20
+  init_highlights()
 
   local timer = vim.uv.new_timer()
   local augroup = vim.api.nvim_create_augroup("IiAutoRender", { clear = true })
@@ -326,6 +378,10 @@ function M.setup(opts)
         end
       end))
     end,
+  })
+  vim.api.nvim_create_autocmd("CursorMoved", {
+    group = augroup,
+    callback = function(ev) style_buffer(ev.buf) end,
   })
 end
 

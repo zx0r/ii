@@ -83,6 +83,12 @@ opt-level = 3
 codegen-units = 1
 incremental = false
 
+[profile.bench]
+inherits = "release"
+debug = "line-tables-only"
+lto = "fat"
+codegen-units = 1
+
 [profile.release-small]
 opt-level = "z"
 inherits = "release"

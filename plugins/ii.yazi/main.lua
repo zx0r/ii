@@ -48,9 +48,16 @@ function M:peek(job)
   end
 
   local raw = child.stdout
-  if #raw < 4 then return end
+  if #raw < 4 then
+    ya.preview_widget(job, ui.Text("ii: malformed response"):area(job.area))
+    return
+  end
 
   local apc_len = unpack_u32_le(raw, 1)
+  if apc_len > #raw - 4 then
+    ya.preview_widget(job, ui.Text("ii: malformed response length"):area(job.area))
+    return
+  end
   local apc = raw:sub(5, 4 + apc_len)
   local text = raw:sub(5 + apc_len)
 
@@ -61,7 +68,13 @@ function M:peek(job)
 end
 
 function M:seek(job)
-  self:peek(job)
+  if emit then
+    emit("peek", { math.max(0, (job.skip or 0) + (job.units or 0)), only_if = job.file.url })
+  else
+    self:peek(job)
+  end
 end
+
+function M:preload(_) return true end
 
 return M

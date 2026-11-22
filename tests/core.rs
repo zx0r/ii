@@ -108,8 +108,14 @@ fn scene_utf8_clamp_series_and_scratch_rss_cap() {
     let empty_points: &[[f32; 2]] = &[];
     assert_eq!(scratch.scene.points.as_slice(), empty_points);
     assert!(scratch.scene.points.capacity() <= RenderScratch::DEFAULT_POINTS_CAP);
-    assert!(scratch.scene.glyphs.is_empty() && scratch.scene.glyphs.capacity() <= RenderScratch::DEFAULT_PRIMS_CAP);
-    assert!(scratch.scene.verbs.is_empty() && scratch.scene.verbs.capacity() <= RenderScratch::DEFAULT_VERBS_CAP);
+    assert!(
+        scratch.scene.glyphs.is_empty()
+            && scratch.scene.glyphs.capacity() <= RenderScratch::DEFAULT_PRIMS_CAP
+    );
+    assert!(
+        scratch.scene.verbs.is_empty()
+            && scratch.scene.verbs.capacity() <= RenderScratch::DEFAULT_VERBS_CAP
+    );
 }
 
 #[test]
@@ -402,7 +408,7 @@ fn tty_osc_parse_luminance_and_render_ansi_newline_invariant() {
         cols: 1,
         rows: 1,
     }];
-    render_ansi(src, &spans, true, &mut out);
+    render_ansi(src, &spans, &DARK, &mut out);
     assert!(!out.windows(2).any(|w| w == b"\n\n"));
     assert!(!out.windows(5).any(|w| w == b"$$x$$"));
 
@@ -552,7 +558,7 @@ fn style_metrics_quantum_and_visual_hierarchy_invariants() {
 
 #[test]
 fn icon_id_and_commands() {
-    use ii::raster::{IconId, icon_cmds, ICON_CHECK, ICON_INFO, ICON_WARN};
+    use ii::raster::{ICON_CHECK, ICON_INFO, ICON_WARN, IconId, icon_cmds};
     assert_eq!(size_of::<IconId>(), 1);
     assert_eq!(icon_cmds(IconId::Note), ICON_INFO);
     assert_eq!(icon_cmds(IconId::Tip), ICON_CHECK);

@@ -9,6 +9,7 @@ pub mod kitty;
 pub mod layout;
 pub mod raster;
 pub mod scene;
+pub mod style;
 pub mod theme;
 pub mod tty;
 pub mod vram;

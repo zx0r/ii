@@ -5,6 +5,7 @@ pub mod chart;
 pub mod csv;
 pub mod dot;
 pub mod font;
+pub mod heal;
 pub mod ipynb;
 pub mod json;
 pub mod md;

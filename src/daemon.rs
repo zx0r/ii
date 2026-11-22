@@ -495,8 +495,8 @@ fn handle_compose(slot: &mut ClientSlot, cmd: Cmd, ctx: RenderCtx, state: &mut D
     let count = state.spans.len();
     for idx in 0..count {
         let sp = state.spans[idx];
-        let payload = &slot.buf[sp.inner_start as usize..sp.inner_end as usize];
-        if let Ok(entry) = render_block(state, ctx, sp.kind, payload) {
+        let payload = &slot.buf[sp.inner_start as usize..sp.inner_end() as usize];
+        if let Ok(entry) = render_block(state, ctx, sp.kind(), payload) {
             state.span_coords.push(SpanCoord {
                 outer_start: sp.outer_start,
                 outer_end: sp.outer_end,
@@ -511,7 +511,7 @@ fn handle_compose(slot: &mut ClientSlot, cmd: Cmd, ctx: RenderCtx, state: &mut D
         tty::render_ansi(
             &slot.buf,
             &state.span_coords,
-            ctx.palette.is_dark,
+            ctx.palette,
             &mut state.text_buf,
         );
     } else {

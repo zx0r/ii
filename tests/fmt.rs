@@ -10,6 +10,7 @@ use ii::{
     err::Error,
     fmt::{self, Kind, archive, chart, csv, dot, font, ipynb, json, md, svg},
     scene::Scene,
+    style,
     theme::{DARK, LIGHT},
 };
 
@@ -201,6 +202,15 @@ fn svg_dot_chart_and_ipynb_emit_valid_scenes() -> Result<(), Error> {
     }));
     assert_eq!(svg::extract_svg_dimensions(raw_svg), (120.0, 60.0));
 
+    rewritten.clear();
+    svg::rewrite_colors(
+        br##"<svg fill="#000" stroke="black" data="#000f">currentColor</svg>"##,
+        &DARK,
+        &mut rewritten,
+    );
+    assert!(rewritten.windows(7).any(|v| v == b"#E6EDF3"));
+    assert!(rewritten.windows(5).any(|v| v == b"#000f"));
+
     let mut scene = Scene::with_capacity(32, 1024);
     svg::parse_into_scene(raw_svg, &mut scene)?;
     assert!((scene.width - 120.0).abs() < 1e-3);
@@ -266,10 +276,10 @@ fn markdown_scanner_frontmatter_fences_inline_math_and_prop_fuzz() {
     let mut spans = Vec::new();
     md::scan(doc, &mut spans);
 
-    let kinds: Vec<Kind> = spans.iter().map(|sp| sp.kind).collect();
+    let kinds: Vec<Kind> = spans.iter().map(|sp| sp.kind()).collect();
     assert_eq!(kinds, [Kind::TexInline, Kind::Tex, Kind::Dot, Kind::Csv]);
     assert_eq!(
-        &doc[spans[0].inner_start as usize..spans[0].inner_end as usize],
+        &doc[spans[0].inner_start as usize..spans[0].inner_end() as usize],
         b"a+b"
     );
 
@@ -292,7 +302,7 @@ fn markdown_scanner_frontmatter_fences_inline_math_and_prop_fuzz() {
 }
 
 #[test]
-fn markdown_zero_tofu_and_gfm_callouts() {
+fn markdown_prose_stays_native_and_gfm_callouts_are_styled() {
     let md_text = concat!(
         "# Heading 1\n",
         "## Heading 2\n",
@@ -315,20 +325,31 @@ fn markdown_zero_tofu_and_gfm_callouts() {
 
     let mut scene = Scene::with_capacity(64, 1024);
     assert_eq!(md::parse_into_scene(md_text, &mut scene), Ok(()));
-    assert!(scene.glyphs.len() >= 10);
-    assert!(scene.width > 0.0);
-    assert!(scene.height > 0.0);
+    assert_eq!(scene.glyphs.len(), 0);
+    assert_eq!(scene.text_pool.len(), 0);
 
-    // Verify Zero-Tofu glyph prefixes in text_pool
-    let text_pool_str = core::str::from_utf8(&scene.text_pool).unwrap_or("");
-    assert!(text_pool_str.contains("▌ "));
-    assert!(text_pool_str.contains("▎ "));
-    assert!(text_pool_str.contains("▪ "));
-    assert!(text_pool_str.contains("✓ "));
-    assert!(text_pool_str.contains("○ "));
-    assert!(text_pool_str.contains("• "));
-    assert!(text_pool_str.contains("ℹ NOTE"));
-    assert!(text_pool_str.contains("◆ TIP"));
-    assert!(text_pool_str.contains("▲ WARNING"));
-    assert!(text_pool_str.contains("✕ CAUTION"));
+    let mut state = style::State::default();
+    let mut out = Vec::new();
+    style::emit_prose(md_text, &DARK, &mut state, &mut out);
+    let styled = core::str::from_utf8(&out).unwrap_or("");
+    assert!(styled.contains("󰲡 "));
+    assert!(styled.contains("󰄵 "));
+    assert!(styled.contains("󰄱 "));
+    assert!(styled.contains("󰋽 Note"));
+    assert!(styled.contains("󰌶 Tip"));
+    assert!(styled.contains("󰀪 Warning"));
+    assert!(styled.contains("󰳦 Caution"));
+}
+
+#[test]
+fn prose_tables_are_native_box_drawing() {
+    let src = b"| name | score |\n|:-----|------:|\n| Ada  | 10    |\n";
+    let mut state = style::State::default();
+    let mut out = Vec::new();
+    style::emit_prose(src, &DARK, &mut state, &mut out);
+    let text = core::str::from_utf8(&out).unwrap_or("");
+    assert!(text.contains("┌"));
+    assert!(text.contains("├"));
+    assert!(text.contains("└"));
+    assert!(text.contains("│"));
 }

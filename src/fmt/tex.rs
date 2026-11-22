@@ -3,7 +3,7 @@
 
 use crate::{
     err::Error,
-    fmt::{font, svg, trim_ascii},
+    fmt::{font, heal, svg, trim_ascii},
     scene::Scene,
     theme::{self, ColorToken, Palette},
 };
@@ -166,6 +166,21 @@ pub fn compile_latex(
     compile_expr(expr, display, palette, out_svg)
 }
 
+/// Compile a live (possibly incomplete) expression after bounded structural repair.
+/// Complete expressions borrow the original bytes and do not copy through the healer.
+///
+/// # Errors
+/// Returns `Error::LatexCompile` when the repaired expression cannot be parsed.
+pub fn compile_latex_streaming(
+    latex_bytes: &[u8],
+    display: bool,
+    palette: &Palette,
+    heal_buf: &mut Vec<u8>,
+    out_svg: &mut Vec<u8>,
+) -> Result<(), Error> {
+    compile_latex(heal::heal(latex_bytes, heal_buf), display, palette, out_svg)
+}
+
 fn stage_or_fallback(raw_src: &[u8], display: bool, is_chem: bool, scene: &mut Scene) {
     let start = scene.text_pool.len();
     let compiled = if is_chem {
@@ -188,6 +203,26 @@ fn stage_or_fallback(raw_src: &[u8], display: bool, is_chem: bool, scene: &mut S
     }
 
     scene.text_pool.truncate(start);
+    if !is_chem {
+        let mut healed = Vec::with_capacity(raw_src.len().saturating_add(64));
+        if compile_latex_streaming(
+            raw_src,
+            display,
+            &theme::DARK,
+            &mut healed,
+            &mut scene.text_pool,
+        )
+        .is_ok()
+        {
+            let (svg_w, svg_h) = svg::extract_svg_dimensions(&scene.text_pool[start..]);
+            if scene.commit_svg(0.0, scene.height, svg_w, svg_h, start) {
+                scene.width = scene.width.max(svg_w);
+                scene.height += svg_h;
+                return;
+            }
+        }
+        scene.text_pool.truncate(start);
+    }
     let fallback = core::str::from_utf8(trim_ascii(raw_src)).unwrap_or("");
     let cursor_y = scene.height + 16.0;
     scene.push_text(8.0, cursor_y, fallback, ColorToken::FG_MUTED, 14);

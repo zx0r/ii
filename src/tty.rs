@@ -196,27 +196,31 @@ pub fn probe() -> (Metrics, &'static Palette, Option<OwnedFd>) {
     (metrics, palette, None)
 }
 
-pub fn render_ansi(src: &[u8], spans: &[crate::ipc::SpanCoord], dark: bool, out: &mut Vec<u8>) {
+pub fn render_ansi(
+    src: &[u8],
+    spans: &[crate::ipc::SpanCoord],
+    palette: &Palette,
+    out: &mut Vec<u8>,
+) {
     out.reserve(src.len());
     let mut cursor = 0usize;
-    let fg_sgr = theme::sgr(theme::ColorToken::FG_PRIMARY, dark);
+    let mut style = crate::style::State::default();
     for sp in spans {
         let start = (sp.outer_start as usize).min(src.len());
         let end = (sp.outer_end as usize).clamp(start, src.len());
         if start > cursor {
-            out.extend_from_slice(fg_sgr);
-            out.extend_from_slice(&src[cursor..start]);
-            out.extend_from_slice(theme::SGR_RESET);
+            crate::style::emit_prose(&src[cursor..start], palette, &mut style, out);
         }
         if !out.is_empty() && out.last() != Some(&b'\n') {
             out.push(b'\n');
         }
         crate::kitty::emit_placeholder(sp.image_id, sp.cols, sp.rows, out);
         cursor = end.max(cursor);
+        if src.get(cursor) == Some(&b'\n') {
+            cursor += 1;
+        }
     }
     if cursor < src.len() {
-        out.extend_from_slice(fg_sgr);
-        out.extend_from_slice(&src[cursor..]);
-        out.extend_from_slice(theme::SGR_RESET);
+        crate::style::emit_prose(&src[cursor..], palette, &mut style, out);
     }
 }

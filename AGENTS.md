@@ -14,9 +14,8 @@ Input (&[u8] / file / stdin / IXPC v1)
   ▼  fmt::detect_kind -> fmt::dispatch_kind (closed enum, zero horizontal coupling)
 Hourglass Scene IR (flat SoA: Rect / Path / GlyphRun / TableGrid / text_pool)
   │
-  ├── L0 VRAM Table (4 160 B, 64×4 Tree-PLRU) ──► hit: emit_placeholder only
-  ├── L1 RGBA Cache (16×4 Tree-PLRU)          ──► hit: stage_shm / stage_base64
-  └── L2 Disk Cache (BLAKE3 + PX03/LZ4)       ──► hit: decompress_into -> KGP
+  ├── L1 RGBA Cache (16×4 Tree-PLRU)          ──► hit: stage_shm / stage_base64 + U+10EEEE grid
+  └── L2 Disk Cache (BLAKE3 + PX03/LZ4)       ──► hit: decompress_into -> stage -> KGP
   │
   ▼  miss: raster::rasterize_scene / raster::rasterize (resvg + tiny-skia + Q24 unpremultiply)
 KGP Transport
@@ -62,10 +61,15 @@ fallback (`fmt::detect_kind`).
 - **Render safety:** hard raster bound `MAX_DIM = 4096 px`, integer snapping to terminal cell grids
   (`cell_w × cell_h`), graceful degradation on malformed UTF-8, SVG, or LaTeX payloads.
 
-### Three-Tier Caching
+### Caching & State Relay
 
-- **L0 (`vram::Table`):** 4-way set-associative, 64 sets, Tree-PLRU, 4 160 B (`align(64)`). Keyed by
-  `Tag(NonZeroU64)` (`wymix`); `image_id` is a 24-bit `NonZeroU32`.
+- **Daemon State Relay:** Pure stateless state relay over KGP. To eliminate terminal "black hole"
+  rendering anomalies upon tmux detach/reattach or Neovim restarts, the daemon does not track
+  client terminal VRAM state; every L1 RAM or L2 Disk cache hit immediately stages KGP APC commands
+  and transmits cell-snapped `U+10EEEE` virtual placeholder grids.
+- **L0 (`vram::Table`):** In-process / client-side lookup table (4-way set-associative, 64 sets,
+  Tree-PLRU, 4 160 B (`align(64)`)). Keyed by `Tag(NonZeroU64)` (`wymix`); `image_id` is a 24-bit
+  `NonZeroU32`.
 - **L1 (`vram::Cache`):** 4-way × 16 sets, Tree-PLRU, retaining ready RGBA8 replicas in process
   memory.
 - **L2 (`cache`):** BLAKE3-keyed across cell geometry, `max_w`, block kind, `fg_rgb`, theme

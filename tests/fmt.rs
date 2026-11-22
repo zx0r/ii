@@ -290,3 +290,45 @@ fn markdown_scanner_frontmatter_fences_inline_math_and_prop_fuzz() {
     });
     assert!(res.is_ok(), "{res:?}");
 }
+
+#[test]
+fn markdown_zero_tofu_and_gfm_callouts() {
+    let md_text = concat!(
+        "# Heading 1\n",
+        "## Heading 2\n",
+        "### Heading 3\n",
+        "- [x] Completed task\n",
+        "- [ ] Pending task\n",
+        "- Standard list item\n",
+        "---\n",
+        "> [!NOTE]\n",
+        "> Note body\n",
+        "> [!TIP]\n",
+        "> Tip body\n",
+        "> [!WARNING]\n",
+        "> Warning body\n",
+        "> [!CAUTION]\n",
+        "> Caution body\n",
+        "> Regular blockquote\n"
+    )
+    .as_bytes();
+
+    let mut scene = Scene::with_capacity(64, 1024);
+    assert_eq!(md::parse_into_scene(md_text, &mut scene), Ok(()));
+    assert!(scene.glyphs.len() >= 10);
+    assert!(scene.width > 0.0);
+    assert!(scene.height > 0.0);
+
+    // Verify Zero-Tofu glyph prefixes in text_pool
+    let text_pool_str = core::str::from_utf8(&scene.text_pool).unwrap_or("");
+    assert!(text_pool_str.contains("▌ "));
+    assert!(text_pool_str.contains("▎ "));
+    assert!(text_pool_str.contains("▪ "));
+    assert!(text_pool_str.contains("✓ "));
+    assert!(text_pool_str.contains("○ "));
+    assert!(text_pool_str.contains("• "));
+    assert!(text_pool_str.contains("ℹ NOTE"));
+    assert!(text_pool_str.contains("◆ TIP"));
+    assert!(text_pool_str.contains("▲ WARNING"));
+    assert!(text_pool_str.contains("✕ CAUTION"));
+}

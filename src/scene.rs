@@ -343,11 +343,19 @@ impl RenderScratch {
     pub const DEFAULT_OUT_CAP: usize = 1024 * 1024;
     pub const MAX_RETAINED_RGBA: usize = 16 * 1024 * 1024;
     pub const MAX_RETAINED_OUT: usize = 4 * 1024 * 1024;
+    pub const MAX_RETAINED_TEXT_BYTES: usize = 256 * 1024;
+    pub const DEFAULT_TEXT_CAP: usize = 64 * 1024;
+    pub const MAX_RETAINED_POINTS: usize = (256 * 1024) / size_of::<[f32; 2]>();
+    pub const DEFAULT_POINTS_CAP: usize = (64 * 1024) / size_of::<[f32; 2]>();
+    pub const MAX_RETAINED_PRIMS: usize = (256 * 1024) / size_of::<GlyphRun>();
+    pub const DEFAULT_PRIMS_CAP: usize = 1024;
+    pub const MAX_RETAINED_VERBS: usize = 256 * 1024;
+    pub const DEFAULT_VERBS_CAP: usize = 2048;
 
     #[must_use]
     pub fn new() -> Self {
         Self {
-            scene: Scene::with_capacity(1024, 64 * 1024),
+            scene: Scene::with_capacity(Self::DEFAULT_PRIMS_CAP, Self::DEFAULT_TEXT_CAP),
             rgba_buf: Vec::with_capacity(Self::DEFAULT_RGBA_CAP),
             out_buf: Vec::with_capacity(Self::DEFAULT_OUT_CAP),
         }
@@ -363,6 +371,24 @@ impl RenderScratch {
         }
         if self.out_buf.capacity() > Self::MAX_RETAINED_OUT {
             self.out_buf.shrink_to(Self::DEFAULT_OUT_CAP);
+        }
+        if self.scene.text_pool.capacity() > Self::MAX_RETAINED_TEXT_BYTES {
+            self.scene.text_pool.shrink_to(Self::DEFAULT_TEXT_CAP);
+        }
+        if self.scene.points.capacity() > Self::MAX_RETAINED_POINTS {
+            self.scene.points.shrink_to(Self::DEFAULT_POINTS_CAP);
+        }
+        if self.scene.rects.capacity() > Self::MAX_RETAINED_PRIMS {
+            self.scene.rects.shrink_to(Self::DEFAULT_PRIMS_CAP);
+        }
+        if self.scene.paths.capacity() > Self::MAX_RETAINED_PRIMS {
+            self.scene.paths.shrink_to(Self::DEFAULT_PRIMS_CAP);
+        }
+        if self.scene.glyphs.capacity() > Self::MAX_RETAINED_PRIMS {
+            self.scene.glyphs.shrink_to(Self::DEFAULT_PRIMS_CAP);
+        }
+        if self.scene.verbs.capacity() > Self::MAX_RETAINED_VERBS {
+            self.scene.verbs.shrink_to(Self::DEFAULT_VERBS_CAP);
         }
     }
 }

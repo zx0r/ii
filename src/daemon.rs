@@ -98,7 +98,6 @@ impl RenderCtx {
 
 struct DaemonState {
     scratch: RenderScratch,
-    vram: Box<vram::Table>,
     l1: vram::Cache,
     l2_dir: Option<OwnedFd>,
     lz4_buf: Vec<u8>,
@@ -117,7 +116,6 @@ impl DaemonState {
     fn new() -> Self {
         Self {
             scratch: RenderScratch::new(),
-            vram: Box::new(vram::Table::new()),
             l1: vram::Cache::new(),
             l2_dir: cache::ensure_dirs().ok(),
             lz4_buf: Vec::with_capacity(256 * 1024),
@@ -133,6 +131,9 @@ impl DaemonState {
         }
     }
 
+    const MAX_RETAINED_DAEMON_BUF: usize = 1024 * 1024;
+    const DEFAULT_DAEMON_BUF: usize = 256 * 1024;
+
     fn reset_request(&mut self) {
         self.scratch.reset();
         self.apc_buf.clear();
@@ -140,6 +141,12 @@ impl DaemonState {
         self.spans.clear();
         self.span_coords.clear();
         self.extmarks.clear();
+        if self.lz4_buf.capacity() > Self::MAX_RETAINED_DAEMON_BUF {
+            self.lz4_buf.shrink_to(Self::DEFAULT_DAEMON_BUF);
+        }
+        if self.b64_buf.capacity() > Self::MAX_RETAINED_DAEMON_BUF {
+            self.b64_buf.shrink_to(Self::DEFAULT_DAEMON_BUF);
+        }
     }
 }
 
@@ -310,22 +317,14 @@ fn render_block(
         ctx.cell_w, ctx.cell_h, ctx.cols, kind as u8, fg_rgb, payload,
     );
 
-    // L0 VRAM hit: terminal already holds pixel buffer.
-    if let Some(hit) = state.vram.lookup(tag) {
-        return Ok(hit);
-    }
-
     let image_id = tag.image_id().get();
-    // L1 RAM replica hit.
+    // L1 RAM replica hit: re-stage texture and return placement.
     if let Some(rep) = state.l1.lookup(tag) {
         let entry = vram::Payload {
             image_id,
             cols: rep.cols,
             rows: rep.rows,
         };
-        if let Some(evicted) = state.vram.insert(tag, entry) {
-            kitty::emit_delete(evicted.image_id, ctx.is_tmux, &mut state.apc_buf);
-        }
         let params = StageParams {
             image_id,
             w: rep.w,
@@ -406,9 +405,6 @@ fn render_block(
         cols,
         rows,
     };
-    if let Some(evicted) = state.vram.insert(tag, entry) {
-        kitty::emit_delete(evicted.image_id, ctx.is_tmux, &mut state.apc_buf);
-    }
     let params = StageParams {
         image_id,
         w,

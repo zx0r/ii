@@ -246,28 +246,98 @@ pub fn parse_into_scene(src: &[u8], scene: &mut Scene) -> Result<(), Error> {
     Ok(())
 }
 
+fn emit_line(
+    scene: &mut Scene,
+    prefix: &str,
+    prefix_color: ColorToken,
+    content: &[u8],
+    content_color: ColorToken,
+    font_size: u16,
+    flags: u8,
+) {
+    let text = core::str::from_utf8(content).unwrap_or("");
+    let cursor_y = scene.height + f32::from(font_size) + 4.0;
+    let mut total_w = 8.0_f32;
+
+    if !prefix.is_empty() {
+        scene.push_text_styled(8.0, cursor_y, prefix, prefix_color, font_size, flags);
+        total_w += font::measure_str(prefix, f32::from(font_size));
+    }
+    if !text.is_empty() {
+        scene.push_text_styled(total_w, cursor_y, text, content_color, font_size, flags);
+        total_w += font::measure_str(text, f32::from(font_size));
+    }
+    scene.width = scene.width.max(total_w + 8.0);
+    scene.height = cursor_y + 4.0;
+}
+
 fn emit_text_block(block: &[u8], scene: &mut Scene) {
     for raw in block.split(|&byte| byte == b'\n') {
         let trimmed = trim_ascii(raw);
         if trimmed.is_empty() {
             continue;
         }
-        let (color, size, flags, content) = trimmed.strip_prefix(b"# ").map_or_else(
-            || {
-                trimmed
-                    .strip_prefix(b"## ")
-                    .map_or((ColorToken::FG_PRIMARY, 14, 0, trimmed), |heading| {
-                        (ColorToken::ACCENT_GREEN, 16, GlyphRun::BOLD, heading)
-                    })
-            },
-            |heading| (ColorToken::ACCENT_ORANGE, 18, GlyphRun::BOLD, heading),
-        );
-        let text = core::str::from_utf8(content).unwrap_or("");
-        let cursor_y = scene.height + f32::from(size) + 4.0;
-        scene.push_text_styled(8.0, cursor_y, text, color, size, flags);
-        scene.width = scene
-            .width
-            .max(font::measure_str(text, f32::from(size)) + 16.0);
-        scene.height = cursor_y + 4.0;
+
+        // Headings: Zero-Tofu blocks
+        if let Some(content) = trimmed.strip_prefix(b"# ") {
+            emit_line(scene, "▌ ", ColorToken::ACCENT_ORANGE, content, ColorToken::FG_PRIMARY, 18, GlyphRun::BOLD);
+            continue;
+        }
+        if let Some(content) = trimmed.strip_prefix(b"## ") {
+            emit_line(scene, "▎ ", ColorToken::ACCENT_GREEN, content, ColorToken::FG_PRIMARY, 16, GlyphRun::BOLD);
+            continue;
+        }
+        if let Some(content) = trimmed.strip_prefix(b"### ") {
+            emit_line(scene, "▪ ", ColorToken::FG_PRIMARY, content, ColorToken::FG_PRIMARY, 14, GlyphRun::BOLD);
+            continue;
+        }
+
+        // Horizontal rules
+        if trimmed == b"---" || trimmed == b"***" || trimmed == b"___" {
+            emit_line(scene, "────────────────────────────────────────", ColorToken::BORDER, b"", ColorToken::BORDER, 12, 0);
+            continue;
+        }
+
+        // GFM Callouts / Alerts & Blockquotes
+        if let Some(inner) = trimmed.strip_prefix(b">") {
+            let inner_trim = trim_ascii(inner);
+            if inner_trim.eq_ignore_ascii_case(b"[!NOTE]") {
+                emit_line(scene, "┃ ℹ NOTE", ColorToken::INFO, b"", ColorToken::INFO, 14, GlyphRun::BOLD);
+                continue;
+            }
+            if inner_trim.eq_ignore_ascii_case(b"[!TIP]") {
+                emit_line(scene, "┃ ◆ TIP", ColorToken::SUCCESS, b"", ColorToken::SUCCESS, 14, GlyphRun::BOLD);
+                continue;
+            }
+            if inner_trim.eq_ignore_ascii_case(b"[!WARNING]") {
+                emit_line(scene, "┃ ▲ WARNING", ColorToken::WARN, b"", ColorToken::WARN, 14, GlyphRun::BOLD);
+                continue;
+            }
+            if inner_trim.eq_ignore_ascii_case(b"[!CAUTION]") {
+                emit_line(scene, "┃ ✕ CAUTION", ColorToken::DANGER, b"", ColorToken::DANGER, 14, GlyphRun::BOLD);
+                continue;
+            }
+            emit_line(scene, "┃ ", ColorToken::BORDER, inner_trim, ColorToken::FG_MUTED, 14, 0);
+            continue;
+        }
+
+        // Checkboxes & Task lists
+        if let Some(task) = trimmed.strip_prefix(b"- [x] ").or_else(|| trimmed.strip_prefix(b"- [X] ")) {
+            emit_line(scene, "✓ ", ColorToken::SUCCESS, task, ColorToken::FG_PRIMARY, 14, 0);
+            continue;
+        }
+        if let Some(task) = trimmed.strip_prefix(b"- [ ] ") {
+            emit_line(scene, "○ ", ColorToken::FG_MUTED, task, ColorToken::FG_MUTED, 14, 0);
+            continue;
+        }
+
+        // Bullet lists
+        if let Some(item) = trimmed.strip_prefix(b"- ").or_else(|| trimmed.strip_prefix(b"* ")) {
+            emit_line(scene, "• ", ColorToken::FG_MUTED, item, ColorToken::FG_PRIMARY, 14, 0);
+            continue;
+        }
+
+        // Standard text line
+        emit_line(scene, "", ColorToken::FG_PRIMARY, trimmed, ColorToken::FG_PRIMARY, 14, 0);
     }
 }

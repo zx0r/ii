@@ -83,10 +83,33 @@ fn scene_utf8_clamp_series_and_scratch_rss_cap() {
     scratch
         .out_buf
         .resize(RenderScratch::MAX_RETAINED_OUT + 4096, 1);
+    scratch
+        .scene
+        .text_pool
+        .resize(RenderScratch::MAX_RETAINED_TEXT_BYTES + 4096, b'a');
+    scratch
+        .scene
+        .points
+        .resize(RenderScratch::MAX_RETAINED_POINTS + 128, [0.0, 0.0]);
+    scratch
+        .scene
+        .glyphs
+        .resize(RenderScratch::MAX_RETAINED_PRIMS + 64, GlyphRun::default());
+    scratch
+        .scene
+        .verbs
+        .resize(RenderScratch::MAX_RETAINED_VERBS + 128, Verb::Close);
     scratch.reset();
     assert_eq!(scratch.rgba_buf, b"");
     assert!(scratch.rgba_buf.capacity() <= RenderScratch::MAX_RETAINED_RGBA);
     assert!(scratch.out_buf.capacity() <= RenderScratch::MAX_RETAINED_OUT);
+    assert_eq!(scratch.scene.text_pool, b"");
+    assert!(scratch.scene.text_pool.capacity() <= RenderScratch::DEFAULT_TEXT_CAP);
+    let empty_points: &[[f32; 2]] = &[];
+    assert_eq!(scratch.scene.points.as_slice(), empty_points);
+    assert!(scratch.scene.points.capacity() <= RenderScratch::DEFAULT_POINTS_CAP);
+    assert!(scratch.scene.glyphs.is_empty() && scratch.scene.glyphs.capacity() <= RenderScratch::DEFAULT_PRIMS_CAP);
+    assert!(scratch.scene.verbs.is_empty() && scratch.scene.verbs.capacity() <= RenderScratch::DEFAULT_VERBS_CAP);
 }
 
 #[test]
@@ -331,6 +354,23 @@ fn kitty_base64_chunking_tmux_delete_and_placeholder() {
     kitty::emit_placeholder(0x0012_3456, 2, 2, &mut grid);
     assert!(grid.starts_with(b"\x1b[38;2;18;52;86m"));
     assert_eq!(memchr::memchr_iter(b'\n', &grid).count(), 2);
+
+    // Verify 297 diacritics mapping and UTF-8 validity
+    assert_eq!(kitty::DIACRITICS_UTF8.len(), 297);
+    for &diac in &kitty::DIACRITICS_UTF8 {
+        assert!(core::str::from_utf8(diac).is_ok());
+    }
+    // Check 2-byte, 3-byte, 4-byte boundaries
+    assert_eq!(kitty::DIACRITICS_UTF8[0].len(), 2);
+    assert_eq!(kitty::DIACRITICS_UTF8[107].len(), 2);
+    assert!(kitty::DIACRITICS_UTF8[108].len() >= 3);
+    assert_eq!(kitty::DIACRITICS_UTF8[296].len(), 4);
+
+    grid.clear();
+    // Test row > 108 (e.g. 150 rows)
+    kitty::emit_placeholder(0x0012_3456, 4, 150, &mut grid);
+    assert!(core::str::from_utf8(&grid).is_ok());
+    assert_eq!(memchr::memchr_iter(b'\n', &grid).count(), 150);
 }
 
 #[test]
@@ -508,4 +548,14 @@ fn style_metrics_quantum_and_visual_hierarchy_invariants() {
     assert_eq!(gs.width, 1.0);
     let ps = m1x.path_stroke(m1x.stroke_medium);
     assert_eq!(ps.width, 1.5);
+}
+
+#[test]
+fn icon_id_and_commands() {
+    use ii::raster::{IconId, icon_cmds, ICON_CHECK, ICON_INFO, ICON_WARN};
+    assert_eq!(size_of::<IconId>(), 1);
+    assert_eq!(icon_cmds(IconId::Note), ICON_INFO);
+    assert_eq!(icon_cmds(IconId::Tip), ICON_CHECK);
+    assert_eq!(icon_cmds(IconId::Warn), ICON_WARN);
+    assert_eq!(icon_cmds(IconId::Caution), ICON_WARN);
 }

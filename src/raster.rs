@@ -89,10 +89,10 @@ pub const ICON_WARN: &[PathCmd] = &[
     PathCmd::LineTo(14.5, 13.5),
     PathCmd::LineTo(1.5, 13.5),
     PathCmd::Close,
-    PathCmd::MoveTo(8.0, 6.0),
-    PathCmd::LineTo(8.0, 9.5),
-    PathCmd::MoveTo(8.0, 11.5),
-    PathCmd::LineTo(8.0, 12.0),
+    PathCmd::MoveTo(8.0, 5.5),
+    PathCmd::LineTo(8.0, 8.8),
+    PathCmd::MoveTo(8.0, 10.8),
+    PathCmd::LineTo(8.0, 11.0),
 ];
 
 /// Information icon (Lucide Info, 16x16 grid).
@@ -115,6 +115,28 @@ pub const ICON_CHECK: &[PathCmd] = &[
     PathCmd::LineTo(6.5, 11.5),
     PathCmd::LineTo(13.0, 4.5),
 ];
+
+/// 1-byte icon identifier.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IconId {
+    Note = 0,
+    Tip = 1,
+    Warn = 2,
+    Caution = 3,
+}
+
+const _: () = assert!(size_of::<IconId>() == 1);
+
+#[inline]
+#[must_use]
+pub const fn icon_cmds(id: IconId) -> &'static [PathCmd] {
+    match id {
+        IconId::Note => ICON_INFO,
+        IconId::Tip => ICON_CHECK,
+        IconId::Warn | IconId::Caution => ICON_WARN,
+    }
+}
 
 /// Build a `tiny_skia::Path` directly from an in-memory command slice without parsing allocations.
 #[inline]
@@ -403,8 +425,6 @@ fn draw_scene_grid(
             if let Some(rect) = tiny_skia::Rect::from_xywh(cx, cy, col_w, GRID_ROW_H) {
                 let bg = make_paint(palette.color(cell.bg));
                 pixmap.fill_rect(rect, &bg, ts, None);
-                let path = tiny_skia::PathBuilder::from_rect(rect);
-                pixmap.stroke_path(&path, &border_paint, &border_stroke, ts, None);
             }
             let text = scene.cell_text(cell);
             if !text.is_empty() {
@@ -428,6 +448,40 @@ fn draw_scene_grid(
             }
             cx += col_w;
         }
+    }
+
+    let total_w: f32 = widths.iter().sum();
+    let x0 = (grid.x * scale).floor() + 0.5;
+    let x_end = ((grid.x + total_w) * scale).floor() + 0.5;
+    let rows_f = f32::from(grid.rows);
+    let y0 = (grid.y * scale).floor() + 0.5;
+    let y_end = (rows_f.mul_add(GRID_ROW_H, grid.y) * scale).floor() + 0.5;
+
+    let mut grid_pb = tiny_skia::PathBuilder::new();
+    for r in 0..=rows {
+        let r_f = f32::from(u16::try_from(r).unwrap_or(u16::MAX));
+        let y = (r_f.mul_add(GRID_ROW_H, grid.y) * scale).floor() + 0.5;
+        grid_pb.move_to(x0, y);
+        grid_pb.line_to(x_end, y);
+    }
+    let mut cur_x = grid.x;
+    for &col_w in widths {
+        let x = (cur_x * scale).floor() + 0.5;
+        grid_pb.move_to(x, y0);
+        grid_pb.line_to(x, y_end);
+        cur_x += col_w;
+    }
+    grid_pb.move_to(x_end, y0);
+    grid_pb.line_to(x_end, y_end);
+
+    if let Some(grid_path) = grid_pb.finish() {
+        pixmap.stroke_path(
+            &grid_path,
+            &border_paint,
+            &border_stroke,
+            tiny_skia::Transform::identity(),
+            None,
+        );
     }
 }
 

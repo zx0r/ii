@@ -151,3 +151,97 @@ pub fn compute_table_widths(
         row_height: cw * 2.2,
     }
 }
+
+pub const BASE_CELL_W: f32 = 9.0;
+pub const BASE_CELL_H: f32 = 18.0;
+
+/// Quantized terminal cell layout and vector style metrics (40 bytes, Copy).
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[repr(C)]
+pub struct StyleMetrics {
+    pub cell_w: u16,
+    pub cell_h: u16,
+    pub dpi_scale: f32,
+    pub stroke_hairline: f32,
+    pub stroke_thin: f32,
+    pub stroke_medium: f32,
+    pub stroke_thick: f32,
+    pub corner_radius: f32,
+    pub pad_x: f32,
+    pub pad_y: f32,
+    pub font_px: f32,
+}
+
+const _: () = assert!(size_of::<StyleMetrics>() == 40);
+
+impl StyleMetrics {
+    pub const BASE_STROKE: tiny_skia::Stroke = tiny_skia::Stroke {
+        width: 1.0,
+        miter_limit: 4.0,
+        line_cap: tiny_skia::LineCap::Butt,
+        line_join: tiny_skia::LineJoin::Miter,
+        dash: None,
+    };
+
+    #[inline]
+    #[must_use]
+    pub fn from_cell_geometry(cell_w: u16, cell_h: u16) -> Self {
+        let cw = f32::from(cell_w.max(1));
+        let ch = f32::from(cell_h.max(1));
+
+        let dpi_scale = (cw / BASE_CELL_W).min(ch / BASE_CELL_H).max(1.0);
+
+        let stroke_hairline = 1.0_f32;
+        let stroke_thin = (1.0_f32 * dpi_scale).round().max(1.0);
+        let stroke_medium = 1.5_f32 * dpi_scale;
+        let stroke_thick = (2.0_f32 * dpi_scale).round().max(2.0);
+
+        let corner_radius = (3.0_f32 * dpi_scale).round().min(cw * 0.5);
+
+        let pad_x = cw;
+        let pad_y = ch * 0.5;
+        let font_px = ch * 0.75;
+
+        Self {
+            cell_w,
+            cell_h,
+            dpi_scale,
+            stroke_hairline,
+            stroke_thin,
+            stroke_medium,
+            stroke_thick,
+            corner_radius,
+            pad_x,
+            pad_y,
+            font_px,
+        }
+    }
+
+    #[inline(always)]
+    #[must_use]
+    pub const fn icon_size(&self) -> f32 {
+        self.font_px
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn grid_stroke(&self) -> tiny_skia::Stroke {
+        tiny_skia::Stroke {
+            width: self.stroke_hairline,
+            line_cap: tiny_skia::LineCap::Butt,
+            line_join: tiny_skia::LineJoin::Miter,
+            ..Self::BASE_STROKE
+        }
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn path_stroke(&self, width: f32) -> tiny_skia::Stroke {
+        tiny_skia::Stroke {
+            width,
+            line_cap: tiny_skia::LineCap::Round,
+            line_join: tiny_skia::LineJoin::Round,
+            ..Self::BASE_STROKE
+        }
+    }
+}

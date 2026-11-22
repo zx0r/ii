@@ -469,3 +469,43 @@ fn theme_error_and_unpremultiply_invariants() {
     });
     assert!(res.is_ok(), "{res:?}");
 }
+
+#[test]
+fn style_metrics_quantum_and_visual_hierarchy_invariants() {
+    use ii::layout::StyleMetrics;
+
+    assert_eq!(size_of::<StyleMetrics>(), 40);
+
+    // Standard 1x display:
+    let m1x = StyleMetrics::from_cell_geometry(9, 18);
+    assert_eq!(m1x.dpi_scale, 1.0);
+    assert_eq!(m1x.stroke_hairline, 1.0);
+    assert_eq!(m1x.stroke_thin, 1.0);
+    assert_eq!(m1x.stroke_medium, 1.5);
+    assert_eq!(m1x.stroke_thick, 2.0);
+    // Visual hierarchy guarantee on 1x:
+    assert!(m1x.stroke_medium < m1x.stroke_thick);
+    assert_eq!(m1x.corner_radius, 3.0);
+    assert_eq!(m1x.pad_x, 9.0);
+    assert_eq!(m1x.pad_y, 9.0);
+    assert_eq!(m1x.font_px, 13.5);
+    assert_eq!(m1x.icon_size(), 13.5);
+
+    // Retina 2x display:
+    let m2x = StyleMetrics::from_cell_geometry(18, 36);
+    assert_eq!(m2x.dpi_scale, 2.0);
+    assert_eq!(m2x.stroke_hairline, 1.0);
+    assert_eq!(m2x.stroke_thin, 2.0);
+    assert_eq!(m2x.stroke_medium, 3.0);
+    assert_eq!(m2x.stroke_thick, 4.0);
+    assert_eq!(m2x.corner_radius, 6.0);
+    assert_eq!(m2x.pad_x, 18.0);
+    assert_eq!(m2x.pad_y, 18.0);
+    assert_eq!(m2x.font_px, 27.0);
+    assert_eq!(m2x.icon_size(), 27.0);
+
+    let gs = m1x.grid_stroke();
+    assert_eq!(gs.width, 1.0);
+    let ps = m1x.path_stroke(m1x.stroke_medium);
+    assert_eq!(ps.width, 1.5);
+}

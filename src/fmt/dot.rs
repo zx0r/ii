@@ -4,7 +4,7 @@ use crate::{
     err::Error,
     fmt::{push_f64_1, push_u32, write_xml_escaped},
     scene::{Rect, Scene},
-    theme::{ColorToken, Idx, Palette},
+    theme::{ColorToken, Palette, SemanticRole},
 };
 
 const MAX_NODES: usize = 128;
@@ -241,9 +241,9 @@ pub fn render(src: &[u8], palette: &Palette, width: u16, out: &mut Vec<u8>) {
     push_f64_1(out, f64::from(max_y));
     out.extend_from_slice(b"\">");
 
-    let stroke = palette.hex_str(Idx::Border).as_bytes();
-    let fill = palette.hex_str(Idx::BgSurface).as_bytes();
-    let text_col = palette.hex_str(Idx::Fg).as_bytes();
+    let stroke = palette.hex_str(SemanticRole::Border).as_bytes();
+    let fill = palette.hex_str(SemanticRole::Surface).as_bytes();
+    let text_col = palette.hex_str(SemanticRole::TextPrimary).as_bytes();
 
     for edge in &graph.edges[..graph.edge_len] {
         let (a, b) = (

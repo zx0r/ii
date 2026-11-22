@@ -18,7 +18,7 @@ use ii::{
     layout::{LinearScale, TableMetrics, compute_table_widths},
     raster::unpremultiply,
     scene::{GlyphRun, Rect, RenderScratch, Scene, Verb},
-    theme::{self, ColorToken, DARK, Idx, LIGHT, Rgba},
+    theme::{self, ColorToken, DARK, LIGHT, Rgba, SemanticRole},
     tty::{Metrics, Term, luminance, parse_osc_rgb, render_ansi},
     vram::{Cache, Payload, Table, Tag, compute_tag},
 };
@@ -418,7 +418,10 @@ fn prop_layout_no_panic_and_exact_width_sum() {
 
 #[test]
 fn theme_error_and_unpremultiply_invariants() {
-    assert_ne!(DARK.hex_str(Idx::Bg), LIGHT.hex_str(Idx::Bg));
+    assert_ne!(
+        DARK.hex_str(SemanticRole::Surface),
+        LIGHT.hex_str(SemanticRole::Surface)
+    );
     assert_ne!(DARK.series_hex_str(0), LIGHT.series_hex_str(0));
     assert_ne!(
         theme::sgr(ColorToken::FG_PRIMARY, true),

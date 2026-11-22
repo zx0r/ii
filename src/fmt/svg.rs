@@ -3,13 +3,13 @@
 use crate::{
     err::Error,
     scene::Scene,
-    theme::{self, Idx, Palette},
+    theme::{self, Palette, SemanticRole},
 };
 
 /// Rewrite `currentColor` and hardcoded black strokes/fills to match active `palette`.
 pub fn rewrite_colors(src: &[u8], palette: &Palette, dst: &mut Vec<u8>) {
     dst.reserve(src.len() + 64);
-    let fg = palette.hex_str(Idx::Fg).as_bytes();
+    let fg = palette.hex_str(SemanticRole::TextPrimary).as_bytes();
     let mut pos = 0usize;
 
     while pos < src.len() {

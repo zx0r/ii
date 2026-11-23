@@ -347,7 +347,7 @@ fn kitty_base64_chunking_tmux_delete_and_placeholder() {
     kitty::stage_base64(&rgba, params, &mut apc, &mut b64);
     let text_apc = core::str::from_utf8(&apc).unwrap_or("");
     assert!(text_apc.starts_with("\x1b_Ga=t,t=d,f=32,q=2,i=1193046,s=25,v=31,m=1;"));
-    assert!(text_apc.contains("\x1b\\\x1b_Gm=0;"));
+    assert!(text_apc.contains("\x1b\\\x1b_Gq=2,m=0;"));
     assert!(text_apc.ends_with("\x1b_Ga=p,U=1,q=2,i=1193046,c=4,r=2\x1b\\"));
 
     apc.clear();
@@ -564,4 +564,31 @@ fn icon_id_and_commands() {
     assert_eq!(icon_cmds(IconId::Tip), ICON_CHECK);
     assert_eq!(icon_cmds(IconId::Warn), ICON_WARN);
     assert_eq!(icon_cmds(IconId::Caution), ICON_WARN);
+}
+
+#[test]
+fn every_graphics_chunk_suppresses_terminal_input_responses() {
+    let rgba = vec![128; 12000];
+    let p = StageParams {
+        image_id: 1,
+        w: 100,
+        h: 30,
+        cols: 10,
+        rows: 3,
+        is_tmux: false,
+    };
+    let mut apc = Vec::new();
+    let mut b64 = Vec::new();
+    kitty::stage_base64(&rgba, p, &mut apc, &mut b64);
+    let mut count = 0;
+    for chunk in apc.split(|&b| b == 0x1b).filter(|s| s.starts_with(b"_G")) {
+        let header_end = memchr::memchr(b';', chunk).unwrap_or(chunk.len());
+        assert!(
+            memchr::memmem::find(&chunk[..header_end], b"q=2").is_some(),
+            "continuation would send responses into Yazi input"
+        );
+        assert!(chunk.len() < 4096, "packet exceeds one bounded write");
+        count += 1;
+    }
+    assert!(count > 2);
 }

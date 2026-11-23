@@ -1,14 +1,23 @@
--- ii.yazi: Zero-overhead previewer/preloader plugin for Yazi.
--- Automated Dual-Channel decoding over piped stdout [u32 apc_len (LE)][apc][text].
+-- ii.yazi: framed graphical preview adapter for Yazi.
+-- Framed CLI output is committed on Yazi's main loop, never from a competing writer.
 
 local M = {}
 
 local emit = ya.mgr_emit or ya.emit or ya.manager_emit
 
-local function unpack_u32_le(raw, offset)
-  local b1, b2, b3, b4 = string.byte(raw, offset, offset + 3)
-  return b1 + b2 * 256 + b3 * 65536 + b4 * 16777216
-end
+-- Commit graphics on Yazi's main loop, after rejecting superseded jobs. Writing
+-- from the CLI races Yazi's own terminal writer during rapid navigation.
+local publish_graphics = ya.sync(function(_, url, skip, apc)
+  local tab = cx.tab or cx.active
+  local hovered = tab.current.hovered
+  if not hovered or tostring(hovered.url) ~= url or tab.preview.skip ~= skip then return false end
+  if #apc > 0 then
+    local tty = io.open("/dev/tty", "wb")
+    if not tty then return false end
+    tty:write(apc); tty:flush(); tty:close()
+  end
+  return true
+end)
 
 local function path_of(job)
   return (tostring(job.file.path or job.file.url):gsub("^file://", ""))
@@ -28,6 +37,7 @@ function M:peek(job)
   local theme_arg = is_light and "light" or "dark"
 
   local child, _ = Command("ii")
+    :arg("--machine")
     :arg("--size")
     :arg(string.format("%dx%d", w, h))
     :arg("--cell-size")
@@ -39,40 +49,35 @@ function M:peek(job)
     :arg("--")
     :arg(path)
     :stdout(Command.PIPED)
-    :stderr(Command.NULL)
+    :stderr(Command.PIPED)
     :output()
 
   if not child or not child.status.success then
-    ya.preview_widget(job, ui.Text("ii: render failed"):area(job.area))
+    ya.preview_widget(job, ui.Text("ii: " .. (child and child.stderr or "failed to start")):area(job.area))
     return
   end
 
   local raw = child.stdout
-  if #raw < 4 then
-    ya.preview_widget(job, ui.Text("ii: malformed response"):area(job.area))
+  if #raw < 4 then return end
+  local a,b,c,d = raw:byte(1,4)
+  local n = a+b*256+c*65536+d*16777216
+  if n > #raw-4 then return end
+  if not publish_graphics(tostring(job.file.url), job.skip or 0, raw:sub(5,4+n)) then return end
+  local text = raw:sub(5+n)
+  if text == "" and (job.skip or 0) > 0 then
+    emit("peek", { math.max(0, job.skip - h), only_if = job.file.url, upper_bound = true })
     return
-  end
-
-  local apc_len = unpack_u32_le(raw, 1)
-  if apc_len > #raw - 4 then
-    ya.preview_widget(job, ui.Text("ii: malformed response length"):area(job.area))
-    return
-  end
-  local apc = raw:sub(5, 4 + apc_len)
-  local text = raw:sub(5 + apc_len)
-
-  if #apc > 0 and emit then
-    emit("term_write", { apc })
   end
   ya.preview_widget(job, ui.Text.parse(text):area(job.area))
 end
 
 function M:seek(job)
-  if emit then
-    emit("peek", { math.max(0, (job.skip or 0) + (job.units or 0)), only_if = job.file.url })
-  else
-    self:peek(job)
-  end
+  local tab = cx.tab or cx.active
+  local hovered = tab.current.hovered
+  if not hovered or hovered.url ~= job.file.url then return end
+  local step = math.floor(job.units * job.area.h / 10)
+  if step == 0 then step = job.units > 0 and 1 or (job.units < 0 and -1 or 0) end
+  emit("peek", { math.max(0, tab.preview.skip + step), only_if = job.file.url, scope = job.scope })
 end
 
 function M:preload(_) return true end

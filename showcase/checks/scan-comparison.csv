@@ -1,0 +1,4 @@
+corpus,bytes,old_spans,current_spans,old_ns,current_ns,old_GiBs,current_GiBs,old_MiBs,current_MiBs
+dense,68096,1024,1024,38805.8,27251.6,1.634,2.327,1673.5,2383.0
+technical,76464,192,192,9062.9,9813.1,7.858,7.257,8046.2,7431.1
+pure,55900,0,0,1840.6,1855.8,28.285,28.053,28963.3,28726.0

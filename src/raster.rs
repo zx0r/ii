@@ -7,6 +7,24 @@ use crate::{
     theme::{Palette, Rgba},
 };
 
+// Each process scans system fonts at most once. Math outlines need no system lookup.
+static FONTS: std::sync::OnceLock<std::sync::Arc<resvg::usvg::fontdb::Database>> =
+    std::sync::OnceLock::new();
+
+fn svg_options(src: &[u8]) -> resvg::usvg::Options<'static> {
+    let mut options = resvg::usvg::Options::default();
+    if memchr::memmem::find(src, b"<text").is_some() {
+        options.fontdb = FONTS
+            .get_or_init(|| {
+                let mut fonts = resvg::usvg::fontdb::Database::new();
+                fonts.load_system_fonts();
+                std::sync::Arc::new(fonts)
+            })
+            .clone();
+    }
+    options
+}
+
 pub const MAX_DIM: u32 = 4096;
 const GRID_ROW_H: f32 = 18.0;
 
@@ -46,11 +64,14 @@ fn snap_dims(
     cell_w: u16,
     cell_h: u16,
 ) -> Result<(u16, u16, u16, u16, usize), Error> {
+    if raw_w > MAX_DIM || raw_h > MAX_DIM {
+        return Err(Error::ImageTooLarge { w: raw_w, h: raw_h });
+    }
     let (cw, ch) = (u32::from(cell_w.max(1)), u32::from(cell_h.max(1)));
-    let (cols, rows) = (
-        raw_w.max(1).div_ceil(cw).max(1),
-        raw_h.max(1).div_ceil(ch).max(1),
-    );
+    let max_cols = (MAX_DIM / cw).max(1);
+    let max_rows = (MAX_DIM / ch).max(1);
+    let cols = raw_w.max(1).div_ceil(cw).min(max_cols);
+    let rows = raw_h.max(1).div_ceil(ch).min(max_rows);
     let (snap_w, snap_h) = (cols.saturating_mul(cw), rows.saturating_mul(ch));
     let too_big = Error::ImageTooLarge {
         w: snap_w,
@@ -169,108 +190,6 @@ fn make_paint(c: Rgba) -> tiny_skia::Paint<'static> {
     }
 }
 
-/// Minimalist geometric vector stroke definitions on a `4x6` grid (`(x0<<4|y0, x1<<4|y1)`).
-#[rustfmt::skip]
-const fn ascii_strokes(ch: u8) -> &'static [(u8, u8)] {
-    match ch {
-        b'!' => &[(0x20,0x24),(0x26,0x26)],
-        b'"' => &[(0x10,0x12),(0x30,0x32)],
-        b'#' => &[(0x10,0x16),(0x30,0x36),(0x02,0x42),(0x04,0x44)],
-        b'$' => &[(0x20,0x26),(0x41,0x11),(0x11,0x02),(0x02,0x44),(0x44,0x35),(0x35,0x05)],
-        b'%' => &[(0x06,0x40),(0x01,0x11),(0x35,0x45)],
-        b'&' => &[(0x46,0x02),(0x02,0x10),(0x10,0x31),(0x31,0x04),(0x04,0x16),(0x16,0x44)],
-        b'\'' => &[(0x20,0x22)],
-        b'(' => &[(0x30,0x12),(0x12,0x14),(0x14,0x36)],
-        b')' => &[(0x10,0x32),(0x32,0x34),(0x34,0x16)],
-        b'*' => &[(0x21,0x25),(0x02,0x44),(0x42,0x04)],
-        b'+' => &[(0x21,0x25),(0x03,0x43)],
-        b',' => &[(0x25,0x17)],
-        b'-' => &[(0x03,0x43)],
-        b'.' => &[(0x25,0x26)],
-        b'/' => &[(0x06,0x40)],
-        b'0' => &[(0x10,0x30),(0x30,0x41),(0x41,0x45),(0x45,0x36),(0x36,0x16),(0x16,0x05),(0x05,0x01),(0x01,0x10),(0x15,0x31)],
-        b'1' => &[(0x11,0x20),(0x20,0x26),(0x16,0x36)],
-        b'2' => &[(0x01,0x10),(0x10,0x30),(0x30,0x41),(0x41,0x42),(0x42,0x06),(0x06,0x46)],
-        b'3' => &[(0x00,0x30),(0x30,0x41),(0x41,0x33),(0x13,0x33),(0x33,0x44),(0x44,0x36),(0x36,0x06)],
-        b'4' => &[(0x36,0x30),(0x30,0x04),(0x04,0x44)],
-        b'5' => &[(0x40,0x00),(0x00,0x03),(0x03,0x33),(0x33,0x44),(0x44,0x36),(0x36,0x06)],
-        b'6' => &[(0x30,0x10),(0x10,0x02),(0x02,0x05),(0x05,0x16),(0x16,0x36),(0x36,0x45),(0x45,0x33),(0x33,0x03)],
-        b'7' => &[(0x00,0x40),(0x40,0x16)],
-        b'8' => &[(0x10,0x30),(0x30,0x41),(0x41,0x33),(0x13,0x33),(0x13,0x01),(0x01,0x10),(0x13,0x05),(0x05,0x16),(0x16,0x36),(0x36,0x45),(0x45,0x33)],
-        b'9' => &[(0x16,0x36),(0x36,0x44),(0x44,0x41),(0x41,0x30),(0x30,0x10),(0x10,0x01),(0x01,0x13),(0x13,0x43)],
-        b':' => &[(0x22,0x22),(0x25,0x25)],
-        b';' => &[(0x22,0x22),(0x25,0x17)],
-        b'<' => &[(0x41,0x03),(0x03,0x45)],
-        b'=' => &[(0x02,0x42),(0x04,0x44)],
-        b'>' => &[(0x01,0x43),(0x43,0x05)],
-        b'?' => &[(0x01,0x10),(0x10,0x30),(0x30,0x41),(0x41,0x23),(0x23,0x24),(0x26,0x26)],
-        b'@' => &[(0x34,0x24),(0x24,0x13),(0x13,0x22),(0x22,0x32),(0x32,0x34),(0x34,0x44),(0x44,0x41),(0x41,0x30),(0x30,0x10),(0x10,0x01),(0x01,0x05),(0x05,0x16),(0x16,0x46)],
-        b'A' => &[(0x06,0x20),(0x20,0x46),(0x14,0x34)],
-        b'B' => &[(0x00,0x06),(0x00,0x30),(0x30,0x41),(0x41,0x33),(0x03,0x33),(0x33,0x44),(0x44,0x36),(0x36,0x06)],
-        b'C' => &[(0x41,0x30),(0x30,0x10),(0x10,0x01),(0x01,0x05),(0x05,0x16),(0x16,0x36),(0x36,0x45)],
-        b'D' => &[(0x00,0x06),(0x00,0x20),(0x20,0x42),(0x42,0x44),(0x44,0x26),(0x26,0x06)],
-        b'E' => &[(0x40,0x00),(0x00,0x06),(0x06,0x46),(0x03,0x33)],
-        b'F' => &[(0x40,0x00),(0x00,0x06),(0x03,0x33)],
-        b'G' => &[(0x41,0x30),(0x30,0x10),(0x10,0x01),(0x01,0x05),(0x05,0x16),(0x16,0x36),(0x36,0x45),(0x45,0x43),(0x43,0x23)],
-        b'H' => &[(0x00,0x06),(0x40,0x46),(0x03,0x43)],
-        b'I' => &[(0x10,0x30),(0x20,0x26),(0x16,0x36)],
-        b'J' => &[(0x10,0x40),(0x30,0x35),(0x35,0x26),(0x26,0x16),(0x16,0x05)],
-        b'K' => &[(0x00,0x06),(0x40,0x03),(0x13,0x46)],
-        b'L' => &[(0x00,0x06),(0x06,0x46)],
-        b'M' => &[(0x06,0x00),(0x00,0x23),(0x23,0x40),(0x40,0x46)],
-        b'N' => &[(0x06,0x00),(0x00,0x46),(0x46,0x40)],
-        b'O' => &[(0x10,0x30),(0x30,0x41),(0x41,0x45),(0x45,0x36),(0x36,0x16),(0x16,0x05),(0x05,0x01),(0x01,0x10)],
-        b'P' => &[(0x06,0x00),(0x00,0x30),(0x30,0x41),(0x41,0x42),(0x42,0x33),(0x33,0x03)],
-        b'Q' => &[(0x10,0x30),(0x30,0x41),(0x41,0x45),(0x45,0x36),(0x36,0x16),(0x16,0x05),(0x05,0x01),(0x01,0x10),(0x24,0x46)],
-        b'R' => &[(0x06,0x00),(0x00,0x30),(0x30,0x41),(0x41,0x33),(0x33,0x03),(0x23,0x46)],
-        b'S' => &[(0x41,0x30),(0x30,0x10),(0x10,0x01),(0x01,0x02),(0x02,0x44),(0x44,0x45),(0x45,0x36),(0x36,0x16),(0x16,0x05)],
-        b'T' => &[(0x00,0x40),(0x20,0x26)],
-        b'U' => &[(0x00,0x05),(0x05,0x16),(0x16,0x36),(0x36,0x45),(0x45,0x40)],
-        b'V' => &[(0x00,0x26),(0x26,0x40)],
-        b'W' => &[(0x00,0x06),(0x06,0x23),(0x23,0x46),(0x46,0x40)],
-        b'X' => &[(0x00,0x46),(0x40,0x06)],
-        b'Y' => &[(0x00,0x23),(0x40,0x23),(0x23,0x26)],
-        b'Z' => &[(0x00,0x40),(0x40,0x06),(0x06,0x46)],
-        b'[' => &[(0x30,0x10),(0x10,0x16),(0x16,0x36)],
-        b'\\' => &[(0x00,0x46)],
-        b']' => &[(0x10,0x30),(0x30,0x36),(0x36,0x16)],
-        b'^' => &[(0x02,0x20),(0x20,0x42)],
-        b'_' => &[(0x06,0x46)],
-        b'`' => &[(0x10,0x32)],
-        b'a' => &[(0x12,0x32),(0x32,0x43),(0x43,0x46),(0x44,0x14),(0x14,0x05),(0x05,0x16),(0x16,0x46)],
-        b'b' => &[(0x00,0x06),(0x03,0x12),(0x12,0x32),(0x32,0x43),(0x43,0x45),(0x45,0x36),(0x36,0x06)],
-        b'c' => &[(0x43,0x32),(0x32,0x12),(0x12,0x03),(0x03,0x05),(0x05,0x16),(0x16,0x36),(0x36,0x45)],
-        b'd' => &[(0x40,0x46),(0x43,0x32),(0x32,0x12),(0x12,0x03),(0x03,0x05),(0x05,0x16),(0x16,0x46)],
-        b'e' => &[(0x04,0x44),(0x44,0x43),(0x43,0x32),(0x32,0x12),(0x12,0x03),(0x03,0x05),(0x05,0x16),(0x16,0x46)],
-        b'f' => &[(0x30,0x20),(0x20,0x11),(0x11,0x16),(0x03,0x33)],
-        b'g' => &[(0x42,0x46),(0x46,0x37),(0x37,0x17),(0x43,0x32),(0x32,0x12),(0x12,0x03),(0x03,0x05),(0x05,0x16),(0x16,0x46)],
-        b'h' => &[(0x00,0x06),(0x03,0x12),(0x12,0x32),(0x32,0x43),(0x43,0x46)],
-        b'i' => &[(0x20,0x20),(0x22,0x26)],
-        b'j' => &[(0x30,0x30),(0x32,0x36),(0x36,0x27),(0x27,0x17)],
-        b'k' => &[(0x00,0x06),(0x42,0x04),(0x14,0x46)],
-        b'l' => &[(0x20,0x26),(0x26,0x36)],
-        b'm' => &[(0x06,0x02),(0x02,0x12),(0x12,0x23),(0x23,0x26),(0x23,0x32),(0x32,0x43),(0x43,0x46)],
-        b'n' => &[(0x06,0x02),(0x03,0x12),(0x12,0x32),(0x32,0x43),(0x43,0x46)],
-        b'o' => &[(0x12,0x32),(0x32,0x43),(0x43,0x45),(0x45,0x36),(0x36,0x16),(0x16,0x05),(0x05,0x03),(0x03,0x12)],
-        b'p' => &[(0x02,0x07),(0x03,0x12),(0x12,0x32),(0x32,0x43),(0x43,0x45),(0x45,0x36),(0x36,0x06)],
-        b'q' => &[(0x42,0x47),(0x43,0x32),(0x32,0x12),(0x12,0x03),(0x03,0x05),(0x05,0x16),(0x16,0x46)],
-        b'r' => &[(0x02,0x06),(0x03,0x12),(0x12,0x42)],
-        b's' => &[(0x42,0x12),(0x12,0x03),(0x03,0x44),(0x44,0x36),(0x36,0x06)],
-        b't' => &[(0x10,0x15),(0x15,0x26),(0x26,0x46),(0x02,0x32)],
-        b'u' => &[(0x02,0x05),(0x05,0x16),(0x16,0x36),(0x36,0x45),(0x42,0x46)],
-        b'v' => &[(0x02,0x26),(0x26,0x42)],
-        b'w' => &[(0x02,0x16),(0x16,0x23),(0x23,0x36),(0x36,0x42)],
-        b'x' => &[(0x02,0x46),(0x42,0x06)],
-        b'y' => &[(0x02,0x25),(0x42,0x17)],
-        b'z' => &[(0x02,0x42),(0x42,0x06),(0x06,0x46)],
-        b'{' => &[(0x30,0x21),(0x21,0x22),(0x22,0x13),(0x13,0x24),(0x24,0x25),(0x25,0x36)],
-        b'|' => &[(0x20,0x26)],
-        b'}' => &[(0x10,0x21),(0x21,0x22),(0x22,0x33),(0x33,0x24),(0x24,0x25),(0x25,0x16)],
-        b'~' => &[(0x03,0x12),(0x12,0x34),(0x34,0x43)],
-        _ => &[(0x01,0x41),(0x41,0x45),(0x45,0x05),(0x05,0x01)],
-    }
-}
-
 #[derive(Clone, Copy)]
 struct TextDraw {
     x: f32,
@@ -281,68 +200,49 @@ struct TextDraw {
     color: Rgba,
 }
 
-fn draw_vector_text(text: &str, cfg: TextDraw, pixmap: &mut tiny_skia::PixmapMut<'_>) {
-    if text.is_empty() || cfg.font_px <= 0.0 {
+fn append_text(text: &str, cfg: TextDraw, svg: &mut String) {
+    use std::fmt::Write as _;
+    let width = cfg.max_x - cfg.x;
+    if text.is_empty() || width <= 0.0 || cfg.font_px <= 0.0 {
         return;
     }
-    let glyph_h = (cfg.font_px * 0.68).max(5.0);
-    let glyph_w = glyph_h * 0.54;
-    let adv = glyph_w * 1.32;
-    let sx = glyph_w * 0.25;
-    let sy = glyph_h / 6.0;
-    let top_y = cfg.baseline_y - glyph_h;
-    let italic = (cfg.flags & GlyphRun::ITALIC) != 0;
-
-    let mut pb = tiny_skia::PathBuilder::new();
-    let mut cx = cfg.x;
-    for ch in text.chars() {
-        if cx + glyph_w > cfg.max_x {
-            break;
-        }
-        if ch == ' ' || ch == '\t' {
-            cx += adv;
-            continue;
-        }
-        let code = u8::try_from(ch as u32).unwrap_or(0);
-        for &(p0, p1) in ascii_strokes(code) {
-            let (gx0, gy0) = (f32::from(p0 >> 4), f32::from(p0 & 0x0F));
-            let (gx1, gy1) = (f32::from(p1 >> 4), f32::from(p1 & 0x0F));
-            let sh0 = if italic { (6.0 - gy0) * 0.22 } else { 0.0 };
-            let sh1 = if italic { (6.0 - gy1) * 0.22 } else { 0.0 };
-            let x0 = sx.mul_add(gx0 + sh0, cx);
-            let y0 = sy.mul_add(gy0, top_y);
-            let x1 = sx.mul_add(gx1 + sh1, cx);
-            let y1 = sy.mul_add(gy1, top_y);
-            pb.move_to(x0, y0);
-            if (p0 == p1) || ((x1 - x0).abs() < 0.05 && (y1 - y0).abs() < 0.05) {
-                pb.line_to(x0 + 0.5, y0);
-            } else {
-                pb.line_to(x1, y1);
-            }
-        }
-        cx += adv;
-    }
-
-    let Some(path) = pb.finish() else { return };
-    let paint = make_paint(cfg.color);
-    let bold_factor = if (cfg.flags & GlyphRun::BOLD) != 0 {
-        0.14
+    let family = if cfg.flags & GlyphRun::MONO != 0 {
+        "monospace"
     } else {
-        0.09
+        "sans-serif"
     };
-    let stroke = tiny_skia::Stroke {
-        width: (glyph_h * bold_factor).max(1.0),
-        line_cap: tiny_skia::LineCap::Round,
-        line_join: tiny_skia::LineJoin::Round,
-        ..StyleMetrics::BASE_STROKE
+    let weight = if cfg.flags & GlyphRun::BOLD != 0 {
+        "bold"
+    } else {
+        "normal"
     };
-    pixmap.stroke_path(
-        &path,
-        &paint,
-        &stroke,
-        tiny_skia::Transform::identity(),
-        None,
+    let style = if cfg.flags & GlyphRun::ITALIC != 0 {
+        "italic"
+    } else {
+        "normal"
+    };
+    let _ = write!(
+        svg,
+        "<svg x=\"{}\" y=\"{}\" width=\"{width}\" height=\"{}\"><text y=\"{}\" font-size=\"{}\" font-family=\"{family}\" font-weight=\"{weight}\" font-style=\"{style}\" fill=\"#{:02x}{:02x}{:02x}\" fill-opacity=\"{}\">",
+        cfg.x,
+        cfg.baseline_y - cfg.font_px,
+        cfg.font_px * 1.5,
+        cfg.font_px,
+        cfg.font_px,
+        cfg.color.r(),
+        cfg.color.g(),
+        cfg.color.b(),
+        f32::from(cfg.color.a()) / 255.0
     );
+    for ch in text.chars() {
+        match ch {
+            '&' => svg.push_str("&amp;"),
+            '<' => svg.push_str("&lt;"),
+            '>' => svg.push_str("&gt;"),
+            _ => svg.push(ch),
+        }
+    }
+    svg.push_str("</text></svg>");
 }
 
 fn rounded_rect_path(r: &Rect) -> Option<tiny_skia::Path> {
@@ -385,7 +285,12 @@ fn draw_scene_rects(
                 width: f32::from(r.stroke_width.max(1)),
                 ..StyleMetrics::BASE_STROKE
             };
-            pixmap.stroke_path(&path, &paint, &stroke, ts, None);
+            let border = if r.color == crate::theme::ColorToken::SURFACE {
+                make_paint(palette.role_color(crate::theme::SemanticRole::Border))
+            } else {
+                paint.clone()
+            };
+            pixmap.stroke_path(&path, &border, &stroke, ts, None);
         }
     }
 }
@@ -395,10 +300,11 @@ fn draw_scene_grid(
     grid: &TableGrid,
     palette: &Palette,
     scale: f32,
-    ts: tiny_skia::Transform,
     metrics: &StyleMetrics,
     pixmap: &mut tiny_skia::PixmapMut<'_>,
+    labels: &mut String,
 ) {
+    let ts = tiny_skia::Transform::from_scale(scale, scale);
     let cols = usize::from(grid.cols);
     let rows = usize::from(grid.rows);
     if cols == 0 || rows == 0 {
@@ -433,7 +339,7 @@ fn draw_scene_grid(
                 let max_x = (cx + col_w).mul_add(scale, -pad);
                 let baseline = GRID_ROW_H.mul_add(0.74, cy) * scale;
                 let flags = if cell.flags != 0 { GlyphRun::BOLD } else { 0 };
-                draw_vector_text(
+                append_text(
                     text,
                     TextDraw {
                         x: tx,
@@ -443,7 +349,7 @@ fn draw_scene_grid(
                         flags,
                         color: palette.color(cell.color),
                     },
-                    pixmap,
+                    labels,
                 );
             }
             cx += col_w;
@@ -558,10 +464,9 @@ fn draw_scene_svgs(scene: &Scene, scale: f32, pixmap: &mut tiny_skia::PixmapMut<
     if scene.svgs.is_empty() {
         return;
     }
-    let opts = resvg::usvg::Options::default();
     for emb in &scene.svgs {
         let raw = scene.svg_bytes(emb);
-        let Ok(tree) = resvg::usvg::Tree::from_data(raw, &opts) else {
+        let Ok(tree) = resvg::usvg::Tree::from_data(raw, &svg_options(raw)) else {
             continue;
         };
         let (tw, th) = (tree.size().width(), tree.size().height());
@@ -592,8 +497,7 @@ pub fn rasterize(
     rgba: &mut Vec<u8>,
 ) -> Result<(u16, u16, u16, u16), Error> {
     let max_w = u32::from(max_width_px.max(cell_w.max(1))).min(MAX_DIM);
-    let tree = resvg::usvg::Tree::from_data(svg, &resvg::usvg::Options::default())
-        .map_err(|_| Error::SvgParse)?;
+    let tree = resvg::usvg::Tree::from_data(svg, &svg_options(svg)).map_err(|_| Error::SvgParse)?;
     let (src_w, src_h) = (tree.size().width(), tree.size().height());
     if !(src_w.is_finite() && src_h.is_finite() && src_w > 0.0 && src_h > 0.0) {
         return Err(Error::SvgParse);
@@ -603,11 +507,14 @@ pub fn rasterize(
         reason = "max_w <= MAX_DIM (4096) exact in f32"
     )]
     let max_w_f = max_w as f32;
-    let scale = if src_w > max_w_f {
-        max_w_f / src_w
-    } else {
-        1.0
-    };
+    // Fit both axes rather than clipping the bottom. KGP row diacritics encode
+    // at most 297 rows; account for cell snapping before choosing the scale.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "bounded pixel dimensions are exact in f32"
+    )]
+    let max_h = ((MAX_DIM / u32::from(cell_h.max(1))).min(297) * u32::from(cell_h.max(1))) as f32;
+    let scale = 1.0_f32.min(max_w_f / src_w).min(max_h / src_h);
 
     #[expect(
         clippy::cast_possible_truncation,
@@ -661,11 +568,14 @@ pub fn rasterize_scene(
     } else {
         1.0
     };
-    let scale = if src_w > max_w_f {
-        max_w_f / src_w
-    } else {
-        1.0
-    };
+    // Fit both axes rather than clipping the bottom. KGP row diacritics encode
+    // at most 297 rows; account for cell snapping before choosing the scale.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "bounded pixel dimensions are exact in f32"
+    )]
+    let max_h = ((MAX_DIM / u32::from(cell_h.max(1))).min(297) * u32::from(cell_h.max(1))) as f32;
+    let scale = 1.0_f32.min(max_w_f / src_w).min(max_h / src_h);
 
     #[expect(
         clippy::cast_possible_truncation,
@@ -689,9 +599,19 @@ pub fn rasterize_scene(
 
     let metrics = StyleMetrics::from_cell_geometry(cell_w, cell_h);
     let ts = tiny_skia::Transform::from_scale(scale, scale);
+    let mut labels =
+        format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}\" height=\"{h}\">");
     draw_scene_rects(scene, palette, ts, &mut pixmap);
     for grid in &scene.grids {
-        draw_scene_grid(scene, grid, palette, scale, ts, &metrics, &mut pixmap);
+        draw_scene_grid(
+            scene,
+            grid,
+            palette,
+            scale,
+            &metrics,
+            &mut pixmap,
+            &mut labels,
+        );
     }
     for p in &scene.paths {
         draw_scene_path(scene, p, palette, ts, &mut pixmap);
@@ -703,7 +623,7 @@ pub fn rasterize_scene(
         if glyph.font_size == 0 {
             continue;
         }
-        draw_vector_text(
+        append_text(
             scene.text(glyph),
             TextDraw {
                 x: glyph.x * scale,
@@ -713,8 +633,15 @@ pub fn rasterize_scene(
                 flags: glyph.flags,
                 color: palette.color(glyph.color),
             },
-            &mut pixmap,
+            &mut labels,
         );
+    }
+
+    labels.push_str("</svg>");
+    if memchr::memmem::find(labels.as_bytes(), b"<text").is_some() {
+        let tree = resvg::usvg::Tree::from_data(labels.as_bytes(), &svg_options(labels.as_bytes()))
+            .map_err(|_| Error::SvgParse)?;
+        resvg::render(&tree, tiny_skia::Transform::identity(), &mut pixmap);
     }
 
     unpremultiply(rgba);
@@ -873,7 +800,7 @@ pub fn rasterize_svg_snapped(
     cell_h: u16,
     rgba_out: &mut Vec<u8>,
 ) -> Result<(u16, u16), Error> {
-    let tree = resvg::usvg::Tree::from_data(svg_data, &resvg::usvg::Options::default())
+    let tree = resvg::usvg::Tree::from_data(svg_data, &svg_options(svg_data))
         .map_err(|_| Error::SvgParse)?;
     let (src_w, src_h) = (tree.size().width(), tree.size().height());
 
@@ -899,4 +826,52 @@ pub fn rasterize_svg_snapped(
     unpremultiply(rgba_out);
 
     Ok((layout.grid_cols, layout.grid_rows))
+}
+
+/// Fit decoded straight RGBA into the terminal grid, preserving all source rows.
+///
+/// # Errors
+/// Rejects inconsistent dimensions or an image exceeding the raster budget.
+pub fn fit_rgba(
+    w: u32,
+    h: u32,
+    cell_w: u16,
+    cell_h: u16,
+    max_w: u16,
+    rgba: &mut Vec<u8>,
+) -> Result<(u16, u16), Error> {
+    let cw = u32::from(cell_w.max(1));
+    let ch = u32::from(cell_h.max(1));
+    if w == 0 || h == 0 || rgba.len() != w as usize * h as usize * 4 {
+        return Err(Error::PngDecode);
+    }
+    let bound_w = u32::from(max_w).min(MAX_DIM) / cw * cw;
+    let bound_h = (MAX_DIM / ch).min(297) * ch;
+    if bound_w == 0 || bound_h == 0 {
+        return Err(Error::ImageTooLarge { w, h });
+    }
+    let mut dw = w.min(bound_w);
+    let mut dh = u32::try_from(u64::from(h) * u64::from(dw) / u64::from(w))
+        .unwrap_or(bound_h)
+        .max(1);
+    if dh > bound_h {
+        dh = bound_h;
+        dw = u32::try_from(u64::from(w) * u64::from(dh) / u64::from(h))
+            .unwrap_or(bound_w)
+            .max(1);
+    }
+    let (sw, sh, _, _, bytes) = snap_dims(dw, dh, cell_w, cell_h)?;
+    let mut dst = vec![0; bytes];
+    for y in 0..dh {
+        let sy = u64::from(y) * u64::from(h) / u64::from(dh);
+        for x in 0..dw {
+            let sx = u64::from(x) * u64::from(w) / u64::from(dw);
+            let from =
+                usize::try_from((sy * u64::from(w) + sx) * 4).map_err(|_| Error::PngDecode)?;
+            let to = (y as usize * usize::from(sw) + x as usize) * 4;
+            dst[to..to + 4].copy_from_slice(&rgba[from..from + 4]);
+        }
+    }
+    *rgba = dst;
+    Ok((sw, sh))
 }

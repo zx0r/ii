@@ -161,6 +161,39 @@ fn daemon_lifecycle_lock_ping_render_bad_magic_and_shutdown()
     let render_cmd = resp_hdr.command;
     assert_eq!(render_cmd, (Cmd::RenderFile as u16) | RESP_FLAG);
 
+    // Prepared previews crop in visual coordinates and never upload offscreen graphics.
+    let preview_path = rt.0.join("scroll.md");
+    let source = format!("top\n{}\n$$x^2$$\nbottom\n", "plain\n".repeat(40));
+    std::fs::write(&preview_path, &source)?;
+    let preview =
+        |skip: u32, cols: u16| -> Result<(Header, Vec<u8>), Box<dyn core::error::Error>> {
+            let mut payload = skip.to_le_bytes().to_vec();
+            payload.extend_from_slice(preview_path.to_str().ok_or("path")?.as_bytes());
+            let mut h = Header::new(Cmd::PreviewFile, u32::try_from(payload.len())?);
+            h.cols = cols;
+            h.rows = 4;
+            h.req_id_lo = skip;
+            h.req_id_hi = 123;
+            let (reply, body) = ii::ipc::exchange(h, &payload, Some(&sock))?;
+            assert_eq!(reply.req_id_lo, skip);
+            assert_eq!(reply.req_id_hi, 123);
+            Ok((reply, body))
+        };
+    let (top, text) = preview(0, 80)?;
+    assert_eq!(top.flags, 0, "invisible formula was uploaded");
+    assert!(text.windows(3).any(|w| w == b"top"));
+    let (formula, _) = preview(42, 80)?;
+    assert!(formula.flags > 0, "visible formula was not uploaded");
+    let (_, again) = preview(0, 80)?;
+    assert_eq!(again, text, "scroll back changed prepared document");
+    let (end, empty) = preview(10000, 80)?;
+    assert_eq!(end.flags, 0);
+    assert_eq!(empty, b"");
+    std::fs::write(&preview_path, b"changed\nabcdefghij\n")?;
+    let (_, edited) = preview(0, 4)?;
+    assert!(edited.windows(4).any(|w| w == b"chan"));
+    assert!(memchr::memchr_iter(b'\n', &edited).count() <= 4);
+
     // Corrupt magic frame must yield `ERR_FLAG` without crashing the reactor.
     let mut bad_hdr = Header::new(Cmd::Ping, 0);
     bad_hdr.magic = 0xDEAD_BEEF;

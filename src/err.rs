@@ -26,6 +26,8 @@ pub enum Error {
     ShmExhausted,
     TooManyClients,
     InvalidCli,
+    ResourceLimit,
+    InvalidState,
 }
 
 const _: () = assert!(size_of::<Error>() <= 12);
@@ -52,6 +54,8 @@ impl fmt::Display for Error {
             Self::JsonNav => f.write_str("JSON navigation failed"),
             Self::ShmExhausted => f.write_str("SHM allocation failed"),
             Self::TooManyClients => f.write_str("max 32 concurrent clients"),
+            Self::ResourceLimit => f.write_str("resource limit exceeded"),
+            Self::InvalidState => f.write_str("invalid request state"),
             Self::InvalidCli => f.write_str("invalid command line arguments"),
         }
     }

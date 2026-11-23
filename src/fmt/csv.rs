@@ -216,3 +216,72 @@ pub fn parse_tsv_into_scene(src: &[u8], scene: &mut Scene) -> Result<(), Error> 
     parse_delimited(src, Some(b'\t'), scene);
     Ok(())
 }
+
+/// Present all delimited records as a native text table, including multiline fields.
+///
+/// # Errors
+/// Rejects an unterminated quoted field.
+pub fn to_markdown(src: &[u8], delim: u8, out: &mut Vec<u8>) -> Result<(), Error> {
+    if src.is_empty() {
+        return Ok(());
+    }
+    let mut pos = 0;
+    let mut row = 0;
+    let mut cols = 0;
+    out.extend_from_slice(b"| ");
+    let mut at_start = true;
+    let mut quoted = false;
+    while pos < src.len() {
+        let byte = src[pos];
+        if byte == b'"' && (quoted || at_start) {
+            if quoted && src.get(pos + 1) == Some(&b'"') {
+                out.push(b'"');
+                pos += 2;
+                continue;
+            }
+            quoted = !quoted;
+        } else if !quoted && (byte == delim || byte == b'\n') {
+            out.extend_from_slice(b" | ");
+            cols += 1;
+            at_start = true;
+            if byte == b'\n' {
+                out.push(b'\n');
+                if row == 0 {
+                    out.push(b'|');
+                    for _ in 0..cols {
+                        out.extend_from_slice(b" --- |");
+                    }
+                    out.push(b'\n');
+                }
+                row += 1;
+                cols = 0;
+                if pos + 1 < src.len() {
+                    out.extend_from_slice(b"| ");
+                }
+            }
+        } else {
+            match byte {
+                b'|' => out.extend_from_slice("│".as_bytes()),
+                b'\n' => out.extend_from_slice("↵".as_bytes()),
+                b'\r' if src.get(pos + 1) == Some(&b'\n') => {}
+                _ => out.push(byte),
+            }
+            at_start = false;
+        }
+        pos += 1;
+    }
+    if quoted {
+        return Err(Error::InvalidState);
+    }
+    if !src.ends_with(b"\n") {
+        out.extend_from_slice(b" |\n");
+        if row == 0 {
+            out.push(b'|');
+            for _ in 0..=cols {
+                out.extend_from_slice(b" --- |");
+            }
+            out.push(b'\n');
+        }
+    }
+    Ok(())
+}

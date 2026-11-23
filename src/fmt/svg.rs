@@ -33,8 +33,17 @@ fn candidate(src: &[u8], mut pos: usize) -> usize {
 
 /// Rewrite `currentColor` and hardcoded black strokes/fills to match active `palette`.
 pub fn rewrite_colors(src: &[u8], palette: &Palette, dst: &mut Vec<u8>) {
+    rewrite_colors_as(src, palette, SemanticRole::TextPrimary, dst);
+}
+
+pub(crate) fn rewrite_colors_as(
+    src: &[u8],
+    palette: &Palette,
+    role: SemanticRole,
+    dst: &mut Vec<u8>,
+) {
     dst.reserve(src.len() + 64);
-    let fg = palette.hex_str(SemanticRole::TextPrimary).as_bytes();
+    let fg = palette.hex_str(role).as_bytes();
     let mut pos = 0usize;
 
     while pos < src.len() {
@@ -47,6 +56,11 @@ pub fn rewrite_colors(src: &[u8], palette: &Palette, dst: &mut Vec<u8>) {
         let rest = &src[pos..];
         if rest.starts_with(b"currentColor") {
             dst.extend_from_slice(fg);
+            pos += 12;
+        } else if rest.starts_with(b"\"rgb(0,0,0)\"") {
+            dst.push(b'"');
+            dst.extend_from_slice(fg);
+            dst.push(b'"');
             pos += 12;
         } else if palette.is_dark && rest.starts_with(b"\"#000000\"") {
             dst.push(b'"');
@@ -112,6 +126,8 @@ fn parse_viewbox(header: &[u8]) -> Option<(f32, f32)> {
 /// Extract `(width, height)` from `<svg ...>` header (`viewBox` or `width`/`height`).
 #[must_use]
 pub fn extract_svg_dimensions(src: &[u8]) -> (f32, f32) {
+    let start = memchr::memmem::find(src, b"<svg").unwrap_or(0);
+    let src = &src[start..];
     let tag_end = memchr::memchr(b'>', src).unwrap_or_else(|| src.len().min(512));
     let header = &src[..tag_end.min(src.len())];
     if let Some(dims) = parse_viewbox(header) {
@@ -122,16 +138,20 @@ pub fn extract_svg_dimensions(src: &[u8]) -> (f32, f32) {
     (width, height)
 }
 
-/// Stage color-normalized SVG payload directly into `Scene::svgs` without 64 `KiB` truncation.
+/// Stage color-normalized SVG payload directly into `Scene::svgs` using caller-provided palette.
 ///
 /// # Errors
 /// Returns `Error::SvgParse` if `src` contains no `<svg` marker or pool overflows `u32`.
-pub fn parse_into_scene(src: &[u8], scene: &mut Scene) -> Result<(), Error> {
+pub fn parse_into_scene_with_palette(
+    src: &[u8],
+    palette: &Palette,
+    scene: &mut Scene,
+) -> Result<(), Error> {
     if !src.windows(4).any(|w| w == b"<svg") {
         return Err(Error::SvgParse);
     }
     let start = scene.text_pool.len();
-    rewrite_colors(src, &theme::DARK, &mut scene.text_pool);
+    rewrite_colors(src, palette, &mut scene.text_pool);
     let (svg_w, svg_h) = extract_svg_dimensions(&scene.text_pool[start..]);
     if !scene.commit_svg(0.0, scene.height, svg_w, svg_h, start) {
         scene.text_pool.truncate(start);
@@ -140,4 +160,12 @@ pub fn parse_into_scene(src: &[u8], scene: &mut Scene) -> Result<(), Error> {
     scene.width = scene.width.max(svg_w);
     scene.height += svg_h;
     Ok(())
+}
+
+/// Stage color-normalized SVG payload directly into `Scene::svgs` without 64 `KiB` truncation.
+///
+/// # Errors
+/// Returns `Error::SvgParse` if `src` contains no `<svg` marker or pool overflows `u32`.
+pub fn parse_into_scene(src: &[u8], scene: &mut Scene) -> Result<(), Error> {
+    parse_into_scene_with_palette(src, &theme::DARK, scene)
 }

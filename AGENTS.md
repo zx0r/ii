@@ -1,191 +1,220 @@
-# `ii`
+# AGENTS.md — правила работы с ii
 
-Zero-overhead terminal graphical coprocessor written in Rust 2024. Compiles documents, formulas,
-diagrams, charts, tables, and archives into cell-snapped RGBA8 frames and delivers them over the
-**Kitty Graphics Protocol (KGP)** using `U+10EEEE` virtual placeholders (CLI, Yazi, Neovim).
+Эти инструкции относятся ко всему репозиторию. Они предназначены для разработчиков
+и автоматизированных помощников. Явные указания пользователя имеют приоритет.
+Не выдавайте желаемую архитектуру за реализованную.
 
----
+## 1. Назначение и манифест
 
-## Processing Pipeline
+`ii` читает технические документы и данные и представляет их в терминале,
+файловом менеджере и редакторе. Продукт не владеет исходниками пользователя:
+просмотр не должен менять файл, выполнять notebook или запускать команды из данных.
 
-```text
-Input (&[u8] / file / stdin / IXPC v1)
-  │
-  ▼  fmt::detect_kind -> fmt::dispatch_kind (closed enum, zero horizontal coupling)
-Hourglass Scene IR (flat SoA: Rect / Path / GlyphRun / TableGrid / text_pool)
-  │
-  ├── L1 RGBA Cache (16×4 Tree-PLRU)          ──► hit: stage_shm / stage_base64 + U+10EEEE grid
-  └── L2 Disk Cache (BLAKE3 + PX03/LZ4)       ──► hit: decompress_into -> stage -> KGP
-  │
-  ▼  miss: raster::rasterize_scene / raster::rasterize (resvg + tiny-skia + Q24 unpremultiply)
-KGP Transport
-  ├── local: POSIX SHM (t=s, mmap + RAII unlink)
-  └── SSH/fallback: chunked Base64 (t=d, 4 096 B) + tmux DCS passthrough
+Приоритеты при выборе реализации:
+
+1. Сохранность содержания и корректность протокола.
+2. Отзывчивость, прозрачное оформление и предсказуемые ресурсы.
+3. Проверяемая скорость на репрезентативных данных.
+4. Минимальная достаточная сложность и сопровождаемость.
+
+Уровень Principal означает техническое обоснование, воспроизводимые проверки и
+честные границы, а не количество паттернов, абстракций или превосходных степеней.
+Ориентир около 5000 строк — направление сокращения лишнего кода, не квота,
+ради которой удаляются проверки, корректные ветки или поддерживаемое поведение.
+
+## 2. Источники истины
+
+- Код, выполняемые тесты и измеренные результаты устанавливают текущее поведение.
+- `README.md` описывает действующую архитектуру и публичное использование.
+- `RENDERING_IMPLEMENTATION.md` фиксирует решения, регрессии и ограничения рендера.
+- `ARCHITECTURE.md`, `ARCHITECTURE_V2.md`, `ASTRA.md` — исследовательские материалы;
+  их идеи не означают, что описанные там протоколы или компоненты существуют.
+- Исторический ориентир: `../ii_old`, коммит
+  `a2d84066f838f42364ecc8b7dd56573758dc4f2e` и 19 предыдущих коммитов.
+  Более новые коммиты не считать эталоном автоматически. Старый код — свидетельство
+  поведения; копирование его архитектуры целиком не требуется.
+
+Не добавлять очередной конкурирующий «финальный» архитектурный документ. Менять
+описание действующего решения в README; эксперимент помечать как предложение.
+Сохранять чужие незакоммиченные изменения и намеренные удаления.
+
+## 3. Карта ответственности
+
+| Граница | Владелец |
+|---|---|
+| Аргументы, stdin, локальные файлы, запуск клиента | `src/main.rs` |
+| Сокет, клиенты, файловые запросы, подготовленное превью | `src/daemon.rs` |
+| IXPC, кодеки заголовка и extmarks, корреляция ответов | `src/ipc.rs` |
+| Порядок текста и графики, нормализация, координаты источника | `src/compose.rs` |
+| Компиляция изображения, растровые кэши, выбор транспорта | `src/image.rs` |
+| Определение формата и форматы | `src/fmt/mod.rs`, `src/fmt/*.rs` |
+| Оформление нативного текста | `src/style.rs` |
+| Общая палитра, цветовые роли, готовые SGR/hex | `src/theme.rs` |
+| Геометрия, Scene и RGBA | `src/layout.rs`, `src/scene.rs`, `src/raster.rs` |
+| Визуальные строки и ширина терминальных ячеек | `src/viewport.rs` |
+| KGP, Base64, SHM, placeholders | `src/kitty.rs` |
+| Дисковый кэш и растровая память | `src/cache.rs`, `src/vram.rs` |
+| Метрики терминала и выбор светлой/тёмной палитры | `src/tty.rs` |
+| Владение кадром и публикация в конкретном приложении | `plugins/` |
+
+Не создавать параллельные CLI/daemon реализации композиции. Общая точка полного
+документа — `compose::render_file`. `fmt::dispatch_with_palette` компилирует
+графическое содержание в Scene и не заменяет композицию полного документа.
+PNG идёт через декодер изображения, а не через векторный диспетчер.
+
+Внутренние модули форматов остаются независимыми от хостов и файлового I/O.
+Общие операции помещаются у фактического владельца: арифметика масштаба — в layout,
+цвет — в theme, переносы и viewport — в viewport. Не создавать `utils` для
+несвязанных функций. Не вводить трейты для единственной реализации без основания.
+
+## 4. Обязательные инварианты
+
+### Содержание и координаты
+
+- Порядок прозы, таблиц и графики сохраняется.
+- Исходные byte offsets, строки буфера редактора, визуальные строки и пиксели —
+  разные пространства. Не подменять одно другим при скролле или extmarks.
+- Переносы считаются до выбора визуальной страницы. EOF не оставляет пустое
+  зависшее превью; возврат назад воспроизводит исходный кадр.
+- `$2f + 1$`, `$2 + 3$`, `$42$` не должны теряться как денежные суммы.
+- Формулы внутри inline-кода и неподдерживаемых code fences не компилируются.
+- Локальный отказ не должен незаметно удалять исходный текст.
+- Массивы MIME в notebook — альтернативы представления одного результата;
+  последовательные outputs — отдельные результаты.
+
+### Прозрачность и стили
+
+- Использовать Catppuccin Mocha/Latte и маркеры из исторического ориентира.
+- Служебный canvas и подложки имеют нулевую альфу; ANSI не задаёт фон терминала.
+- Прозрачность не означает удаление цветных данных графика или пикселей входного PNG.
+- Контуры и подписи остаются видимыми в обеих темах. Математика использует mauve.
+- При изменении пикселей, компилятора или стилей изменять версию растрового кэша.
+- Не заменять настоящие глифы псевдошрифтом из прямоугольников/ASCII.
+
+### Терминальный протокол и ввод
+
+- Только хост владеет режимом ввода и потоком его UI. Превью не читает клавиши,
+  не меняет termios, не посылает OSC-запросы во время скролла.
+- В Yazi CLI возвращает `--machine` кадр; `ya.sync` публикует графику в основном
+  цикле после проверки URL и scroll offset. Нельзя писать в TTY из дочернего CLI:
+  этот вариант воспроизведённо смешивает APC с перерисовкой и повреждает вывод.
+- Каждый пакет KGP, включая continuation, содержит `q=2`. Base64 не попадает в
+  видимый текст. Не менять termios ради подавления ответов.
+- В Neovim 0.12+ использовать `nvim_ui_send`; прямой `io.stdout:write` как
+  резервный графический канал запрещён.
+- Не переиспользовать одноразовое SHM-имя после его потребления терминалом.
+- Не запоминать «изображение точно в VRAM» без контракта жизненного цикла хоста.
+- Устаревший результат отвергается по получателю, поколению, редакции и геометрии.
+
+### Ресурсы и безопасность
+
+- Проверять длины до выделения буферов, арифметику и версию/тип ответа до разбора.
+- Не увеличивать лимиты для маскировки утечки или зависания.
+- Изменение содержимого, темы, размера ячейки и ширины инвалидирует изображение.
+- Не доверять одному mtime: файл может быть заменён или изменён с прежним временем.
+- Не выполнять shell, JavaScript, Python, R или Typst-программу из входного файла.
+- Оставлять секреты, пользовательские логи, target и локальные задачи вне Git.
+- `unsafe` допустим только на необходимой границе с локальным `SAFETY`-обоснованием.
+  Не добавлять panic/unwrap/expect в исполняемый путь; возвращать типизированную ошибку.
+
+## 5. Производительность и зависимости
+
+Измерять до оптимизации и после неё на одинаковых байтах, CPU, toolchain, флагах,
+режиме прогрева и точке входа. Публиковать единицы и количество найденных блоков.
+2000+ MiB/s относится к плотному сканированию; это не обещание такой скорости
+растеризации, файлового чтения или отправки кадра терминалу.
+
+Раздельно измерять сканирование, нормализацию, компиляцию, растеризацию, cache hit,
+выбор страницы и IPC. Прогретый кэш не называть компиляцией; metadata lookup не
+пересчитывать в скорость обработки гигабайт данных. Не менять корпус для красивой цифры.
+
+Использовать заимствования, переиспользуемые scratch-буферы, компактные данные и
+явные ограничения. Не вводить обещание «zero allocation везде»: шрифты, compilers,
+PNG и нормализация выделяют память. После изменения смотреть стоимость полного пути.
+`#[inline]`, SIMD, отдельные потоки, дополнительные кэши — только с измеренным смыслом.
+
+Новая зависимость требует назначения, альтернативы, транзитивного графа и проверки
+полезного поведения. Не добавлять serde/unicode-width как удобный обход общей логики.
+`serde`/`serde_json` транзитивно требуются ratex, включая исторический ii_old;
+их удаление из lock-файла не является оптимизацией. Не удалять embedded glyph fonts
+без пиксельной проверки математических символов. Не менять зависимости автоматически
+в документационной задаче. Приложение хранит `Cargo.lock` в Git.
+
+## 6. Антипаттерны, которые нельзя возвращать
+
+| Антипаттерн | Почему / замена |
+|---|---|
+| Весь документ как одна картинка | Потеря нативного текста и дорогой скролл; композиция текста и графических spans |
+| Новый renderer на каждый шаг | Повторная загрузка шрифтов и компиляция; подготовленный документ и ограниченный кэш |
+| Загрузка невидимых изображений | Стоимость документа вместо страницы; отбор по видимым placeholders |
+| Несколько независимых путей рендера | Разные стили и ошибки; общая композиция |
+| Второй неиспользуемый wire/source framework | Дублирование владения; удалить, пока нет работающего потребителя |
+| Вывод KGP из асинхронного worker в TTY | Перемешивание UI и графики; публикация через владельца UI |
+| q=2 только в первом пакете | Ответы попадают во вход приложения; q=2 в каждом continuation |
+| Сжатие capacity после каждого запроса | Повторные аллокации; пороги удерживаемой памяти |
+| Неограниченный HashMap кадров/HL/cache | Рост RSS; явное владение, переиспользование имён и бюджет |
+| Подмена ошибки пустым успешным изображением | Невозможно отличить отказ; сохранять исходник и диагностировать |
+| Расширение как обещание полного языка | Ложный контракт; описывать реализованный поднабор |
+| Рекламные слова вместо проверки | Не доказывают качество; приводить условия и сохранённые результаты |
+
+## 7. Порядок изменений
+
+1. Изучить владельца поведения, вызывающие стороны и существующий тест.
+2. Воспроизвести ошибку на настоящем входе. Для протокола проверять поток, не только exit code.
+3. Исправить на минимальной общей границе. Удалить заменённую ветку и мёртвые типы.
+4. Добавить проверку поведения, которое могло бы снова сломаться.
+5. Проверить затронутый путь, затем обязательные общие проверки.
+6. Обновить публичный контракт и ограничения; предъявить факты, а не обещание.
+
+Не создавать субагентов без явного разрешения пользователя. Не откатывать чужие
+изменения. Не устанавливать системные инструменты и не менять личные настройки
+в качестве скрытого этапа проверки. Запрашивать недостающие обязательные сведения,
+но выполнять независимо доступную работу. Явный запрос на коммит разрешает коммит,
+но не push, релиз или обход Git hooks.
+
+## 8. Проверки перед сдачей
+
+Базовый набор, не требующий дополнительных cargo-плагинов:
+
+```sh
+cargo +stable fmt --all -- --check
+cargo +stable clippy --locked --all-targets --all-features -- -D warnings
+cargo +stable test --locked
+cargo +stable build --locked --release
 ```
 
----
+Для локальной работы без сети можно добавить `--offline`, если crates уже доступны.
+Socket/SHM-тесты требуют обычных локальных системных разрешений; отказ окружения
+отличать от дефекта реализации, не удалять тест ради зелёного статуса.
 
-## Supported Formats
+После рендера/скролла/транспорта:
 
-Routing resolves by file extension (ASCII case-insensitive) with a zero-copy magic-byte sniffing
-fallback (`fmt::detect_kind`).
-
-| Category         | Extensions                                                       | Engine / Strategy                                                                                                  |
-| :--------------- | :--------------------------------------------------------------- | :----------------------------------------------------------------------------------------------------------------- |
-| Markup           | `.md`, `.qmd`, `.mdx`, `.rmd`, `.typ`                            | Single-pass SIMD scanner (`memchr`): frontmatter, fences, `$$`/`$`, pipe tables -> routed via `fmt::dispatch_kind` |
-| Notebooks        | `.ipynb`                                                         | Zero-copy JSON walker (`MAX_DEPTH = 64`): markdown, code, stream/error, MIME (`svg`, `latex`, `markdown`, `plain`) |
-| Math / Chemistry | `.tex`, `.latex`                                                 | `ratex-parser` / `ratex-layout` / `ratex-svg` + inline `mhchem` (`\ce{...}`) with a zero-copy fast-path            |
-| Diagrams         | `.mmd`, `.mermaid`                                               | `mermaid-svg` -> palette adaptation -> `Scene`                                                                     |
-| Graphs           | `.dot`, `.gv`                                                    | Stack tokenizer with `u32` offsets (`[Node; 128] <= 4 096 B`), cycle-safe layered DAG layout -> `Scene` / SVG      |
-| Vector           | `.svg`                                                           | Zero-DOM color rewriting (`currentColor`, `#000`, `black`) + `viewBox` / `width` / `height` extraction             |
-| Tables           | `.csv`, `.tsv`, pipe tables                                      | Zero-copy parser with quote unescaping -> `TableGrid` (`<= 64` columns, `<= 256` rows)                             |
-| Charts           | `.vl`, `.plotly`                                                 | Zero-copy series extraction (bar / line / scatter, `<= 512` points) + `LinearScale` -> `Rect` / `Path`             |
-| Archives         | `.zip`, `.jar`, `.whl`, `.tar`, `.tgz`, `.tbz2`, `.txz`, `.tzst` | Zero-dependency inspector for ZIP EOCD/CD, POSIX ustar TAR, and `gzip`/`bzip2`/`xz`/`zstd` headers -> `TableGrid`  |
-
----
-
-## Architectural Invariants
-
-### Data & Memory Layout
-
-- **Compile-time ABI assertions:** core types enforce layout via `#[repr(C)]` and
-  `const _: () = assert!(...)`:
-  - `Error`: `<= 12 B`, `Copy`, zero heap payloads.
-  - `GlyphRun` (20 B), `Rect` (20 B), `Path` (20 B), `CellSpan` (12 B), `TableGrid` (24 B), `Span`
-    (20 B).
-  - `Palette`: 192 B, 64-byte aligned (3 cache lines); `SgrSeq` tables are generated at compile time
-    (`const fn`).
-- **Steady-state RSS ceiling:** `RenderScratch::reset()` clears buffers without deallocating, while
-  shrinking outlier spikes above strict high-water marks (`MAX_RETAINED_RGBA = 16 MiB`,
-  `MAX_RETAINED_OUT = 4 MiB`, `Cache::MAX_RETAINED_SLOT_CAP = 2 MiB`).
-- **Render safety:** hard raster bound `MAX_DIM = 4096 px`, integer snapping to terminal cell grids
-  (`cell_w × cell_h`), graceful degradation on malformed UTF-8, SVG, or LaTeX payloads.
-
-### Caching & State Relay
-
-- **Daemon State Relay:** Pure stateless state relay over KGP. To eliminate terminal "black hole"
-  rendering anomalies upon tmux detach/reattach or Neovim restarts, the daemon does not track
-  client terminal VRAM state; every L1 RAM or L2 Disk cache hit immediately stages KGP APC commands
-  and transmits cell-snapped `U+10EEEE` virtual placeholder grids.
-- **L0 (`vram::Table`):** In-process / client-side lookup table (4-way set-associative, 64 sets,
-  Tree-PLRU, 4 160 B (`align(64)`)). Keyed by `Tag(NonZeroU64)` (`wymix`); `image_id` is a 24-bit
-  `NonZeroU32`.
-- **L1 (`vram::Cache`):** 4-way × 16 sets, Tree-PLRU, retaining ready RGBA8 replicas in process
-  memory.
-- **L2 (`cache`):** BLAKE3-keyed across cell geometry, `max_w`, block kind, `fg_rgb`, theme
-  polarity, and payload. Blob format `PX03` (12-byte LE header + raw LZ4 block,
-  `MAX_DECODE_SIZE = 64 MiB`). Published atomically via `openat(O_CREAT | O_EXCL | O_NOFOLLOW)` +
-  `renameat(2)`.
-
-### IXPC v1 Protocol & Daemon
-
-- **Reactor (`daemon.rs`):** single-threaded non-blocking `poll(2)` Unix-socket reactor
-  (`MAX_CLIENTS = 32`, `RECV_BUF_BYTES = 512 KiB`, 30 s idle timeout, 1 s graceful drain, zero
-  `unsafe`).
-- **Wire frame (`ipc.rs`):** 32-byte LE header (`MAGIC = 0x4958_5043`, `VERSION = 1`,
-  `MAX_PAYLOAD = 64 MiB`). Clients dispatch header and payload in a single `writev(2)` call.
-- **Commands:** `Ping` (`0x0001`), `ComposeAnsi` (`0x0002`), `ComposeExtmarks` (`0x0003`, 16-byte
-  `Extmark` records), `RenderFile` (`0x0004`), `Shutdown` (`0x0006`).
-- **OS boundary & security:**
-  - Runtime directory opened with `O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC`, verified against
-    `st_uid == getuid()`, and restricted via `fchmod(0700)`.
-  - Single-instance exclusivity enforced via `flock(LOCK_EX | LOCK_NB)` on `ii.lock`; socket cleanup
-    guaranteed by RAII `DaemonGuard`.
-  - `/dev/tty` probing (`TIOCGWINSZ` + OSC 11 Rec. 709 luminance) restores `Termios` unconditionally
-    via `RawModeGuard`.
-  - The sole `unsafe` block in the codebase is isolated inside `kitty::ShmMap` (`mmap` /
-    `copy_nonoverlapping` / `munmap`) under RAII `ShmGuard`.
-
----
-
-## Build & Usage
-
-```bash
-cargo build --release
+```sh
+python3 showcase/checks/verify.py --binary target/release/ii --report /tmp/ii-render.json
+python3 showcase/checks/yazi.py --binary target/release/ii --report /tmp/ii-yazi.json
 ```
 
-```text
-ii [OPTIONS] [FILE]
+После сканера:
 
-Options:
-  --daemon       Run background IXPC v1 coprocessor daemon
-  --ping         Ping running daemon
-  --shutdown     Gracefully shut down running daemon
-  -h, --help     Show help message
-  -V, --version  Show version
+```sh
+python3 showcase/checks/compare_scan.py --report /tmp/ii-scan.csv
 ```
 
-Examples:
+Этот скрипт требует исторический `../ii_old`; `--history` задаёт другой путь.
+Отсутствие истории не блокирует обычную сборку и тесты. После плагина Neovim выполнить
+реальный тест `showcase/checks/nvim.lua` с отдельным сокетом, как описано в README.
 
-```bash
-ii document.md                  # local render to KGP + U+10EEEE placeholders
-cat diagram.dot | ii            # read from stdin with automatic format detection
-ii --daemon                     # start daemon ($XDG_RUNTIME_DIR/ii/ii.sock)
-ii --ping && ii --shutdown      # health check and graceful shutdown
-```
+В отчёте разделять: проверено сейчас, ранее сохранённый результат, не проверено.
+PTY-тест подтверждает поток и клавиши, но не визуальное качество всех эмуляторов.
 
----
+## 9. Git и документация
 
-## Verification
+Коммит должен отражать весь фактический состав изменений. Проверять staged diff,
+пропущенные fixtures и отсутствие секретов. Не добавлять target, логи и абсолютные
+машинные пути как обязательную конфигурацию. Не использовать `--no-verify`, force,
+amend или изменение Git identity без запроса. Подписывание и hooks сохранять.
 
-Tests are partitioned into 5 orthogonal integration targets (zero `unwrap`/`expect`/`panic!`, zero
-shared global state):
-
-| Target            | Scope                                                                                                               | Gate                    |
-| :---------------- | :------------------------------------------------------------------------------------------------------------------ | :---------------------- |
-| `tests/core.rs`   | `scene`, `vram`, `layout`, `theme`, `err`, `kitty` (Base64/placeholder), `tty`, `ipc`, `unpremultiply` + `proptest` | `cargo test` + **Miri** |
-| `tests/fmt.rs`    | `fmt` router, `font`, `json`, `csv`/`tsv`, `archive`, `svg`, `dot`, `chart`, `ipynb`, `md` + `proptest`             | `cargo test` + **Miri** |
-| `tests/render.rs` | `ratex-*` (`tex`/`\ce{}`), `mermaid-svg`, end-to-end sweep of the `showcase/` corpus                                | `cargo test`            |
-| `tests/io.rs`     | L2 `PX03` (`openat`/`renameat`/`O_NOFOLLOW`), live POSIX SHM, `resvg`, `decode_png`                                 | `cargo test` + **ASan** |
-| `tests/daemon.rs` | Live `--daemon` / `--ping` / `--shutdown`, `flock`, raw IXPC v1 frames, malformed header handling                   | `cargo test`            |
-
-Full verification suite:
-
-```bash
-# 1. Functional, integration, and property tests
-cargo test --all-features
-
-# 2. Strict static analysis across all targets
-cargo clippy --all-targets --all-features -- -D warnings
-
-# 3. Miri (Tree Borrows + Strict Provenance) on the Sans-I/O layer
-cargo +nightly miri test --test core --test fmt -- \
-  -Zmiri-tree-borrows -Zmiri-strict-provenance -Zmiri-symbolic-alignment-check
-
-# 4. AddressSanitizer across POSIX SHM / FFI / resvg
-RUSTFLAGS="-Zsanitizer=address" cargo +nightly test --test io --target aarch64-apple-darwin
-```
-
----
-
-## Repository Layout
-
-```text
-src/
-├── main.rs          # CLI, local KGP pipeline, daemon control
-├── lib.rs           # Crate module exports
-├── err.rs           # Flat Copy error type (<= 12 B)
-├── theme.rs         # DARK/LIGHT palettes (align 64), ColorToken, const SGR
-├── scene.rs         # Hourglass Scene IR (SoA) and RenderScratch
-├── layout.rs        # LinearScale and table column width solver
-├── vram.rs          # L0 VRAM Table, L1 RGBA Cache, wymix Tag
-├── cache.rs         # L2 BLAKE3 + PX03/LZ4 disk cache (openat/O_NOFOLLOW)
-├── raster.rs        # resvg + tiny-skia rasterizer, PNG decoder, Q24 unpremultiply
-├── kitty.rs         # KGP transport (POSIX SHM / Base64 / tmux DCS / U+10EEEE)
-├── tty.rs           # TIOCGWINSZ, OSC 11 luminance probe, render_ansi
-├── ipc.rs           # IXPC v1 wire codec, Extmark, writev client
-├── daemon.rs        # Non-blocking poll(2) reactor (MAX_CLIENTS = 32)
-└── fmt/
-    ├── mod.rs       # Closed-enum Kind router + detect_kind + dispatch_kind
-    ├── md.rs        # SIMD scanner for .md/.qmd/.mdx/.rmd/.typ
-    ├── ipynb.rs     # Jupyter Notebook walker
-    ├── tex.rs       # ratex-* adapter + inline mhchem (\ce{})
-    ├── mermaid.rs   # mermaid-svg adapter
-    ├── dot.rs       # DOT/GV tokenizer and layered DAG layout
-    ├── svg.rs       # SVG palette rewriter and dimension extractor
-    ├── csv.rs       # CSV / TSV / Markdown pipe-table parser
-    ├── chart.rs     # Vega-Lite / Plotly JSON chart compiler
-    ├── archive.rs   # ZIP/JAR/WHL/TAR and compressed container inspector
-    ├── json.rs      # Zero-copy JSON navigator
-    └── font.rs      # ASCII glyph advance-width LUT
-```
+Добавляя формат, обновить router, вход полного документа, самостоятельный и
+вложенный сценарии, обе темы, viewport, ошибки и таблицу ограничений в README.
+Добавляя файл, обновить его назначение в карте репозитория. Сгенерированные стенды
+должны воспроизводиться; синтетические данные нельзя выдавать за production evidence.

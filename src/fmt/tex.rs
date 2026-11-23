@@ -35,95 +35,6 @@ fn strip_delims(src: &[u8]) -> &[u8] {
         .map_or(trimmed, trim_ascii)
 }
 
-fn transpile_ce(body: &[u8], out: &mut Vec<u8>) {
-    let mut pos = 0usize;
-    let mut after_atom = false;
-    while pos < body.len() {
-        let rest = &body[pos..];
-        if rest.starts_with(b"<=>") {
-            out.extend_from_slice(b" \\rightleftharpoons ");
-            pos += 3;
-            after_atom = false;
-        } else if rest.starts_with(b"<->") {
-            out.extend_from_slice(b" \\leftrightarrow ");
-            pos += 3;
-            after_atom = false;
-        } else if rest.starts_with(b"->") {
-            out.extend_from_slice(b" \\rightarrow ");
-            pos += 2;
-            after_atom = false;
-        } else if rest.starts_with(b"<-") {
-            out.extend_from_slice(b" \\leftarrow ");
-            pos += 2;
-            after_atom = false;
-        } else if body[pos].is_ascii_alphabetic() {
-            let start = pos;
-            pos += 1;
-            while pos < body.len() && body[pos].is_ascii_lowercase() {
-                pos += 1;
-            }
-            out.extend_from_slice(b"\\mathrm{");
-            out.extend_from_slice(&body[start..pos]);
-            out.push(b'}');
-            after_atom = true;
-        } else if body[pos].is_ascii_digit() && after_atom {
-            let start = pos;
-            while pos < body.len() && body[pos].is_ascii_digit() {
-                pos += 1;
-            }
-            out.extend_from_slice(b"_{");
-            out.extend_from_slice(&body[start..pos]);
-            out.push(b'}');
-            after_atom = false;
-        } else if body[pos] == b'^' {
-            pos += 1;
-            let start = pos;
-            while pos < body.len()
-                && (body[pos].is_ascii_alphanumeric() || matches!(body[pos], b'+' | b'-'))
-            {
-                pos += 1;
-            }
-            out.extend_from_slice(b"^{");
-            out.extend_from_slice(&body[start..pos]);
-            out.push(b'}');
-            after_atom = false;
-        } else {
-            let byte = body[pos];
-            out.push(byte);
-            after_atom = matches!(byte, b')' | b']');
-            pos += 1;
-        }
-    }
-}
-
-fn expand_ce(src: &[u8], out: &mut Vec<u8>) {
-    out.clear();
-    out.reserve(src.len().saturating_mul(2));
-    let mut pos = 0usize;
-    while pos < src.len() {
-        let Some(rel) = src[pos..].windows(4).position(|w| w == b"\\ce{") else {
-            out.extend_from_slice(&src[pos..]);
-            break;
-        };
-        out.extend_from_slice(&src[pos..pos + rel]);
-        let body_start = pos + rel + 4;
-        let mut depth = 1u32;
-        let mut cur = body_start;
-        while cur < src.len() && depth > 0 {
-            match src[cur] {
-                b'{' => depth += 1,
-                b'}' => depth -= 1,
-                _ => {}
-            }
-            if depth > 0 {
-                cur += 1;
-            }
-        }
-        transpile_ce(&src[body_start..cur], out);
-        pos = (cur + 1).min(src.len());
-    }
-}
-
 fn compile_expr(
     expr: &str,
     display: bool,
@@ -139,8 +50,21 @@ fn compile_expr(
     let opts = ratex_layout::LayoutOptions::default().with_style(style);
     let lbox = ratex_layout::layout(&nodes, &opts);
     let display_list = ratex_layout::to_display_list(&lbox);
-    let svg_str = ratex_svg::render_to_svg(&display_list, &ratex_svg::SvgOptions::default());
-    svg::rewrite_colors(svg_str.as_bytes(), palette, out_svg);
+    let svg_opts = ratex_svg::SvgOptions {
+        embed_glyphs: true,
+        ..ratex_svg::SvgOptions::default()
+    };
+    let svg_str = ratex_svg::render_to_svg_with_color_syntax(
+        &display_list,
+        &svg_opts,
+        ratex_svg::SvgColorSyntax::Rgb,
+    );
+    svg::rewrite_colors_as(
+        svg_str.as_bytes(),
+        palette,
+        theme::SemanticRole::Accent,
+        out_svg,
+    );
     Ok(())
 }
 
@@ -154,16 +78,34 @@ pub fn compile_latex(
     palette: &Palette,
     out_svg: &mut Vec<u8>,
 ) -> Result<(), Error> {
-    let raw = strip_delims(latex_bytes);
-    let mut expanded = Vec::new();
-    let src = if raw.windows(4).any(|w| w == b"\\ce{") {
-        expand_ce(raw, &mut expanded);
-        expanded.as_slice()
-    } else {
-        raw
-    };
-    let expr = core::str::from_utf8(src).map_err(|_| Error::LatexCompile)?;
+    let expr = core::str::from_utf8(strip_delims(latex_bytes)).map_err(|_| Error::LatexCompile)?;
     compile_expr(expr, display, palette, out_svg)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TexMode {
+    Complete,
+    Streaming,
+}
+
+/// Compile `LaTeX` with an explicit compilation mode (`Complete` or `Streaming`).
+///
+/// # Errors
+/// Returns `Error::LatexCompile` if compilation or repair fails.
+pub fn compile_latex_mode(
+    latex_bytes: &[u8],
+    display: bool,
+    palette: &Palette,
+    mode: TexMode,
+    heal_buf: &mut Vec<u8>,
+    out_svg: &mut Vec<u8>,
+) -> Result<(), Error> {
+    match mode {
+        TexMode::Complete => compile_latex(latex_bytes, display, palette, out_svg),
+        TexMode::Streaming => {
+            compile_latex_streaming(latex_bytes, display, palette, heal_buf, out_svg)
+        }
+    }
 }
 
 /// Compile a live (possibly incomplete) expression after bounded structural repair.
@@ -181,16 +123,21 @@ pub fn compile_latex_streaming(
     compile_latex(heal::heal(latex_bytes, heal_buf), display, palette, out_svg)
 }
 
-fn stage_or_fallback(raw_src: &[u8], display: bool, is_chem: bool, scene: &mut Scene) {
+fn stage_or_fallback(
+    raw_src: &[u8],
+    display: bool,
+    is_chem: bool,
+    palette: &Palette,
+    scene: &mut Scene,
+) {
     let start = scene.text_pool.len();
-    let compiled = if is_chem {
-        let mut buf = Vec::with_capacity(raw_src.len().saturating_mul(2));
-        transpile_ce(trim_ascii(raw_src), &mut buf);
-        core::str::from_utf8(&buf)
-            .map_err(|_| Error::LatexCompile)
-            .and_then(|expr| compile_expr(expr, display, &theme::DARK, &mut scene.text_pool))
+    let compiled = if is_chem && !raw_src.windows(4).any(|w| w == b"\\ce{") {
+        let mut wrapped = b"\\ce{".to_vec();
+        wrapped.extend_from_slice(trim_ascii(raw_src));
+        wrapped.push(b'}');
+        compile_latex(&wrapped, display, palette, &mut scene.text_pool)
     } else {
-        compile_latex(raw_src, display, &theme::DARK, &mut scene.text_pool)
+        compile_latex(raw_src, display, palette, &mut scene.text_pool)
     };
 
     if compiled.is_ok() {
@@ -205,14 +152,8 @@ fn stage_or_fallback(raw_src: &[u8], display: bool, is_chem: bool, scene: &mut S
     scene.text_pool.truncate(start);
     if !is_chem {
         let mut healed = Vec::with_capacity(raw_src.len().saturating_add(64));
-        if compile_latex_streaming(
-            raw_src,
-            display,
-            &theme::DARK,
-            &mut healed,
-            &mut scene.text_pool,
-        )
-        .is_ok()
+        if compile_latex_streaming(raw_src, display, palette, &mut healed, &mut scene.text_pool)
+            .is_ok()
         {
             let (svg_w, svg_h) = svg::extract_svg_dimensions(&scene.text_pool[start..]);
             if scene.commit_svg(0.0, scene.height, svg_w, svg_h, start) {
@@ -235,7 +176,7 @@ fn stage_or_fallback(raw_src: &[u8], display: bool, is_chem: bool, scene: &mut S
 /// # Errors
 /// Never fails hard; returns `Ok(())`.
 pub fn parse_into_scene(src: &[u8], scene: &mut Scene) -> Result<(), Error> {
-    stage_or_fallback(src, true, false, scene);
+    stage_or_fallback(src, true, false, &theme::DARK, scene);
     Ok(())
 }
 
@@ -244,7 +185,7 @@ pub fn parse_into_scene(src: &[u8], scene: &mut Scene) -> Result<(), Error> {
 /// # Errors
 /// Never fails hard; returns `Ok(())`.
 pub fn parse_inline_into_scene(src: &[u8], scene: &mut Scene) -> Result<(), Error> {
-    stage_or_fallback(src, false, false, scene);
+    stage_or_fallback(src, false, false, &theme::DARK, scene);
     Ok(())
 }
 
@@ -253,6 +194,21 @@ pub fn parse_inline_into_scene(src: &[u8], scene: &mut Scene) -> Result<(), Erro
 /// # Errors
 /// Never fails hard; returns `Ok(())`.
 pub fn parse_chem_into_scene(src: &[u8], scene: &mut Scene) -> Result<(), Error> {
-    stage_or_fallback(src, true, true, scene);
+    stage_or_fallback(src, true, true, &theme::DARK, scene);
+    Ok(())
+}
+
+/// Compile using the receiving surface palette.
+///
+/// # Errors
+/// Invalid expressions produce literal fallback text.
+pub fn parse_with_palette(
+    src: &[u8],
+    display: bool,
+    chem: bool,
+    palette: &Palette,
+    scene: &mut Scene,
+) -> Result<(), Error> {
+    stage_or_fallback(src, display, chem, palette, scene);
     Ok(())
 }

@@ -22,16 +22,12 @@ pub use crate::ipc::{
     encode_extmarks,
 };
 use crate::{
-    cache,
+    cache, compose,
     err::Error,
-    fmt::{self, Kind, md},
-    ipc::{self, MAX_CLIENTS, SpanCoord},
-    kitty::{self, StageParams},
-    raster,
-    scene::RenderScratch,
-    theme::{self, ColorToken, Palette},
-    tty::{self, Metrics},
-    vram,
+    fmt::{self, Kind},
+    ipc::{self, MAX_CLIENTS},
+    theme::{self, Palette},
+    tty::Metrics,
 };
 
 const READ_CHUNK: usize = 64 * 1024;
@@ -53,6 +49,7 @@ struct RenderCtx {
     cell_w: u16,
     cell_h: u16,
     cols: u16,
+    rows: u16,
     max_w: u16,
     palette: &'static Palette,
     is_tmux: bool,
@@ -84,6 +81,7 @@ impl RenderCtx {
             cell_w,
             cell_h,
             cols,
+            rows: h.rows.max(1),
             max_w: (u32::from(cols) * u32::from(cell_w)).min(u32::from(u16::MAX)) as u16,
             palette: if (h.flags & ipc::FLAG_THEME_LIGHT) != 0 {
                 &theme::LIGHT
@@ -97,56 +95,35 @@ impl RenderCtx {
 }
 
 struct DaemonState {
-    scratch: RenderScratch,
-    l1: vram::Cache,
+    preview_key: Option<blake3::Hash>,
+    preview: compose::ComposeOut,
+    page: Vec<u8>,
     l2_dir: Option<OwnedFd>,
-    lz4_buf: Vec<u8>,
-    b64_buf: Vec<u8>,
-    apc_buf: Vec<u8>,
+    compose_scratch: compose::ComposeScratch,
+    compose_out: compose::ComposeOut,
     text_buf: Vec<u8>,
-    spans: Vec<md::Span>,
-    span_coords: Vec<SpanCoord>,
-    line_starts: Vec<usize>,
-    extmarks: Vec<Extmark>,
     shm_seq: u32,
     pid: u32,
 }
-
 impl DaemonState {
     fn new() -> Self {
         Self {
-            scratch: RenderScratch::new(),
-            l1: vram::Cache::new(),
+            preview_key: None,
+            preview: compose::ComposeOut::new(),
+            page: Vec::new(),
             l2_dir: cache::ensure_dirs().ok(),
-            lz4_buf: Vec::with_capacity(256 * 1024),
-            b64_buf: Vec::with_capacity(256 * 1024),
-            apc_buf: Vec::with_capacity(64 * 1024),
-            text_buf: Vec::with_capacity(64 * 1024),
-            spans: Vec::with_capacity(32),
-            span_coords: Vec::with_capacity(32),
-            line_starts: Vec::with_capacity(256),
-            extmarks: Vec::with_capacity(32),
+            compose_scratch: compose::ComposeScratch::new(),
+            compose_out: compose::ComposeOut::new(),
+            text_buf: Vec::new(),
             shm_seq: 0,
             pid: getpid().as_raw_nonzero().get().unsigned_abs(),
         }
     }
-
-    const MAX_RETAINED_DAEMON_BUF: usize = 1024 * 1024;
-    const DEFAULT_DAEMON_BUF: usize = 256 * 1024;
-
     fn reset_request(&mut self) {
-        self.scratch.reset();
-        self.apc_buf.clear();
+        self.compose_scratch.reset();
+        self.compose_out.clear();
         self.text_buf.clear();
-        self.spans.clear();
-        self.span_coords.clear();
-        self.extmarks.clear();
-        if self.lz4_buf.capacity() > Self::MAX_RETAINED_DAEMON_BUF {
-            self.lz4_buf.shrink_to(Self::DEFAULT_DAEMON_BUF);
-        }
-        if self.b64_buf.capacity() > Self::MAX_RETAINED_DAEMON_BUF {
-            self.b64_buf.shrink_to(Self::DEFAULT_DAEMON_BUF);
-        }
+        self.text_buf.shrink_to(256 * 1024);
     }
 }
 
@@ -291,141 +268,7 @@ fn bind_listener(sock_override: Option<&Path>) -> Result<(OwnedFd, DaemonGuard),
     ))
 }
 
-fn stage_rgba(
-    rgba: &[u8],
-    params: StageParams,
-    is_remote: bool,
-    shm_seq: &mut u32,
-    pid: u32,
-    apc: &mut Vec<u8>,
-    b64: &mut Vec<u8>,
-) {
-    if is_remote || kitty::stage_shm(rgba, params, shm_seq, pid, apc).is_err() {
-        kitty::stage_base64(rgba, params, apc, b64);
-    }
-}
-
-fn render_block(
-    state: &mut DaemonState,
-    ctx: RenderCtx,
-    kind: Kind,
-    payload: &[u8],
-) -> Result<vram::Payload, Error> {
-    let fg = ctx.palette.color(ColorToken::FG_PRIMARY);
-    let fg_rgb = [fg.r(), fg.g(), fg.b()];
-    let tag = vram::compute_tag(
-        ctx.cell_w, ctx.cell_h, ctx.cols, kind as u8, fg_rgb, payload,
-    );
-
-    let image_id = tag.image_id().get();
-    // L1 RAM replica hit: re-stage texture and return placement.
-    if let Some(rep) = state.l1.lookup(tag) {
-        let entry = vram::Payload {
-            image_id,
-            cols: rep.cols,
-            rows: rep.rows,
-        };
-        let params = StageParams {
-            image_id,
-            w: rep.w,
-            h: rep.h,
-            cols: rep.cols,
-            rows: rep.rows,
-            is_tmux: ctx.is_tmux,
-        };
-        stage_rgba(
-            &rep.rgba,
-            params,
-            ctx.is_remote,
-            &mut state.shm_seq,
-            state.pid,
-            &mut state.apc_buf,
-            &mut state.b64_buf,
-        );
-        return Ok(entry);
-    }
-
-    // L2 disk cache hit (`PX03` / LZ4).
-    let b3 = cache::blake3_key(
-        ctx.cell_w,
-        ctx.cell_h,
-        ctx.max_w,
-        kind as u8,
-        fg_rgb,
-        ctx.palette.is_dark,
-        payload,
-    );
-    let dims = if let Some(ref dir_fd) = state.l2_dir
-        && let Ok(Some((w32, h32))) = cache::read_blob(
-            dir_fd.as_fd(),
-            &b3,
-            &mut state.scratch.rgba_buf,
-            &mut state.lz4_buf,
-        )
-        && let (Ok(w), Ok(h)) = (u16::try_from(w32), u16::try_from(h32))
-    {
-        let cols = w.div_ceil(ctx.cell_w.max(1)).max(1);
-        let rows = h.div_ceil(ctx.cell_h.max(1)).max(1);
-        Some((w, h, cols, rows))
-    } else {
-        None
-    };
-
-    let (w, h, cols, rows) = if let Some(hit) = dims {
-        hit
-    } else {
-        state.scratch.scene.clear();
-        fmt::dispatch_kind(kind, payload, &mut state.scratch.scene)?;
-        let res = raster::rasterize_scene(
-            &state.scratch.scene,
-            ctx.palette,
-            ctx.cell_w,
-            ctx.cell_h,
-            ctx.max_w,
-            &mut state.scratch.rgba_buf,
-        )?;
-        if let Some(ref dir_fd) = state.l2_dir {
-            let _ = cache::write_blob(
-                dir_fd.as_fd(),
-                &b3,
-                u32::from(res.0),
-                u32::from(res.1),
-                &state.scratch.rgba_buf,
-                &mut state.lz4_buf,
-            );
-        }
-        res
-    };
-
-    state
-        .l1
-        .insert(tag, cols, rows, w, h, &state.scratch.rgba_buf);
-    let entry = vram::Payload {
-        image_id,
-        cols,
-        rows,
-    };
-    let params = StageParams {
-        image_id,
-        w,
-        h,
-        cols,
-        rows,
-        is_tmux: ctx.is_tmux,
-    };
-    stage_rgba(
-        &state.scratch.rgba_buf,
-        params,
-        ctx.is_remote,
-        &mut state.shm_seq,
-        state.pid,
-        &mut state.apc_buf,
-        &mut state.b64_buf,
-    );
-    Ok(entry)
-}
-
-fn read_bounded_file(path: &str, out: &mut Vec<u8>) -> Result<(), Errno> {
+fn read_bounded_file(path: &Path, out: &mut Vec<u8>) -> Result<(), Errno> {
     let fd = openat(CWD, path, OFlags::RDONLY | OFlags::CLOEXEC, Mode::empty())?;
     let st = fstat(&fd)?;
     if FileType::from_raw_mode(st.st_mode) != FileType::RegularFile {
@@ -472,58 +315,151 @@ fn handle_render_file(
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("");
-    if read_bounded_file(path_str, file_buf).is_err() {
+    if read_bounded_file(Path::new(path_str), file_buf).is_err() {
         encode_error(Cmd::RenderFile as u16, b"file read failed", &mut slot.buf);
         return;
     }
     let kind = fmt::detect_kind(file_buf, ext);
-    let Ok(entry) = render_block(state, ctx, kind, file_buf) else {
-        encode_error(Cmd::RenderFile as u16, b"render failed", &mut slot.buf);
+    render_response(slot, Cmd::RenderFile, ctx, state, file_buf, kind);
+}
+
+// One bounded prepared preview, independent of scroll position. File content is
+// re-read and hashed on every request, so replacement and same-mtime edits invalidate it.
+fn handle_preview_file(
+    slot: &mut ClientSlot,
+    header: Header,
+    state: &mut DaemonState,
+    file_buf: &mut Vec<u8>,
+) {
+    if slot.buf.len() < 5 || slot.buf.len() > MAX_PATH_BYTES + 4 {
+        encode_error(
+            Cmd::PreviewFile as u16,
+            b"invalid preview path",
+            &mut slot.buf,
+        );
         return;
-    };
-    kitty::emit_placeholder(entry.image_id, entry.cols, entry.rows, &mut state.text_buf);
+    }
+    let skip = u32::from_le_bytes([slot.buf[0], slot.buf[1], slot.buf[2], slot.buf[3]]);
+    let path =
+        Path::new(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(&slot.buf[4..]));
+    let kind = fmt::kind_from_ext(path.extension().and_then(|s| s.to_str()).unwrap_or(""));
+    if read_bounded_file(path, file_buf).is_err() {
+        encode_error(Cmd::PreviewFile as u16, b"file read failed", &mut slot.buf);
+        return;
+    }
+    let kind = kind.unwrap_or_else(|| fmt::detect_kind(file_buf, ""));
+    let mut hash = blake3::Hasher::new();
+    hash.update(file_buf);
+    hash.update(&[kind as u8]);
+    hash.update(&header.to_le_bytes()[16..20]);
+    hash.update(&header.to_le_bytes()[24..]);
+    let key = hash.finalize();
+    if state.preview_key != Some(key) {
+        state.preview_key = None;
+        let ctx = RenderCtx::from_header(header);
+        let context = compose::ComposeCtx {
+            cell_w: ctx.cell_w,
+            cell_h: ctx.cell_h,
+            cols: ctx.cols,
+            rows: ctx.rows,
+            max_w: ctx.max_w,
+            palette: ctx.palette,
+            is_tmux: ctx.is_tmux,
+            is_remote: true,
+            skip_lines: 0,
+            max_lines: 0,
+        };
+        if compose::render_file(
+            file_buf,
+            kind,
+            context,
+            state.l2_dir.as_ref().map(AsFd::as_fd),
+            &mut state.compose_scratch,
+            &mut state.shm_seq,
+            state.pid,
+            &mut state.preview,
+        )
+        .is_err()
+        {
+            encode_error(Cmd::PreviewFile as u16, b"render failed", &mut slot.buf);
+            return;
+        }
+        if state.preview.apc.len() + state.preview.ansi.len() <= 32 * 1024 * 1024 {
+            state.preview_key = Some(key);
+        }
+    }
+    state.page.clear();
+    crate::viewport::append(
+        &state.preview.ansi,
+        header.cols,
+        skip,
+        u32::from(header.rows),
+        &mut state.page,
+    );
+    compose::append_visible_uploads(&state.preview, &state.page, &mut state.compose_out.apc);
     encode_dual_response(
-        Cmd::RenderFile,
-        &state.apc_buf,
-        &state.text_buf,
+        Cmd::PreviewFile,
+        &state.compose_out.apc,
+        &state.page,
         &mut slot.buf,
     );
+    if state.preview_key.is_none() {
+        state.preview = compose::ComposeOut::new();
+    }
+}
+
+fn render_response(
+    slot: &mut ClientSlot,
+    cmd: Cmd,
+    ctx: RenderCtx,
+    state: &mut DaemonState,
+    src: &[u8],
+    kind: Kind,
+) {
+    let context = compose::ComposeCtx {
+        cell_w: ctx.cell_w,
+        cell_h: ctx.cell_h,
+        cols: ctx.cols,
+        rows: ctx.rows,
+        max_w: ctx.max_w,
+        palette: ctx.palette,
+        is_tmux: ctx.is_tmux,
+        is_remote: ctx.is_remote,
+        skip_lines: 0,
+        max_lines: 0,
+    };
+    let dir = state.l2_dir.as_ref().map(AsFd::as_fd);
+    if compose::render_file(
+        src,
+        kind,
+        context,
+        dir,
+        &mut state.compose_scratch,
+        &mut state.shm_seq,
+        state.pid,
+        &mut state.compose_out,
+    )
+    .is_err()
+    {
+        encode_error(cmd as u16, b"render failed", &mut slot.buf);
+        return;
+    }
+    if cmd == Cmd::ComposeExtmarks {
+        encode_extmarks(&state.compose_out.extmarks, &mut state.text_buf);
+        encode_dual_response(cmd, &state.compose_out.apc, &state.text_buf, &mut slot.buf);
+    } else {
+        encode_dual_response(
+            cmd,
+            &state.compose_out.apc,
+            &state.compose_out.ansi,
+            &mut slot.buf,
+        );
+    }
 }
 
 fn handle_compose(slot: &mut ClientSlot, cmd: Cmd, ctx: RenderCtx, state: &mut DaemonState) {
-    md::scan(&slot.buf, &mut state.spans);
-    let count = state.spans.len();
-    for idx in 0..count {
-        let sp = state.spans[idx];
-        let payload = &slot.buf[sp.inner_start as usize..sp.inner_end() as usize];
-        if let Ok(entry) = render_block(state, ctx, sp.kind(), payload) {
-            state.span_coords.push(SpanCoord {
-                outer_start: sp.outer_start,
-                outer_end: sp.outer_end,
-                image_id: entry.image_id,
-                cols: entry.cols,
-                rows: entry.rows,
-            });
-        }
-    }
-
-    if cmd == Cmd::ComposeAnsi {
-        tty::render_ansi(
-            &slot.buf,
-            &state.span_coords,
-            ctx.palette,
-            &mut state.text_buf,
-        );
-    } else {
-        ipc::compose_extmarks(
-            &slot.buf,
-            &state.span_coords,
-            &mut state.line_starts,
-            &mut state.extmarks,
-        );
-        encode_extmarks(&state.extmarks, &mut state.text_buf);
-    }
-    encode_dual_response(cmd, &state.apc_buf, &state.text_buf, &mut slot.buf);
+    let src = core::mem::take(&mut slot.buf);
+    render_response(slot, cmd, ctx, state, &src, Kind::Md);
 }
 
 fn dispatch_and_respond(
@@ -553,6 +489,7 @@ fn dispatch_and_respond(
             encode_dual_response(Cmd::Shutdown, b"", b"", &mut slot.buf);
         }
         Cmd::RenderFile => handle_render_file(slot, ctx, state, file_buf),
+        Cmd::PreviewFile => handle_preview_file(slot, header, state, file_buf),
         Cmd::ComposeAnsi | Cmd::ComposeExtmarks => handle_compose(slot, cmd, ctx, state),
     }
     if slot.buf.len() >= 16 {

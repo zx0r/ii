@@ -1,0 +1,446 @@
+{
+  "binary": "/Users/x0r/x/dev/own/ii/target/release/ii",
+  "cases": 55,
+  "results": [
+    {
+      "file": "scenarios/analysis.ipynb",
+      "cold_ms": 288.911,
+      "warm_median_ms": 0.158,
+      "apc_bytes": 10230,
+      "text_bytes": 1072,
+      "decoded_images": 1
+    },
+    {
+      "file": "scenarios/checkout.mermaid",
+      "cold_ms": 4.56,
+      "warm_median_ms": 0.298,
+      "apc_bytes": 98959,
+      "text_bytes": 2827,
+      "decoded_images": 1
+    },
+    {
+      "file": "scenarios/checkout.mmd",
+      "cold_ms": 0.672,
+      "warm_median_ms": 0.234,
+      "apc_bytes": 98959,
+      "text_bytes": 2827,
+      "decoded_images": 1
+    },
+    {
+      "file": "scenarios/equilibrium.mhchem",
+      "cold_ms": 4.283,
+      "warm_median_ms": 0.176,
+      "apc_bytes": 28464,
+      "text_bytes": 1143,
+      "decoded_images": 1
+    },
+    {
+      "file": "scenarios/evidence.jar",
+      "cold_ms": 3.198,
+      "warm_median_ms": 0.171,
+      "apc_bytes": 61215,
+      "text_bytes": 1766,
+      "decoded_images": 1
+    },
+    {
+      "file": "scenarios/evidence.tar",
+      "cold_ms": 2.699,
+      "warm_median_ms": 0.221,
+      "apc_bytes": 48416,
+      "text_bytes": 1482,
+      "decoded_images": 1
+    },
+    {
+      "file": "scenarios/evidence.tbz2",
+      "cold_ms": 1.954,
+      "warm_median_ms": 0.135,
+      "apc_bytes": 20525,
+      "text_bytes": 630,
+      "decoded_images": 1
+    },
+    {
+      "file": "scenarios/evidence.tgz",
+      "cold_ms": 1.953,
+      "warm_median_ms": 0.128,
+      "apc_bytes": 19609,
+      "text_bytes": 625,
+      "decoded_images": 1
+    },
+    {
+      "file": "scenarios/evidence.txz",
+      "cold_ms": 1.958,
+      "warm_median_ms": 0.129,
+      "apc_bytes": 19335,
+      "text_bytes": 635,
+      "decoded_images": 1
+    },
+    {
+      "file": "scenarios/evidence.tzst",
+      "cold_ms": 1.751,
+      "warm_median_ms": 0.197,
+      "apc_bytes": 15896,
+      "text_bytes": 630,
+      "decoded_images": 1
+    },
+    {
+      "file": "scenarios/evidence.zip",
+      "cold_ms": 2.891,
+      "warm_median_ms": 0.189,
+      "apc_bytes": 49677,
+      "text_bytes": 1466,
+      "decoded_images": 1
+    },
+    {
+      "file": "scenarios/incident-heatmap.png",
+      "cold_ms": 3.591,
+      "warm_median_ms": 1.092,
+      "apc_bytes": 749728,
+      "text_bytes": 2986,
+      "decoded_images": 1
+    },
+    {
+      "file": "scenarios/incident.markdown",
+      "cold_ms": 2.346,
+      "warm_median_ms": 0.131,
+      "apc_bytes": 0,
+      "text_bytes": 558,
+      "decoded_images": 0
+    },
+    {
+      "file": "scenarios/incident.md",
+      "cold_ms": 0.274,
+      "warm_median_ms": 0.175,
+      "apc_bytes": 0,
+      "text_bytes": 558,
+      "decoded_images": 0
+    },
+    {
+      "file": "scenarios/incident.mdx",
+      "cold_ms": 0.595,
+      "warm_median_ms": 0.142,
+      "apc_bytes": 0,
+      "text_bytes": 558,
+      "decoded_images": 0
+    },
+    {
+      "file": "scenarios/incident.qmd",
+      "cold_ms": 1.467,
+      "warm_median_ms": 0.155,
+      "apc_bytes": 0,
+      "text_bytes": 609,
+      "decoded_images": 0
+    },
+    {
+      "file": "scenarios/incident.rmd",
+      "cold_ms": 1.418,
+      "warm_median_ms": 0.132,
+      "apc_bytes": 0,
+      "text_bytes": 558,
+      "decoded_images": 0
+    },
+    {
+      "file": "scenarios/incident_evidence-1.0.0-py3-none-any.whl",
+      "cold_ms": 3.74,
+      "warm_median_ms": 0.216,
+      "apc_bytes": 75790,
+      "text_bytes": 1775,
+      "decoded_images": 1
+    },
+    {
+      "file": "scenarios/kinetics.chem",
+      "cold_ms": 2.287,
+      "warm_median_ms": 0.154,
+      "apc_bytes": 31519,
+      "text_bytes": 1454,
+      "decoded_images": 1
+    },
+    {
+      "file": "scenarios/latency.plotly",
+      "cold_ms": 1.995,
+      "warm_median_ms": 0.18,
+      "apc_bytes": 48868,
+      "text_bytes": 3817,
+      "decoded_images": 1
+    },
+    {
+      "file": "scenarios/latency.vega-lite",
+      "cold_ms": 1.879,
+      "warm_median_ms": 0.185,
+      "apc_bytes": 48870,
+      "text_bytes": 3787,
+      "decoded_images": 1
+    },
+    {
+      "file": "scenarios/latency.vl",
+      "cold_ms": 0.682,
+      "warm_median_ms": 0.17,
+      "apc_bytes": 48870,
+      "text_bytes": 3787,
+      "decoded_images": 1
+    },
+    {
+      "file": "scenarios/queueing.latex",
+      "cold_ms": 3.35,
+      "warm_median_ms": 0.133,
+      "apc_bytes": 3930,
+      "text_bytes": 441,
+      "decoded_images": 2
+    },
+    {
+      "file": "scenarios/queueing.tex",
+      "cold_ms": 0.344,
+      "warm_median_ms": 0.104,
+      "apc_bytes": 3930,
+      "text_bytes": 441,
+      "decoded_images": 2
+    },
+    {
+      "file": "scenarios/queueing.typ",
+      "cold_ms": 0.356,
+      "warm_median_ms": 0.096,
+      "apc_bytes": 0,
+      "text_bytes": 426,
+      "decoded_images": 0
+    },
+    {
+      "file": "scenarios/replicas.svg",
+      "cold_ms": 9.76,
+      "warm_median_ms": 0.795,
+      "apc_bytes": 441523,
+      "text_bytes": 4234,
+      "decoded_images": 1
+    },
+    {
+      "file": "scenarios/rollout.dot",
+      "cold_ms": 2.282,
+      "warm_median_ms": 0.228,
+      "apc_bytes": 54476,
+      "text_bytes": 1993,
+      "decoded_images": 1
+    },
+    {
+      "file": "scenarios/rollout.gv",
+      "cold_ms": 0.407,
+      "warm_median_ms": 0.186,
+      "apc_bytes": 54476,
+      "text_bytes": 1993,
+      "decoded_images": 1
+    },
+    {
+      "file": "scenarios/telemetry.csv",
+      "cold_ms": 3.95,
+      "warm_median_ms": 0.181,
+      "apc_bytes": 0,
+      "text_bytes": 2269,
+      "decoded_images": 0
+    },
+    {
+      "file": "scenarios/telemetry.tsv",
+      "cold_ms": 3.969,
+      "warm_median_ms": 0.171,
+      "apc_bytes": 0,
+      "text_bytes": 2269,
+      "decoded_images": 0
+    },
+    {
+      "file": "01.md",
+      "cold_ms": 13.065,
+      "warm_median_ms": 0.124,
+      "apc_bytes": 11290,
+      "text_bytes": 830,
+      "decoded_images": 1
+    },
+    {
+      "file": "02.qmd",
+      "cold_ms": 8.688,
+      "warm_median_ms": 0.168,
+      "apc_bytes": 32611,
+      "text_bytes": 1994,
+      "decoded_images": 1
+    },
+    {
+      "file": "03.ipynb",
+      "cold_ms": 24.279,
+      "warm_median_ms": 0.166,
+      "apc_bytes": 2495,
+      "text_bytes": 570,
+      "decoded_images": 1
+    },
+    {
+      "file": "04.tex",
+      "cold_ms": 15.625,
+      "warm_median_ms": 0.129,
+      "apc_bytes": 6275,
+      "text_bytes": 641,
+      "decoded_images": 2
+    },
+    {
+      "file": "05.mmd",
+      "cold_ms": 3.13,
+      "warm_median_ms": 0.155,
+      "apc_bytes": 41356,
+      "text_bytes": 1447,
+      "decoded_images": 1
+    },
+    {
+      "file": "06.dot",
+      "cold_ms": 8.033,
+      "warm_median_ms": 0.588,
+      "apc_bytes": 290898,
+      "text_bytes": 4249,
+      "decoded_images": 1
+    },
+    {
+      "file": "07.svg",
+      "cold_ms": 6.895,
+      "warm_median_ms": 1.388,
+      "apc_bytes": 923267,
+      "text_bytes": 4042,
+      "decoded_images": 1
+    },
+    {
+      "file": "08.csv",
+      "cold_ms": 5.061,
+      "warm_median_ms": 0.238,
+      "apc_bytes": 0,
+      "text_bytes": 3291,
+      "decoded_images": 0
+    },
+    {
+      "file": "09.tsv",
+      "cold_ms": 8.033,
+      "warm_median_ms": 0.233,
+      "apc_bytes": 0,
+      "text_bytes": 3845,
+      "decoded_images": 0
+    },
+    {
+      "file": "11.mdx",
+      "cold_ms": 12.359,
+      "warm_median_ms": 0.103,
+      "apc_bytes": 3882,
+      "text_bytes": 495,
+      "decoded_images": 1
+    },
+    {
+      "file": "12.rmd",
+      "cold_ms": 7.337,
+      "warm_median_ms": 0.162,
+      "apc_bytes": 3466,
+      "text_bytes": 783,
+      "decoded_images": 1
+    },
+    {
+      "file": "13.latex",
+      "cold_ms": 11.532,
+      "warm_median_ms": 0.179,
+      "apc_bytes": 44036,
+      "text_bytes": 2219,
+      "decoded_images": 2
+    },
+    {
+      "file": "14.typ",
+      "cold_ms": 3.519,
+      "warm_median_ms": 0.1,
+      "apc_bytes": 3808,
+      "text_bytes": 567,
+      "decoded_images": 1
+    },
+    {
+      "file": "15.mermaid",
+      "cold_ms": 8.527,
+      "warm_median_ms": 0.505,
+      "apc_bytes": 268268,
+      "text_bytes": 4219,
+      "decoded_images": 1
+    },
+    {
+      "file": "16.gv",
+      "cold_ms": 4.46,
+      "warm_median_ms": 0.275,
+      "apc_bytes": 168862,
+      "text_bytes": 1963,
+      "decoded_images": 1
+    },
+    {
+      "file": "18.vl",
+      "cold_ms": 10.246,
+      "warm_median_ms": 1.214,
+      "apc_bytes": 729573,
+      "text_bytes": 3802,
+      "decoded_images": 1
+    },
+    {
+      "file": "19.plotly",
+      "cold_ms": 2.229,
+      "warm_median_ms": 0.169,
+      "apc_bytes": 51599,
+      "text_bytes": 3802,
+      "decoded_images": 1
+    },
+    {
+      "file": "20.zip",
+      "cold_ms": 5.043,
+      "warm_median_ms": 0.246,
+      "apc_bytes": 139264,
+      "text_bytes": 3481,
+      "decoded_images": 1
+    },
+    {
+      "file": "21.tar",
+      "cold_ms": 5.272,
+      "warm_median_ms": 0.26,
+      "apc_bytes": 133236,
+      "text_bytes": 3451,
+      "decoded_images": 1
+    },
+    {
+      "file": "22.tgz",
+      "cold_ms": 1.839,
+      "warm_median_ms": 0.11,
+      "apc_bytes": 19319,
+      "text_bytes": 625,
+      "decoded_images": 1
+    },
+    {
+      "file": "23.tbz2",
+      "cold_ms": 1.874,
+      "warm_median_ms": 0.121,
+      "apc_bytes": 20359,
+      "text_bytes": 630,
+      "decoded_images": 1
+    },
+    {
+      "file": "24.txz",
+      "cold_ms": 1.577,
+      "warm_median_ms": 0.132,
+      "apc_bytes": 19291,
+      "text_bytes": 635,
+      "decoded_images": 1
+    },
+    {
+      "file": "25.tzst",
+      "cold_ms": 1.859,
+      "warm_median_ms": 0.119,
+      "apc_bytes": 19891,
+      "text_bytes": 630,
+      "decoded_images": 1
+    },
+    {
+      "file": "26.jar",
+      "cold_ms": 5.549,
+      "warm_median_ms": 0.249,
+      "apc_bytes": 150677,
+      "text_bytes": 3481,
+      "decoded_images": 1
+    },
+    {
+      "file": "27.whl",
+      "cold_ms": 4.243,
+      "warm_median_ms": 0.227,
+      "apc_bytes": 44319,
+      "text_bytes": 1191,
+      "decoded_images": 1
+    }
+  ]
+}

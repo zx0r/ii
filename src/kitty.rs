@@ -556,8 +556,44 @@ pub fn stage_shm(
     Ok(())
 }
 
-/// Stage chunked Base64 KGP transmission (`t=d`, 4 096 B chunks) + virtual placement.
+/// Stage chunked Base64 KGP transmission (`t=d`, 3 072 B chunks) + virtual placement.
 pub fn stage_base64(rgba: &[u8], p: StageParams, apc: &mut Vec<u8>, b64: &mut Vec<u8>) {
+    stage_encoded(rgba, 32, p, apc, b64);
+}
+
+/// Encode lossless PNG before Base64 transport, avoiding raw RGBA-sized replies.
+/// The caller can fall back to RGBA if PNG encoding fails.
+///
+/// # Errors
+/// Returns `PngDecode` on an encoding failure.
+pub fn stage_png(
+    rgba: &[u8],
+    p: StageParams,
+    apc: &mut Vec<u8>,
+    b64: &mut Vec<u8>,
+) -> Result<(), Error> {
+    let mut bytes = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut bytes, u32::from(p.w), u32::from(p.h));
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder.set_compression(png::Compression::Fast);
+        encoder.set_filter(png::Filter::NoFilter);
+        let mut writer = encoder.write_header().map_err(|_| Error::PngDecode)?;
+        writer
+            .write_image_data(rgba)
+            .map_err(|_| Error::PngDecode)?;
+        writer.finish().map_err(|_| Error::PngDecode)?;
+    }
+    if bytes.len() < rgba.len() {
+        stage_encoded(&bytes, 100, p, apc, b64);
+    } else {
+        stage_encoded(rgba, 32, p, apc, b64);
+    }
+    Ok(())
+}
+
+fn stage_encoded(rgba: &[u8], format: u32, p: StageParams, apc: &mut Vec<u8>, b64: &mut Vec<u8>) {
     if rgba.is_empty() {
         return;
     }
@@ -569,10 +605,12 @@ pub fn stage_base64(rgba: &[u8], p: StageParams, apc: &mut Vec<u8>, b64: &mut Ve
     let mut off = 0usize;
     let mut first = true;
     while off < total || first {
-        let end = (off + 4096).min(total);
+        let end = (off + 3072).min(total);
         begin_apc(p.is_tmux, apc);
         if first {
-            apc.extend_from_slice(b"a=t,t=d,f=32,q=2,i=");
+            apc.extend_from_slice(b"a=t,t=d,f=");
+            crate::fmt::push_u32(apc, format);
+            apc.extend_from_slice(b",q=2,i=");
             crate::fmt::push_u32(apc, p.image_id);
             apc.extend_from_slice(b",s=");
             crate::fmt::push_u32(apc, u32::from(p.w));
@@ -580,7 +618,7 @@ pub fn stage_base64(rgba: &[u8], p: StageParams, apc: &mut Vec<u8>, b64: &mut Ve
             crate::fmt::push_u32(apc, u32::from(p.h));
             apc.extend_from_slice(b",m=");
         } else {
-            apc.extend_from_slice(b"m=");
+            apc.extend_from_slice(b"q=2,m=");
         }
         apc.push(b'0' + u8::from(end < total));
         if end > off {
@@ -594,9 +632,9 @@ pub fn stage_base64(rgba: &[u8], p: StageParams, apc: &mut Vec<u8>, b64: &mut Ve
     emit_virtual_placement(p, apc);
 }
 
-/// Emit `U+10EEEE` virtual placement grid (explicit row+col0 diacritic, auto-incremented columns).
-pub fn emit_placeholder(image_id: u32, cols: u16, rows: u16, text: &mut Vec<u8>) {
-    if cols == 0 || rows == 0 {
+/// Emit a single row of `U+10EEEE` virtual placement grid.
+pub fn emit_placeholder_row(image_id: u32, cols: u16, row: u16, text: &mut Vec<u8>) {
+    if cols == 0 {
         return;
     }
     let [_, r, g, b] = image_id.to_be_bytes();
@@ -615,16 +653,24 @@ pub fn emit_placeholder(image_id: u32, cols: u16, rows: u16, text: &mut Vec<u8>)
 
     let max_idx = DIACRITICS_UTF8.len() - 1;
     let first_col = DIACRITICS_UTF8[0];
-    text.reserve(usize::from(rows).saturating_mul(sgr_slice.len() + usize::from(cols) * 4 + 10));
-    for row in 0..rows {
-        text.extend_from_slice(sgr_slice);
-        let r_diac = DIACRITICS_UTF8[usize::from(row).min(max_idx)];
+    text.reserve(sgr_slice.len() + usize::from(cols) * 4 + 10);
+    text.extend_from_slice(sgr_slice);
+    let r_diac = DIACRITICS_UTF8[usize::from(row).min(max_idx)];
+    text.extend_from_slice(&PLACEHOLDER_UTF8);
+    text.extend_from_slice(r_diac);
+    text.extend_from_slice(first_col);
+    for _ in 1..cols {
         text.extend_from_slice(&PLACEHOLDER_UTF8);
-        text.extend_from_slice(r_diac);
-        text.extend_from_slice(first_col);
-        for _ in 1..cols {
-            text.extend_from_slice(&PLACEHOLDER_UTF8);
-        }
-        text.extend_from_slice(b"\x1b[39m\n");
+    }
+    text.extend_from_slice(b"\x1b[39m\n");
+}
+
+/// Emit `U+10EEEE` virtual placement grid (explicit row+col0 diacritic, auto-incremented columns).
+pub fn emit_placeholder(image_id: u32, cols: u16, rows: u16, text: &mut Vec<u8>) {
+    if cols == 0 || rows == 0 {
+        return;
+    }
+    for row in 0..rows {
+        emit_placeholder_row(image_id, cols, row, text);
     }
 }

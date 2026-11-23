@@ -19,6 +19,7 @@ pub enum SemanticRole {
     Success = 6,
     Warn = 7,
     Danger = 8,
+    Highlight = 9,
 }
 
 const _: () = assert!(size_of::<SemanticRole>() == 1);
@@ -269,40 +270,76 @@ impl Palette {
     }
 }
 
+// Historical ii_old palettes (a2d84066); surfaces retain RGB identity but have zero alpha.
 #[rustfmt::skip]
 const DARK_COLORS: [Rgba; 32] = [
-    Rgba::from_rgba(0xE6, 0xED, 0xF3, 0xFF), // 0: TextPrimary (#E6EDF3)
-    Rgba::from_rgba(0x8B, 0x94, 0x9E, 0xFF), // 1: TextMuted   (#8B949E)
-    Rgba::from_rgba(0x16, 0x1B, 0x22, 0xFF), // 2: Surface     (#161B22)
-    Rgba::from_rgba(0x30, 0x36, 0x3D, 0xFF), // 3: Border      (#30363D)
-    Rgba::from_rgba(0xFF, 0x6A, 0x00, 0xFF), // 4: Accent      (#FF6A00)
-    Rgba::from_rgba(0x58, 0xA6, 0xFF, 0xFF), // 5: Info        (#58A6FF)
-    Rgba::from_rgba(0x3F, 0xB9, 0x50, 0xFF), // 6: Success     (#3FB950)
-    Rgba::from_rgba(0xD2, 0x99, 0x22, 0xFF), // 7: Warn        (#D29922)
-    Rgba::from_rgba(0xF8, 0x51, 0x49, 0xFF), // 8: Danger      (#F85149)
-    Rgba(0), Rgba(0), Rgba(0), Rgba(0), Rgba(0), Rgba(0), Rgba(0),
-    Rgba::from_rgba(0x38,0xBD,0xF8,0xFF), Rgba::from_rgba(0xFB,0x92,0x3C,0xFF), Rgba::from_rgba(0x4A,0xDE,0x80,0xFF), Rgba::from_rgba(0xC0,0x84,0xFC,0xFF),
-    Rgba::from_rgba(0xF4,0x72,0xB6,0xFF), Rgba::from_rgba(0x2D,0xD4,0xBF,0xFF), Rgba::from_rgba(0xFA,0xCC,0x15,0xFF), Rgba::from_rgba(0xA7,0x8B,0xFA,0xFF),
-    Rgba::from_rgba(0xFB,0x71,0x85,0xFF), Rgba::from_rgba(0x60,0xA5,0xFA,0xFF), Rgba::from_rgba(0x34,0xD3,0x99,0xFF), Rgba::from_rgba(0xF8,0x71,0x71,0xFF),
-    Rgba::from_rgba(0x81,0x8C,0xF8,0xFF), Rgba::from_rgba(0xFB,0xBF,0x24,0xFF), Rgba::from_rgba(0xE8,0x79,0xF9,0xFF), Rgba::from_rgba(0x94,0xA3,0xB8,0xFF),
+    Rgba::from_rgba(205, 214, 244, 255),
+    Rgba::from_rgba(161, 167, 194, 255),
+    Rgba::from_rgba(30, 30, 46, 0),
+    Rgba::from_rgba(79, 81, 101, 255),
+    Rgba::from_rgba(203, 166, 247, 255),
+    Rgba::from_rgba(137, 180, 250, 255),
+    Rgba::from_rgba(166, 227, 161, 255),
+    Rgba::from_rgba(249, 226, 175, 255),
+    Rgba::from_rgba(243, 139, 168, 255),
+    Rgba::from_rgba(148, 226, 213, 255),
+    Rgba::from_rgba(0, 0, 0, 0),
+    Rgba::from_rgba(0, 0, 0, 0),
+    Rgba::from_rgba(0, 0, 0, 0),
+    Rgba::from_rgba(0, 0, 0, 0),
+    Rgba::from_rgba(0, 0, 0, 0),
+    Rgba::from_rgba(0, 0, 0, 0),
+    Rgba::from_rgba(137, 180, 250, 255),
+    Rgba::from_rgba(166, 227, 161, 255),
+    Rgba::from_rgba(203, 166, 247, 255),
+    Rgba::from_rgba(250, 179, 135, 255),
+    Rgba::from_rgba(148, 226, 213, 255),
+    Rgba::from_rgba(249, 226, 175, 255),
+    Rgba::from_rgba(243, 139, 168, 255),
+    Rgba::from_rgba(137, 220, 235, 255),
+    Rgba::from_rgba(137, 180, 250, 255),
+    Rgba::from_rgba(166, 227, 161, 255),
+    Rgba::from_rgba(203, 166, 247, 255),
+    Rgba::from_rgba(250, 179, 135, 255),
+    Rgba::from_rgba(148, 226, 213, 255),
+    Rgba::from_rgba(249, 226, 175, 255),
+    Rgba::from_rgba(243, 139, 168, 255),
+    Rgba::from_rgba(137, 220, 235, 255),
 ];
-
 #[rustfmt::skip]
 const LIGHT_COLORS: [Rgba; 32] = [
-    Rgba::from_rgba(0x1F, 0x23, 0x28, 0xFF), // 0: TextPrimary (#1F2328)
-    Rgba::from_rgba(0x65, 0x6D, 0x76, 0xFF), // 1: TextMuted   (#656D76)
-    Rgba::from_rgba(0xF6, 0xF8, 0xFA, 0xFF), // 2: Surface     (#F6F8FA)
-    Rgba::from_rgba(0xD0, 0xD7, 0xDE, 0xFF), // 3: Border      (#D0D7DE)
-    Rgba::from_rgba(0xE6, 0x51, 0x00, 0xFF), // 4: Accent      (#E65100)
-    Rgba::from_rgba(0x09, 0x69, 0xDA, 0xFF), // 5: Info        (#0969DA)
-    Rgba::from_rgba(0x1A, 0x7F, 0x37, 0xFF), // 6: Success     (#1A7F37)
-    Rgba::from_rgba(0x9A, 0x67, 0x00, 0xFF), // 7: Warn        (#9A6700)
-    Rgba::from_rgba(0xCF, 0x22, 0x2E, 0xFF), // 8: Danger      (#CF222E)
-    Rgba(0), Rgba(0), Rgba(0), Rgba(0), Rgba(0), Rgba(0), Rgba(0),
-    Rgba::from_rgba(0x02,0x84,0xC7,0xFF), Rgba::from_rgba(0xEA,0x58,0x0C,0xFF), Rgba::from_rgba(0x16,0xA3,0x4A,0xFF), Rgba::from_rgba(0x93,0x33,0xEA,0xFF),
-    Rgba::from_rgba(0xDB,0x27,0x77,0xFF), Rgba::from_rgba(0x0D,0x94,0x88,0xFF), Rgba::from_rgba(0xCA,0x8A,0x04,0xFF), Rgba::from_rgba(0x7C,0x3A,0xED,0xFF),
-    Rgba::from_rgba(0xE1,0x1D,0x48,0xFF), Rgba::from_rgba(0x25,0x63,0xEB,0xFF), Rgba::from_rgba(0x05,0x96,0x69,0xFF), Rgba::from_rgba(0xDC,0x26,0x26,0xFF),
-    Rgba::from_rgba(0x4F,0x46,0xE5,0xFF), Rgba::from_rgba(0xD9,0x77,0x06,0xFF), Rgba::from_rgba(0xC0,0x26,0xD3,0xFF), Rgba::from_rgba(0x64,0x74,0x8B,0xFF),
+    Rgba::from_rgba(76, 79, 105, 255),
+    Rgba::from_rgba(116, 119, 140, 255),
+    Rgba::from_rgba(239, 241, 245, 0),
+    Rgba::from_rgba(187, 190, 201, 255),
+    Rgba::from_rgba(136, 57, 239, 255),
+    Rgba::from_rgba(30, 102, 245, 255),
+    Rgba::from_rgba(64, 160, 43, 255),
+    Rgba::from_rgba(223, 142, 29, 255),
+    Rgba::from_rgba(210, 15, 57, 255),
+    Rgba::from_rgba(23, 146, 153, 255),
+    Rgba::from_rgba(0, 0, 0, 0),
+    Rgba::from_rgba(0, 0, 0, 0),
+    Rgba::from_rgba(0, 0, 0, 0),
+    Rgba::from_rgba(0, 0, 0, 0),
+    Rgba::from_rgba(0, 0, 0, 0),
+    Rgba::from_rgba(0, 0, 0, 0),
+    Rgba::from_rgba(30, 102, 245, 255),
+    Rgba::from_rgba(64, 160, 43, 255),
+    Rgba::from_rgba(136, 57, 239, 255),
+    Rgba::from_rgba(254, 100, 11, 255),
+    Rgba::from_rgba(23, 146, 153, 255),
+    Rgba::from_rgba(223, 142, 29, 255),
+    Rgba::from_rgba(210, 15, 57, 255),
+    Rgba::from_rgba(4, 165, 229, 255),
+    Rgba::from_rgba(30, 102, 245, 255),
+    Rgba::from_rgba(64, 160, 43, 255),
+    Rgba::from_rgba(136, 57, 239, 255),
+    Rgba::from_rgba(254, 100, 11, 255),
+    Rgba::from_rgba(23, 146, 153, 255),
+    Rgba::from_rgba(223, 142, 29, 255),
+    Rgba::from_rgba(210, 15, 57, 255),
+    Rgba::from_rgba(4, 165, 229, 255),
 ];
 
 pub static DARK_SGR: [SgrSeq; 32] = build_sgr_table(&DARK_COLORS);

@@ -1,6 +1,6 @@
--- ii.nvim: Zero-overhead binary IPC coprocessor client for Neovim (0.10+)
+-- ii.nvim: bounded asynchronous IXPC client for Neovim (0.12+)
 -- Protocol: IXPC v1 (CMD_COMPOSE_EXTMARKS = 0x0003, 32-byte Header + Dual-Channel)
--- Transport: Persistent libuv pipe + Zero-Copy extmarks
+-- One request per window. Source data stays owned by Neovim.
 
 local M = {}
 local is_mac = vim.fn.has("mac") == 1
@@ -8,8 +8,16 @@ local cached_cell_w, cached_cell_h = is_mac and 18 or 9, is_mac and 36 or 18
 local ns_id = vim.api.nvim_create_namespace("ii_renderer")
 local style_ns = vim.api.nvim_create_namespace("ii_presentation")
 local hl_cache = {}
+local frames = {}
+local deadlines = {}
+local options = { executable = "ii", timeout_ms = 5000 }
+local buffer_enabled = {}
+local generations = {}
+local requests = {}
+local timers = {}
 
 local function style_buffer(bufnr)
+  if buffer_enabled[bufnr] == false then return end
   vim.api.nvim_buf_clear_namespace(bufnr, style_ns, 0, -1)
   local ft = vim.bo[bufnr].filetype
   if ft ~= "markdown" and ft ~= "md" and ft ~= "mdx" and ft ~= "quarto" and ft ~= "qmd" and ft ~= "rmd" then return end
@@ -19,18 +27,19 @@ local function style_buffer(bufnr)
   local calls = {
     NOTE = { "󰋽 Note", "IiInfo" }, TIP = { "󰌶 Tip", "IiSuccess" }, IMPORTANT = { "󰅾 Important", "IiAccent" },
     WARNING = { "󰀪 Warning", "IiWarn" }, CAUTION = { "󰳦 Caution", "IiDanger" }, INFO = { "󰋽 Info", "IiInfo" },
-    ABSTRACT = { "󰨸 Abstract", "IiInfo" }, SUMMARY = { "󰨸 Summary", "IiInfo" }, TLDR = { "󰨸 TL;DR", "IiInfo" },
+    ABSTRACT = { "󰨸 Abstract", "IiInfo" }, SUMMARY = { "󰨸 Summary", "IiInfo" }, TLDR = { "󰨸 Tldr", "IiInfo" },
     SUCCESS = { "󰄬 Success", "IiSuccess" }, TODO = { "󰗡 Todo", "IiWarn" }, QUESTION = { "󰘥 Question", "IiWarn" },
-    FAILURE = { "󱐌 Failure", "IiDanger" }, DANGER = { "󱐌 Danger", "IiDanger" }, BUG = { "󰨰 Bug", "IiDanger" },
+    FAILURE = { "󰅖 Failure", "IiDanger" }, DANGER = { "󱐌 Danger", "IiDanger" }, BUG = { "󰨰 Bug", "IiDanger" },
     EXAMPLE = { "󰉹 Example", "IiAccent" }, QUOTE = { "󱆨 Quote", "IiMuted" },
   }
+  local in_fence = false
   for row, line in ipairs(lines) do
+    if line:match("^%s*```") or line:match("^%s*~~~") then in_fence = not in_fence end
     local r = row - 1
-    if r ~= cursor then
+    if r ~= cursor and not in_fence then
       local marks, body = line:match("^(#+)%s+(.*)$")
       if marks and #marks <= 6 then
-        local icons = { "󰲡 ", "󰲣 ", "󰲥 ", "󰲧 ", "󰲩 ", "󰲫 " }
-        vim.api.nvim_buf_set_extmark(bufnr, style_ns, r, 0, { end_col = #marks + 1, virt_text = { { icons[#marks], "IiH" .. #marks } }, virt_text_pos = "overlay" })
+        vim.api.nvim_buf_set_extmark(bufnr, style_ns, r, 0, { end_col = #marks + 1, virt_text = { { ({"󰲡 ","󰲣 ","󰲥 ","󰲧 ","󰲩 ","󰲫 "})[#marks], "IiH" .. #marks } }, virt_text_pos = "overlay" })
       else
         local indent, tag = line:match("^(%s*)>%s*%[!([%w]+)%]")
         local call = tag and calls[tag:upper()] or nil
@@ -53,8 +62,14 @@ local function style_buffer(bufnr)
 end
 
 local function init_highlights()
-  local colors = { IiH1 = "#58a6ff", IiH2 = "#ff6a00", IiH3 = "#3fb950", IiH4 = "#d29922", IiH5 = "#8b949e", IiH6 = "#8b949e", IiInfo = "#58a6ff", IiAccent = "#ff6a00", IiSuccess = "#3fb950", IiWarn = "#d29922", IiDanger = "#f85149", IiMuted = "#8b949e" }
-  for name, fg in pairs(colors) do vim.api.nvim_set_hl(0, name, { fg = fg, bold = name:match("^IiH") ~= nil }) end
+  -- Match ii_old's default Catppuccin palettes. No group sets a background.
+  local dark = vim.o.background ~= "light"
+  local c = dark and { text="#cdd6f4", muted="#a1a7c2", info="#89b4fa", mauve="#cba6f7", peach="#fab387", teal="#94e2d5", success="#a6e3a1", warn="#f9e2af", danger="#f38ba8" }
+    or { text="#4c4f69", muted="#74778c", info="#1e66f5", mauve="#8839ef", peach="#fe640b", teal="#179299", success="#40a02b", warn="#df8e1d", danger="#d20f39" }
+  local colors = { IiH1=c.info, IiH2=c.mauve, IiH3=c.peach, IiH4=c.teal, IiH5=c.muted, IiH6=c.muted,
+    IiInfo=c.info, IiAccent=c.teal, IiSuccess=c.success, IiWarn=c.warn, IiDanger=c.danger, IiMuted=c.muted }
+  for name, fg in pairs(colors) do vim.api.nvim_set_hl(0, name, { fg=fg, bold=name:match("^IiH") ~= nil }) end
+  hl_cache = {}
 end
 
 -- Kitty Graphics Protocol: 297 row combining diacritics for U=1 virtual placement
@@ -143,11 +158,11 @@ local function unpack_u32_le(str, offset)
 end
 
 -- Highlight group mapping image_id to foreground color
-local function get_image_hl(image_id)
-  local hl_name = string.format("IiImg_%06x", image_id)
-  if not hl_cache[image_id] then
+local function get_image_hl(image_id, win, index)
+  local hl_name = string.format("IiImg_%d_%d", win, index)
+  if hl_cache[hl_name] ~= image_id then
     vim.api.nvim_set_hl(0, hl_name, { fg = string.format("#%06x", image_id) })
-    hl_cache[image_id] = hl_name
+    hl_cache[hl_name] = image_id
   end
   return hl_name
 end
@@ -173,7 +188,7 @@ local function update_cell_metrics()
   end
 
   local ffi = require("ffi")
-  ffi.cdef([[
+  pcall(ffi.cdef, [[
     typedef struct { unsigned short row, col, xpixel, ypixel; } winsize;
     int ioctl(int, int, ...);
   ]])
@@ -202,13 +217,13 @@ local function connect_daemon(sock_path, cb, retries)
     end
 
     pipe:close()
-    if (err:match("ENOENT") or err:match("ECONNREFUSED")) and retries == 0 then
-      vim.schedule(function()
-        vim.system({ "ii", "--daemon", "--socket", sock_path }, { detach = true }, function(_) end)
-      end)
+    if (err:match("ENOENT") or err:match("ECONNREFUSED")) and retries < 5 then
+      if retries == 0 then vim.schedule(function()
+        vim.system({ options.executable, "--daemon", "--socket", sock_path }, { detach = true }, function(_) end)
+      end) end
 
       local timer = vim.uv.new_timer()
-      timer:start(40, 0, function()
+      timer:start(40 * (retries + 1), 0, function()
         timer:stop()
         timer:close()
         connect_daemon(sock_path, cb, retries + 1)
@@ -223,7 +238,23 @@ function M.render(bufnr, win)
   win = win or vim.api.nvim_get_current_win()
   bufnr = bufnr or vim.api.nvim_win_get_buf(win)
 
-  if not vim.api.nvim_buf_is_valid(bufnr) then return end
+  if not vim.api.nvim_buf_is_valid(bufnr) or not vim.api.nvim_win_is_valid(win) or buffer_enabled[bufnr] == false then return end
+  generations[win] = (generations[win] or 0) + 1
+  local generation = generations[win]
+  if requests[win] and not requests[win]:is_closing() then requests[win]:close() end
+  requests[win] = nil
+  if deadlines[win] then deadlines[win]:stop(); deadlines[win]:close(); deadlines[win] = nil end
+  local deadline = vim.uv.new_timer()
+  deadlines[win] = deadline
+  deadline:start(options.timeout_ms, 0, vim.schedule_wrap(function()
+    if generations[win] ~= generation then return end
+    generations[win] = generation + 1
+    if requests[win] and not requests[win]:is_closing() then requests[win]:close() end
+    requests[win] = nil
+    frames[win] = nil
+    deadline:stop(); deadline:close(); deadlines[win] = nil
+    vim.notify("ii: render request timed out", vim.log.levels.WARN)
+  end))
   local tick = vim.api.nvim_buf_get_changedtick(bufnr)
 
   local wininfo = vim.fn.getwininfo(win)[1]
@@ -232,14 +263,19 @@ function M.render(bufnr, win)
   local rows = math.max(1, vim.api.nvim_win_get_height(win))
   local sock_path = get_socket_path()
 
-  local flags = 0
+  -- Replies can be cancelled before delivery: Base64 has no orphaned SHM lifetime.
+  local flags = 4
   if vim.o.background == "light" then flags = flags + 1 end            -- FLAG_THEME_LIGHT
   if vim.env.TMUX then flags = flags + 2 end                           -- FLAG_TMUX
-  if vim.env.SSH_CLIENT or vim.env.SSH_TTY then flags = flags + 4 end   -- FLAG_REMOTE
 
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
   local payload = table.concat(lines, "\n")
   local payload_len = #payload
+  if payload_len > 67108864 then
+    deadline:stop(); deadline:close(); deadlines[win] = nil
+    vim.notify("ii: buffer exceeds request limit", vim.log.levels.WARN)
+    return
+  end
 
   local header = pack_u32_le(0x49585043) ..    -- MAGIC
                  pack_u16_le(1) ..             -- VERSION
@@ -254,50 +290,70 @@ function M.render(bufnr, win)
                  pack_u16_le(cached_cell_h)    -- cell_h
 
   connect_daemon(sock_path, function(err, pipe)
-    if err or not pipe then return end
-
+    if err or not pipe then
+      if deadlines[win] == deadline then deadline:stop(); deadline:close(); deadlines[win] = nil end
+      vim.schedule(function() vim.notify("ii: cannot connect to daemon: " .. tostring(err), vim.log.levels.WARN) end)
+      return
+    end
+    if generations[win] ~= generation then pipe:close(); return end
+    requests[win] = pipe
     local rx_chunks = {}
     local total_read = 0
     local expected_len = nil
     local apc_len = nil
 
+    local function failed(message)
+      if not pipe:is_closing() then pipe:close() end
+      if generations[win] ~= generation then return end
+      requests[win] = nil
+      if deadlines[win] == deadline then deadline:stop(); deadline:close(); deadlines[win] = nil end
+      vim.schedule(function() vim.notify("ii: " .. message, vim.log.levels.WARN) end)
+    end
     pipe:read_start(function(read_err, chunk)
       if read_err or not chunk then
-        pipe:close()
+        failed(tostring(read_err or "incomplete response"))
         return
       end
 
       table.insert(rx_chunks, chunk)
       total_read = total_read + #chunk
+      if total_read > 67108896 then failed("response exceeds limit"); return end
 
       if not expected_len and total_read >= 32 then
         local full_prefix = table.concat(rx_chunks)
         local resp_payload_len = unpack_u32_le(full_prefix, 21)
         apc_len = unpack_u32_le(full_prefix, 17)
+        local magic = unpack_u32_le(full_prefix, 1)
+        local version = unpack_u16_le(full_prefix, 5)
+        local command = unpack_u16_le(full_prefix, 7)
+        if unpack_u32_le(full_prefix, 9) ~= bufnr or unpack_u32_le(full_prefix, 13) ~= tick or magic ~= 0x49585043 or version ~= 1 or command ~= 0x8003 or resp_payload_len > 67108864 or apc_len > resp_payload_len or (resp_payload_len - apc_len) % 16 ~= 0 then
+          failed("invalid render response"); return
+        end
         expected_len = 32 + resp_payload_len
       end
 
-      if expected_len and total_read >= expected_len then
+      if expected_len and total_read > expected_len then failed("trailing response bytes"); return end
+      if expected_len and total_read == expected_len then
         pipe:read_stop()
         pipe:close()
 
+        requests[win] = nil
         local full_buf = table.concat(rx_chunks)
         vim.schedule(function()
+          if deadlines[win] == deadline then deadline:stop(); deadline:close(); deadlines[win] = nil end
           if not vim.api.nvim_buf_is_valid(bufnr) then return end
-          if vim.api.nvim_buf_get_changedtick(bufnr) ~= tick then return end
+          if vim.api.nvim_buf_get_changedtick(bufnr) ~= tick or generations[win] ~= generation or buffer_enabled[bufnr] == false then return end
+          if not vim.api.nvim_win_is_valid(win) or vim.api.nvim_win_get_buf(win) ~= bufnr then return end
+          if math.max(1, vim.api.nvim_win_get_width(win) - textoff) ~= cols or vim.api.nvim_win_get_height(win) ~= rows then return end
 
           -- 1. Deliver KGP APC commands through terminal UI stream
           local apc_bytes = full_buf:sub(33, 32 + apc_len)
-          if #apc_bytes > 0 then
-            if vim.api.nvim_ui_send then
-              vim.api.nvim_ui_send(apc_bytes)
-            else
-              io.stdout:write(apc_bytes)
-            end
+          if #apc_bytes > 0 and #vim.api.nvim_list_uis() > 0 then
+            vim.api.nvim_ui_send(apc_bytes)
           end
 
           -- 2. Clear old extmarks in buffer
-          vim.api.nvim_buf_clear_namespace(bufnr, ns_id, 0, -1)
+          local marks = {}
           style_buffer(bufnr)
 
           -- 3. Parse 16-byte ExtmarkRecord array
@@ -307,42 +363,61 @@ function M.render(bufnr, win)
 
           while offset + 16 - 1 <= extmarks_end do
             local image_id = unpack_u32_le(full_buf, offset)
+            local start_row = unpack_u16_le(full_buf, offset + 4)
             local end_row = unpack_u16_le(full_buf, offset + 8)
+            local end_col = unpack_u16_le(full_buf, offset + 10)
+            -- The wire endpoint is exclusive; a consumed newline belongs to the
+            -- closing source line, not the next paragraph's decoration anchor.
+            if end_col == 0 and end_row > start_row then end_row = end_row - 1 end
             local m_cols = unpack_u16_le(full_buf, offset + 12)
             local m_rows = unpack_u16_le(full_buf, offset + 14)
 
-            local hl_name = get_image_hl(image_id)
+            local hl_name = get_image_hl(image_id, win, #marks + 1)
 
             -- Format rows of U+10EEEE virtual placeholders with KGP row combining diacritics
             local virt_lines = {}
             for r = 0, m_rows - 1 do
               local diacritic = DIACRITICS[math.min(r + 1, #DIACRITICS)] or ""
-              local first_cell = PLACEHOLDER .. diacritic
+              local first_cell = PLACEHOLDER .. diacritic .. DIACRITICS[1]
               local tail = m_cols > 1 and string.rep(PLACEHOLDER, m_cols - 1) or ""
               table.insert(virt_lines, { { first_cell .. tail, hl_name } })
             end
 
             if #virt_lines > 0 then
-              vim.api.nvim_buf_set_extmark(bufnr, ns_id, end_row, 0, {
-                virt_lines = virt_lines,
-                virt_lines_above = false,
-              })
+              end_row = math.min(end_row, vim.api.nvim_buf_line_count(bufnr) - 1)
+              marks[#marks + 1] = { row = end_row, lines = virt_lines }
             end
 
             offset = offset + 16
           end
+          frames[win] = { bufnr = bufnr, tick = tick, cols = cols, marks = marks }
+          vim.cmd("redraw")
         end)
       end
     end)
 
-    pipe:write(header .. payload)
+    pipe:write(header .. payload, function(write_err) if write_err then failed(tostring(write_err)) end end)
   end)
 end
 
-local buffer_enabled = {}
-
 function M.clear(bufnr)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
+  for win, frame in pairs(frames) do
+    if frame.bufnr == bufnr then frames[win] = nil end
+  end
+  for win, pipe in pairs(requests) do
+    if not vim.api.nvim_win_is_valid(win) or vim.api.nvim_win_get_buf(win) == bufnr then
+      generations[win] = (generations[win] or 0) + 1
+      if not pipe:is_closing() then pipe:close() end
+      requests[win] = nil
+    end
+  end
+  for win, deadline in pairs(deadlines) do
+    if not vim.api.nvim_win_is_valid(win) or vim.api.nvim_win_get_buf(win) == bufnr then
+      generations[win] = (generations[win] or 0) + 1
+      deadline:stop(); deadline:close(); deadlines[win] = nil
+    end
+  end
   if vim.api.nvim_buf_is_valid(bufnr) then
     vim.api.nvim_buf_clear_namespace(bufnr, ns_id, 0, -1)
     vim.api.nvim_buf_clear_namespace(bufnr, style_ns, 0, -1)
@@ -361,27 +436,69 @@ function M.toggle(bufnr)
 end
 
 function M.setup(opts)
+  assert(vim.api.nvim_ui_send, "ii: Neovim 0.12+ is required for ordered terminal graphics output")
   opts = opts or {}
   local debounce_ms = opts.debounce_ms or 20
+  options.executable = opts.executable or options.executable
+  options.timeout_ms = opts.timeout_ms or options.timeout_ms
+  if opts.socket_path then vim.g.ii_socket_path = opts.socket_path end
+  assert(options.timeout_ms > 0 and debounce_ms >= 0, "ii: invalid timer settings")
   init_highlights()
 
-  local timer = vim.uv.new_timer()
   local augroup = vim.api.nvim_create_augroup("IiAutoRender", { clear = true })
-  vim.api.nvim_create_autocmd({ "BufEnter", "BufWritePost", "TextChanged", "TextChangedI" }, {
+  vim.api.nvim_create_autocmd({ "BufEnter", "BufWritePost", "TextChanged", "TextChangedI", "WinResized", "ColorScheme" }, {
     group = augroup,
     callback = function(ev)
-      if buffer_enabled[ev.buf] == false then return end
+      local bufnr = vim.api.nvim_get_current_buf()
+      local ft = vim.bo[bufnr].filetype
+      if not ({ markdown=true, md=true, mdx=true, quarto=true, qmd=true, rmd=true })[ft] then return end
+      if buffer_enabled[bufnr] == false then return end
+      if ev.event == "ColorScheme" then init_highlights() end
+      ev.buf = bufnr
+      local timer = timers[ev.buf] or vim.uv.new_timer()
+      timers[ev.buf] = timer
       timer:stop()
       timer:start(debounce_ms, 0, vim.schedule_wrap(function()
         if vim.api.nvim_buf_is_valid(ev.buf) then
-          M.render(ev.buf)
+          for _, win in ipairs(vim.fn.win_findbuf(ev.buf)) do M.render(ev.buf, win) end
         end
       end))
     end,
   })
+  vim.api.nvim_create_autocmd("BufWipeout", {
+    group = augroup,
+    callback = function(ev)
+      M.clear(ev.buf)
+      if timers[ev.buf] then timers[ev.buf]:stop(); timers[ev.buf]:close(); timers[ev.buf] = nil end
+      buffer_enabled[ev.buf] = nil
+    end,
+  })
+  vim.api.nvim_create_autocmd("WinClosed", {
+    group = augroup,
+    callback = function(ev)
+      local win = tonumber(ev.match)
+      generations[win] = (generations[win] or 0) + 1
+      frames[win] = nil
+      if requests[win] and not requests[win]:is_closing() then requests[win]:close() end
+      requests[win] = nil
+      if deadlines[win] then deadlines[win]:stop(); deadlines[win]:close(); deadlines[win] = nil end
+    end,
+  })
+  vim.api.nvim_set_decoration_provider(ns_id, {
+    on_win = function(_, win, bufnr)
+      local frame = frames[win]
+      if not frame or frame.bufnr ~= bufnr or buffer_enabled[bufnr] == false or frame.tick ~= vim.api.nvim_buf_get_changedtick(bufnr) then return false end
+      for _, mark in ipairs(frame.marks) do
+        vim.api.nvim_buf_set_extmark(bufnr, ns_id, mark.row, 0, {
+          ephemeral = true, virt_lines = mark.lines, virt_lines_above = false,
+        })
+      end
+      return false
+    end,
+  })
   vim.api.nvim_create_autocmd("CursorMoved", {
     group = augroup,
-    callback = function(ev) style_buffer(ev.buf) end,
+    callback = function(ev) if buffer_enabled[ev.buf] ~= false then style_buffer(ev.buf) end end,
   })
 end
 
@@ -392,5 +509,13 @@ vim.api.nvim_create_user_command("IiClear", function() M.clear() end, { desc = "
 vim.api.nvim_create_user_command("PixxRender", function() M.render() end, { desc = "Render buffer with ii coprocessor" })
 vim.api.nvim_create_user_command("PixxToggle", function() M.toggle() end, { desc = "Toggle ii KGP rendering" })
 vim.api.nvim_create_user_command("PixxClear", function() M.clear() end, { desc = "Clear ii extmarks" })
+
+--- Current window render state, suitable for diagnostics and health checks.
+function M.status(win)
+  win = win or vim.api.nvim_get_current_win()
+  local frame = frames[win]
+  return { pending = deadlines[win] ~= nil, placements = frame and #frame.marks or 0,
+    source_tick = frame and frame.tick or nil, cols = frame and frame.cols or nil }
+end
 
 return M

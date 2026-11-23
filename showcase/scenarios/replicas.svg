@@ -1,0 +1,93 @@
+<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" width="720" height="1200" viewBox="0 0 720 1200">
+<text x="24" y="36" font-family="sans-serif" font-size="24" fill="currentColor">Replication lag · Задержка</text>
+<rect x="24" y="60" width="210" height="76" rx="8" fill="none" stroke="currentColor"/>
+<text x="34" y="88" font-family="sans-serif" font-size="16" fill="currentColor">Replica 00</text>
+<text x="34" y="115" font-family="monospace" font-size="14" fill="currentColor">lag 4 ms</text>
+<rect x="256" y="60" width="210" height="76" rx="8" fill="none" stroke="currentColor"/>
+<text x="266" y="88" font-family="sans-serif" font-size="16" fill="currentColor">Replica 01</text>
+<text x="266" y="115" font-family="monospace" font-size="14" fill="currentColor">lag 7 ms</text>
+<rect x="488" y="60" width="210" height="76" rx="8" fill="none" stroke="currentColor"/>
+<text x="498" y="88" font-family="sans-serif" font-size="16" fill="currentColor">Replica 02</text>
+<text x="498" y="115" font-family="monospace" font-size="14" fill="currentColor">lag 10 ms</text>
+<rect x="24" y="166" width="210" height="76" rx="8" fill="none" stroke="currentColor"/>
+<text x="34" y="194" font-family="sans-serif" font-size="16" fill="currentColor">Replica 03</text>
+<text x="34" y="221" font-family="monospace" font-size="14" fill="currentColor">lag 13 ms</text>
+<rect x="256" y="166" width="210" height="76" rx="8" fill="none" stroke="currentColor"/>
+<text x="266" y="194" font-family="sans-serif" font-size="16" fill="currentColor">Replica 04</text>
+<text x="266" y="221" font-family="monospace" font-size="14" fill="currentColor">lag 16 ms</text>
+<rect x="488" y="166" width="210" height="76" rx="8" fill="none" stroke="currentColor"/>
+<text x="498" y="194" font-family="sans-serif" font-size="16" fill="currentColor">Replica 05</text>
+<text x="498" y="221" font-family="monospace" font-size="14" fill="currentColor">lag 19 ms</text>
+<rect x="24" y="272" width="210" height="76" rx="8" fill="none" stroke="currentColor"/>
+<text x="34" y="300" font-family="sans-serif" font-size="16" fill="currentColor">Replica 06</text>
+<text x="34" y="327" font-family="monospace" font-size="14" fill="currentColor">lag 22 ms</text>
+<rect x="256" y="272" width="210" height="76" rx="8" fill="none" stroke="currentColor"/>
+<text x="266" y="300" font-family="sans-serif" font-size="16" fill="currentColor">Replica 07</text>
+<text x="266" y="327" font-family="monospace" font-size="14" fill="currentColor">lag 25 ms</text>
+<rect x="488" y="272" width="210" height="76" rx="8" fill="none" stroke="currentColor"/>
+<text x="498" y="300" font-family="sans-serif" font-size="16" fill="currentColor">Replica 08</text>
+<text x="498" y="327" font-family="monospace" font-size="14" fill="currentColor">lag 28 ms</text>
+<rect x="24" y="378" width="210" height="76" rx="8" fill="none" stroke="currentColor"/>
+<text x="34" y="406" font-family="sans-serif" font-size="16" fill="currentColor">Replica 09</text>
+<text x="34" y="433" font-family="monospace" font-size="14" fill="currentColor">lag 31 ms</text>
+<rect x="256" y="378" width="210" height="76" rx="8" fill="none" stroke="currentColor"/>
+<text x="266" y="406" font-family="sans-serif" font-size="16" fill="currentColor">Replica 10</text>
+<text x="266" y="433" font-family="monospace" font-size="14" fill="currentColor">lag 34 ms</text>
+<rect x="488" y="378" width="210" height="76" rx="8" fill="none" stroke="currentColor"/>
+<text x="498" y="406" font-family="sans-serif" font-size="16" fill="currentColor">Replica 11</text>
+<text x="498" y="433" font-family="monospace" font-size="14" fill="currentColor">lag 37 ms</text>
+<rect x="24" y="484" width="210" height="76" rx="8" fill="none" stroke="currentColor"/>
+<text x="34" y="512" font-family="sans-serif" font-size="16" fill="currentColor">Replica 12</text>
+<text x="34" y="539" font-family="monospace" font-size="14" fill="currentColor">lag 40 ms</text>
+<rect x="256" y="484" width="210" height="76" rx="8" fill="none" stroke="currentColor"/>
+<text x="266" y="512" font-family="sans-serif" font-size="16" fill="currentColor">Replica 13</text>
+<text x="266" y="539" font-family="monospace" font-size="14" fill="currentColor">lag 43 ms</text>
+<rect x="488" y="484" width="210" height="76" rx="8" fill="none" stroke="currentColor"/>
+<text x="498" y="512" font-family="sans-serif" font-size="16" fill="currentColor">Replica 14</text>
+<text x="498" y="539" font-family="monospace" font-size="14" fill="currentColor">lag 46 ms</text>
+<rect x="24" y="590" width="210" height="76" rx="8" fill="none" stroke="currentColor"/>
+<text x="34" y="618" font-family="sans-serif" font-size="16" fill="currentColor">Replica 15</text>
+<text x="34" y="645" font-family="monospace" font-size="14" fill="currentColor">lag 49 ms</text>
+<rect x="256" y="590" width="210" height="76" rx="8" fill="none" stroke="currentColor"/>
+<text x="266" y="618" font-family="sans-serif" font-size="16" fill="currentColor">Replica 16</text>
+<text x="266" y="645" font-family="monospace" font-size="14" fill="currentColor">lag 52 ms</text>
+<rect x="488" y="590" width="210" height="76" rx="8" fill="none" stroke="currentColor"/>
+<text x="498" y="618" font-family="sans-serif" font-size="16" fill="currentColor">Replica 17</text>
+<text x="498" y="645" font-family="monospace" font-size="14" fill="currentColor">lag 55 ms</text>
+<rect x="24" y="696" width="210" height="76" rx="8" fill="none" stroke="currentColor"/>
+<text x="34" y="724" font-family="sans-serif" font-size="16" fill="currentColor">Replica 18</text>
+<text x="34" y="751" font-family="monospace" font-size="14" fill="currentColor">lag 58 ms</text>
+<rect x="256" y="696" width="210" height="76" rx="8" fill="none" stroke="currentColor"/>
+<text x="266" y="724" font-family="sans-serif" font-size="16" fill="currentColor">Replica 19</text>
+<text x="266" y="751" font-family="monospace" font-size="14" fill="currentColor">lag 61 ms</text>
+<rect x="488" y="696" width="210" height="76" rx="8" fill="none" stroke="currentColor"/>
+<text x="498" y="724" font-family="sans-serif" font-size="16" fill="currentColor">Replica 20</text>
+<text x="498" y="751" font-family="monospace" font-size="14" fill="currentColor">lag 64 ms</text>
+<rect x="24" y="802" width="210" height="76" rx="8" fill="none" stroke="currentColor"/>
+<text x="34" y="830" font-family="sans-serif" font-size="16" fill="currentColor">Replica 21</text>
+<text x="34" y="857" font-family="monospace" font-size="14" fill="currentColor">lag 67 ms</text>
+<rect x="256" y="802" width="210" height="76" rx="8" fill="none" stroke="currentColor"/>
+<text x="266" y="830" font-family="sans-serif" font-size="16" fill="currentColor">Replica 22</text>
+<text x="266" y="857" font-family="monospace" font-size="14" fill="currentColor">lag 70 ms</text>
+<rect x="488" y="802" width="210" height="76" rx="8" fill="none" stroke="currentColor"/>
+<text x="498" y="830" font-family="sans-serif" font-size="16" fill="currentColor">Replica 23</text>
+<text x="498" y="857" font-family="monospace" font-size="14" fill="currentColor">lag 73 ms</text>
+<rect x="24" y="908" width="210" height="76" rx="8" fill="none" stroke="currentColor"/>
+<text x="34" y="936" font-family="sans-serif" font-size="16" fill="currentColor">Replica 24</text>
+<text x="34" y="963" font-family="monospace" font-size="14" fill="currentColor">lag 76 ms</text>
+<rect x="256" y="908" width="210" height="76" rx="8" fill="none" stroke="currentColor"/>
+<text x="266" y="936" font-family="sans-serif" font-size="16" fill="currentColor">Replica 25</text>
+<text x="266" y="963" font-family="monospace" font-size="14" fill="currentColor">lag 79 ms</text>
+<rect x="488" y="908" width="210" height="76" rx="8" fill="none" stroke="currentColor"/>
+<text x="498" y="936" font-family="sans-serif" font-size="16" fill="currentColor">Replica 26</text>
+<text x="498" y="963" font-family="monospace" font-size="14" fill="currentColor">lag 82 ms</text>
+<rect x="24" y="1014" width="210" height="76" rx="8" fill="none" stroke="currentColor"/>
+<text x="34" y="1042" font-family="sans-serif" font-size="16" fill="currentColor">Replica 27</text>
+<text x="34" y="1069" font-family="monospace" font-size="14" fill="currentColor">lag 85 ms</text>
+<rect x="256" y="1014" width="210" height="76" rx="8" fill="none" stroke="currentColor"/>
+<text x="266" y="1042" font-family="sans-serif" font-size="16" fill="currentColor">Replica 28</text>
+<text x="266" y="1069" font-family="monospace" font-size="14" fill="currentColor">lag 88 ms</text>
+<rect x="488" y="1014" width="210" height="76" rx="8" fill="none" stroke="currentColor"/>
+<text x="498" y="1042" font-family="sans-serif" font-size="16" fill="currentColor">Replica 29</text>
+<text x="498" y="1069" font-family="monospace" font-size="14" fill="currentColor">lag 91 ms</text>
+</svg>

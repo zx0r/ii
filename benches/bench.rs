@@ -9,8 +9,8 @@ use std::hint::black_box;
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use ii::{
     fmt::{ipynb, md, tex},
-    kitty, raster,
-    scene::{RenderScratch, Scene},
+    kitty,
+    scene::Scene,
     theme::DARK,
     vram::{Payload, Table, compute_tag},
 };
@@ -88,7 +88,7 @@ fn bench_scan_throughput(c: &mut Criterion) {
 }
 
 fn bench_stream_frontends(c: &mut Criterion) {
-    let mut group = c.benchmark_group("frontends_zero_alloc");
+    let mut group = c.benchmark_group("format_compile");
 
     let math = br"\begin{aligned} \mathcal{L}(\theta) &= \sum_{i=1}^{N} \left[ y_i \log \frac{1}{1 + \exp(-\theta^T x_i)} \right] \end{aligned}";
     let mut scene = Scene::with_capacity(64, 1024);
@@ -134,7 +134,7 @@ fn bench_cache_hit_zero_alloc(c: &mut Criterion) {
     let mut arena = Vec::with_capacity(4096);
 
     let mut group = c.benchmark_group("cache");
-    group.throughput(Throughput::Bytes(payload.len() as u64));
+    group.throughput(Throughput::Elements(1));
     group.bench_function("vram_l0_lookup_and_placeholder", |b| {
         b.iter(|| {
             let hit = tbl.lookup(black_box(tag));
@@ -155,32 +155,62 @@ fn bench_cache_hit_zero_alloc(c: &mut Criterion) {
 
 fn bench_full_pipeline_warm(c: &mut Criterion) {
     let doc = b"# Notes\n$$\\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}$$\nInline $\\alpha + \\beta$.\n";
-    let mut scratch = RenderScratch::new();
-
-    let mut group = c.benchmark_group("pipeline_warm");
+    let mut scratch = ii::compose::ComposeScratch::new();
+    let mut out = ii::compose::ComposeOut::new();
+    let ctx = ii::compose::ComposeCtx {
+        cell_w: 8,
+        cell_h: 16,
+        cols: 80,
+        rows: 24,
+        max_w: 640,
+        palette: &DARK,
+        is_tmux: false,
+        is_remote: true,
+        skip_lines: 0,
+        max_lines: 24,
+    };
+    let mut seq = 0;
+    assert!(
+        ii::compose::render_file(
+            doc,
+            ii::fmt::Kind::Md,
+            ctx,
+            None,
+            &mut scratch,
+            &mut seq,
+            1,
+            &mut out
+        )
+        .is_ok()
+    );
+    let mut group = c.benchmark_group("pipeline");
     group.throughput(Throughput::Bytes(doc.len() as u64));
-
-    group.bench_function("warm_markdown_rasterize", |b| {
+    group.bench_function("compose_with_warm_image_cache", |b| {
         b.iter(|| {
-            scratch.reset();
-            let _ = md::parse_into_scene(black_box(doc), &mut scratch.scene);
-            let res =
-                raster::rasterize_scene(&scratch.scene, &DARK, 8, 16, 640, &mut scratch.rgba_buf);
-            black_box(res)
+            let result = ii::compose::render_file(
+                black_box(doc),
+                ii::fmt::Kind::Md,
+                ctx,
+                None,
+                &mut scratch,
+                &mut seq,
+                1,
+                &mut out,
+            );
+            assert!(result.is_ok());
+            black_box((out.apc.len(), out.ansi.len()))
         });
     });
-
-    let notebook_json = br##"{"cells":[{"cell_type":"markdown","metadata":{},"source":["# Title\n","$$\n","E = mc^2\n","$$"]},{"cell_type":"code","execution_count":1,"metadata":{},"outputs":[{"data":{"image/png":"iVBORw0KGgo=","text/plain":["<Figure>"]},"metadata":{"image/png":{"width":400}},"output_type":"display_data"}],"source":["import numpy as np\n","x = np.linspace(0, 1, 100)"]}]}"##.repeat(32);
-
-    group.throughput(Throughput::Bytes(notebook_json.len() as u64));
-    group.bench_function("ipynb_zero_copy_scanner_64_cells", |b| {
+    let notebook = include_bytes!("../showcase/scenarios/analysis.ipynb");
+    let mut normalized = Vec::new();
+    group.throughput(Throughput::Bytes(notebook.len() as u64));
+    group.bench_function("notebook_normalize_32_cells", |b| {
         b.iter(|| {
-            scratch.reset();
-            let res = ipynb::parse_into_scene(black_box(&notebook_json), &mut scratch.scene);
-            black_box(res)
+            normalized.clear();
+            assert!(ipynb::to_markdown(black_box(notebook), &mut normalized).is_ok());
+            black_box(normalized.len())
         });
     });
-
     group.finish();
 }
 

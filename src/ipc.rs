@@ -25,6 +25,7 @@ pub enum Cmd {
     ComposeAnsi = 0x0002,
     ComposeExtmarks = 0x0003,
     RenderFile = 0x0004,
+    PreviewFile = 0x0005,
     Shutdown = 0x0006,
 }
 
@@ -40,6 +41,7 @@ impl Cmd {
             0x0002 => Ok(Self::ComposeAnsi),
             0x0003 => Ok(Self::ComposeExtmarks),
             0x0004 => Ok(Self::RenderFile),
+            0x0005 => Ok(Self::PreviewFile),
             0x0006 => Ok(Self::Shutdown),
             other => Err(Error::UnknownCommand(other)),
         }
@@ -50,7 +52,7 @@ pub const FLAG_THEME_LIGHT: u32 = 1 << 0; // 0 = dark, 1 = light
 pub const FLAG_TMUX: u32 = 1 << 1; // Client in tmux (wrap in DCS passthrough)
 pub const FLAG_REMOTE: u32 = 1 << 2; // Client remote/SSH (enforce Base64, no SHM)
 
-#[repr(C, packed)]
+#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Header {
     pub magic: u32,
@@ -144,7 +146,7 @@ impl Header {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(C, packed)]
+#[repr(C)]
 pub struct Extmark {
     pub image_id: u32,
     pub start_row: u16,
@@ -295,26 +297,73 @@ pub fn lock_path() -> PathBuf {
 /// # Errors
 /// Returns `Error::PayloadTooLarge`, `Error::BadMagic`, `Error::BadVersion`, or `Error::Io`.
 pub fn client_send(cmd: Cmd, payload: &[u8]) -> Result<Vec<u8>, Error> {
+    client_send_to(cmd, payload, None)
+}
+
+/// Send to the selected socket.
+///
+/// # Errors
+/// Returns transport or protocol errors.
+pub fn client_send_to(
+    cmd: Cmd,
+    payload: &[u8],
+    path: Option<&std::path::Path>,
+) -> Result<Vec<u8>, Error> {
     let payload_len = u32::try_from(payload.len()).map_err(|_| Error::PayloadTooLarge(u32::MAX))?;
     if payload_len > MAX_PAYLOAD {
         return Err(Error::PayloadTooLarge(payload_len));
     }
+    exchange(Header::new(cmd, payload_len), payload, path).map(|(_, body)| body)
+}
+
+/// Exchange a correlated request with bounded socket waits.
+///
+/// # Errors
+/// Returns transport, remote-render or malformed-response errors.
+pub fn exchange(
+    header: Header,
+    payload: &[u8],
+    path: Option<&std::path::Path>,
+) -> Result<(Header, Vec<u8>), Error> {
+    header.validate()?;
+    if header.payload_len as usize != payload.len() {
+        return Err(Error::InvalidState);
+    }
     let fd = socket(AddressFamily::UNIX, SocketType::STREAM, None)?;
     fcntl_setfd(&fd, FdFlags::CLOEXEC)?;
-    let addr = SocketAddrUnix::new(socket_path().as_path()).map_err(|_| Error::SocketSymlink)?;
+    let default_path = socket_path();
+    let addr =
+        SocketAddrUnix::new(path.unwrap_or(&default_path)).map_err(|_| Error::SocketSymlink)?;
     connect(&fd, &addr)?;
 
-    let hdr = Header::new(cmd, payload_len).to_le_bytes();
+    for timeout in [
+        rustix::net::sockopt::Timeout::Recv,
+        rustix::net::sockopt::Timeout::Send,
+    ] {
+        rustix::net::sockopt::set_socket_timeout(
+            &fd,
+            timeout,
+            Some(std::time::Duration::from_secs(5)),
+        )?;
+    }
+    let hdr = header.to_le_bytes();
     write_vectored(fd.as_fd(), &hdr, payload)?;
 
     let mut resp_hdr = [0u8; 32];
     read_exact(fd.as_fd(), &mut resp_hdr)?;
     let parsed = Header::from_le_bytes(&resp_hdr);
-    let _ = parsed.validate()?;
+    parsed.validate()?;
+    if parsed.command != header.command | RESP_FLAG
+        || parsed.req_id_lo != header.req_id_lo
+        || parsed.req_id_hi != header.req_id_hi
+        || parsed.flags > parsed.payload_len
+    {
+        return Err(Error::InvalidState);
+    }
 
     let mut body = vec![0u8; parsed.payload_len as usize];
     read_exact(fd.as_fd(), &mut body)?;
-    Ok(body)
+    Ok((parsed, body))
 }
 
 fn write_vectored(fd: BorrowedFd<'_>, mut a: &[u8], mut b: &[u8]) -> Result<(), Error> {

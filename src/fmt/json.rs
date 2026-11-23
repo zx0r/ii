@@ -168,45 +168,67 @@ impl<'a> Iterator for ArrayIter<'a> {
 
 /// Unescape a JSON string token (`"..."`) directly into `out`.
 pub fn unescape_str(raw: &[u8], out: &mut Vec<u8>) -> bool {
-    let trimmed = raw.trim_ascii();
-    if trimmed.len() < 2 || trimmed[0] != b'"' || trimmed[trimmed.len() - 1] != b'"' {
+    let start = out.len();
+    if decode_str(raw.trim_ascii(), out).is_none() {
+        out.truncate(start);
         return false;
     }
-    let body = &trimmed[1..trimmed.len() - 1];
-    out.reserve(body.len());
-    let mut pos = 0usize;
+    true
+}
+
+fn hex4(src: &[u8], pos: &mut usize) -> Option<u32> {
+    let bytes = src.get(*pos..pos.checked_add(4)?)?;
+    let mut value = 0;
+    for &byte in bytes {
+        value = value * 16 + u32::from(crate::theme::hex_digit(byte)?);
+    }
+    *pos += 4;
+    Some(value)
+}
+
+fn decode_str(raw: &[u8], out: &mut Vec<u8>) -> Option<()> {
+    let body = raw.strip_prefix(b"\"")?.strip_suffix(b"\"")?;
+    let mut pos = 0;
     while pos < body.len() {
-        let Some(off) = memchr::memchr(b'\\', &body[pos..]) else {
-            out.extend_from_slice(&body[pos..]);
-            return true;
-        };
-        out.extend_from_slice(&body[pos..pos + off]);
-        pos += off + 1;
-        let Some(&esc) = body.get(pos) else {
-            return false;
-        };
-        match esc {
+        let end = memchr::memchr(b'\\', &body[pos..]).map_or(body.len(), |n| pos + n);
+        let plain = &body[pos..end];
+        if plain.iter().any(|&b| b < 32 || b == b'"') || core::str::from_utf8(plain).is_err() {
+            return None;
+        }
+        out.extend_from_slice(plain);
+        if end == body.len() {
+            return Some(());
+        }
+        pos = end + 1;
+        let escape = *body.get(pos)?;
+        pos += 1;
+        match escape {
+            b'"' | b'\\' | b'/' => out.push(escape),
             b'n' => out.push(b'\n'),
             b'r' => out.push(b'\r'),
             b't' => out.push(b'\t'),
-            b'b' => out.push(0x08),
-            b'f' => out.push(0x0C),
+            b'b' => out.push(8),
+            b'f' => out.push(12),
             b'u' => {
-                if let Some(hex) = body.get(pos + 1..pos + 5)
-                    && let Ok(s) = core::str::from_utf8(hex)
-                    && let Ok(code) = u32::from_str_radix(s, 16)
-                    && let Some(ch) = char::from_u32(code)
-                {
-                    let mut utf8 = [0u8; 4];
-                    out.extend_from_slice(ch.encode_utf8(&mut utf8).as_bytes());
+                let mut code = hex4(body, &mut pos)?;
+                if (0xd800..=0xdbff).contains(&code) {
+                    if body.get(pos..pos + 2)? != b"\\u" {
+                        return None;
+                    }
+                    pos += 2;
+                    let low = hex4(body, &mut pos)?;
+                    if !(0xdc00..=0xdfff).contains(&low) {
+                        return None;
+                    }
+                    code = 0x10000 + ((code - 0xd800) << 10) + low - 0xdc00;
                 }
-                pos += 4;
+                let mut bytes = [0; 4];
+                out.extend_from_slice(char::from_u32(code)?.encode_utf8(&mut bytes).as_bytes());
             }
-            _ => out.push(esc),
+            _ => return None,
         }
-        pos += 1;
     }
-    true
+    Some(())
 }
 
 #[inline]

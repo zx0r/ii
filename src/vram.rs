@@ -225,6 +225,23 @@ impl Cache {
 
     #[inline]
     pub fn insert(&mut self, tag: Tag, cols: u16, rows: u16, w: u16, h: u16, rgba: &[u8]) {
+        const BUDGET: usize = 32 * 1024 * 1024;
+        if rgba.len() > BUDGET {
+            return;
+        }
+        let retained: usize = self
+            .ways
+            .iter()
+            .flatten()
+            .map(|entry| entry.rgba.capacity())
+            .sum();
+        if retained.saturating_add(rgba.len()) > BUDGET {
+            self.invalidate();
+            for entry in self.ways.iter_mut().flatten() {
+                entry.rgba = Vec::new();
+            }
+        }
+
         let idx = usize::from((tag.get() >> 6).to_le_bytes()[0] & 15);
         let mut chosen = None;
         for (way, &slot_tag) in self.tags[idx].iter().enumerate() {

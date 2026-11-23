@@ -1,5 +1,5 @@
-//! Glyph advance metrics shared by layout (`fmt::*`) and the stroke-font rasterizer (`raster`).
-//! Single source of truth: what layout measures is exactly what `raster` advances. Zero allocations.
+//! Allocation-free width estimates for initial scene layout.
+//! SVG text shaping and final clipping are performed by usvg.
 
 #[rustfmt::skip]
 const ADVANCE_PCT: [u8; 128] = [
@@ -36,7 +36,7 @@ pub fn advance_em(ch: char) -> f32 {
     MONO_EM.mul_add(0.75, f32::from(pct) * 0.0025)
 }
 
-/// Estimate pixel width of UTF-8 text at `font_px` (exactly what `raster` will advance).
+/// Estimate pixel width of UTF-8 text at `font_px` for initial layout.
 #[inline]
 #[must_use]
 pub fn measure_str(text: &str, font_px: f32) -> f32 {

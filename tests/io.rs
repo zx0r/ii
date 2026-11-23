@@ -204,10 +204,8 @@ fn raster_svg_and_scene_palettes() -> Result<(), Error> {
         r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="{}"/>"#,
         MAX_DIM + 64
     );
-    assert!(matches!(
-        rasterize(huge.as_bytes(), 8, 16, 640, &mut rgba),
-        Err(Error::ImageTooLarge { .. })
-    ));
+    let (_, height, _, rows) = rasterize(huge.as_bytes(), 8, 16, 640, &mut rgba)?;
+    assert!(u32::from(height) <= MAX_DIM && rows <= 297);
 
     let mut scene = Scene::with_capacity(8, 32);
     scene.width = 16.0;
@@ -261,9 +259,9 @@ fn raster_svg_and_scene_palettes() -> Result<(), Error> {
     });
 
     let _ = rasterize_scene(&scene, &DARK, 8, 16, 640, &mut rgba)?;
-    assert_eq!(&rgba[..4], &DARK.color(ColorToken::BG_PRIMARY).to_array());
+    assert_eq!(&rgba[..4], &[0, 0, 0, 0]);
     let _ = rasterize_scene(&scene, &LIGHT, 8, 16, 640, &mut rgba)?;
-    assert_eq!(&rgba[..4], &LIGHT.color(ColorToken::BG_PRIMARY).to_array());
+    assert_eq!(&rgba[..4], &[0, 0, 0, 0]);
 
     assert!(build_icon_path(ICON_WARN).is_some());
     assert!(build_icon_path(ICON_INFO).is_some());
@@ -309,5 +307,46 @@ fn decode_png_all_color_types_and_corrupt() -> Result<(), Box<dyn core::error::E
     assert_eq!(rgba, [99, 99, 99, 255, 200, 200, 200, 255]);
 
     assert_eq!(decode_png(b"garbage", &mut rgba), Err(Error::PngDecode));
+    Ok(())
+}
+
+#[test]
+fn compressed_kitty_upload_reduces_repeated_pixel_payload() -> Result<(), Error> {
+    let mut rgba = vec![255; 64 * 64 * 4];
+    for pixel in rgba.as_chunks_mut::<4>().0.iter_mut().step_by(3) {
+        pixel.copy_from_slice(&[12, 34, 56, 128]);
+    }
+    let p = StageParams {
+        image_id: 7,
+        w: 64,
+        h: 64,
+        cols: 8,
+        rows: 4,
+        is_tmux: false,
+    };
+    let mut apc = Vec::new();
+    let mut b64 = Vec::new();
+    kitty::stage_png(&rgba, p, &mut apc, &mut b64)?;
+    assert!(memchr::memmem::find(&apc, b"f=100").is_some());
+    assert!(apc.len() < rgba.len());
+    let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut png = Vec::new();
+    let (mut bits, mut count) = (0u32, 0u32);
+    for byte in b64.into_iter().take_while(|&b| b != b'=') {
+        let value = alphabet
+            .iter()
+            .position(|&b| b == byte)
+            .ok_or(Error::PngDecode)?;
+        bits = (bits << 6) | u32::try_from(value).map_err(|_| Error::PngDecode)?;
+        count += 6;
+        if count >= 8 {
+            count -= 8;
+            png.push((bits >> count).to_le_bytes()[0]);
+            bits &= (1 << count) - 1;
+        }
+    }
+    let mut decoded = Vec::new();
+    assert_eq!(decode_png(&png, &mut decoded)?, (64, 64));
+    assert_eq!(decoded, rgba);
     Ok(())
 }

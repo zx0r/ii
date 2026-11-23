@@ -13,7 +13,11 @@ pub mod mermaid;
 pub mod svg;
 pub mod tex;
 
-use crate::{err::Error, scene::Scene};
+use crate::{
+    err::Error,
+    scene::Scene,
+    theme::{self, Palette},
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -30,16 +34,18 @@ pub enum Kind {
     Tsv = 9,
     Chart = 10,
     Archive = 11,
+    Png = 12,
 }
 
 const EXT_MAP: &[(&[&str], Kind)] = &[
-    (&["md", "qmd", "mdx", "rmd", "typ"], Kind::Md),
+    (&["md", "markdown", "qmd", "mdx", "rmd", "typ"], Kind::Md),
     (&["ipynb"], Kind::Ipynb),
     (&["tex", "latex"], Kind::Tex),
     (&["chem", "mhchem"], Kind::Chem),
     (&["mmd", "mermaid"], Kind::Mermaid),
     (&["dot", "gv"], Kind::Dot),
     (&["svg"], Kind::Svg),
+    (&["png"], Kind::Png),
     (&["csv"], Kind::Csv),
     (&["tsv"], Kind::Tsv),
     (&["vl", "vega-lite", "plotly"], Kind::Chart),
@@ -68,6 +74,9 @@ pub fn detect_kind(src: &[u8], ext: &str) -> Kind {
     if let Some(kind) = kind_from_ext(ext) {
         return kind;
     }
+    if src.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Kind::Png;
+    }
     let head = trim_ascii(src);
     if archive::looks_like_archive(src) {
         return Kind::Archive;
@@ -93,19 +102,33 @@ pub fn detect_kind(src: &[u8], ext: &str) -> Kind {
 /// # Errors
 /// Propagates parser errors from the selected format adapter.
 pub fn dispatch_kind(kind: Kind, src: &[u8], scene: &mut Scene) -> Result<(), Error> {
+    dispatch_with_palette(kind, src, &theme::DARK, scene)
+}
+
+/// Dispatch with the palette supplied by the receiving surface.
+///
+/// # Errors
+/// Propagates the selected format adapter error.
+pub fn dispatch_with_palette(
+    kind: Kind,
+    src: &[u8],
+    palette: &Palette,
+    scene: &mut Scene,
+) -> Result<(), Error> {
     match kind {
-        Kind::Md => md::parse_into_scene(src, scene),
-        Kind::Ipynb => ipynb::parse_into_scene(src, scene),
-        Kind::Tex => tex::parse_into_scene(src, scene),
-        Kind::TexInline => tex::parse_inline_into_scene(src, scene),
-        Kind::Chem => tex::parse_chem_into_scene(src, scene),
-        Kind::Mermaid => mermaid::parse_into_scene(src, scene),
+        Kind::Md => md::parse_with_palette(src, palette, scene),
+        Kind::Ipynb => ipynb::parse_with_palette(src, palette, scene),
+        Kind::Tex => tex::parse_with_palette(src, true, false, palette, scene),
+        Kind::TexInline => tex::parse_with_palette(src, false, false, palette, scene),
+        Kind::Chem => tex::parse_with_palette(src, true, true, palette, scene),
+        Kind::Mermaid => mermaid::parse_with_palette(src, palette, scene),
         Kind::Dot => dot::parse_into_scene(src, scene),
-        Kind::Svg => svg::parse_into_scene(src, scene),
+        Kind::Svg => svg::parse_into_scene_with_palette(src, palette, scene),
         Kind::Csv => csv::parse_into_scene(src, scene),
         Kind::Tsv => csv::parse_tsv_into_scene(src, scene),
         Kind::Chart => chart::parse_into_scene(src, scene),
         Kind::Archive => archive::parse_into_scene(src, scene),
+        Kind::Png => Err(Error::PngDecode),
     }
 }
 

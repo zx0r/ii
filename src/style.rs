@@ -48,7 +48,7 @@ const CALLOUTS: [Callout; 17] = [
     },
     Callout {
         tag: b"[!IMPORTANT]",
-        role: SemanticRole::Accent,
+        role: SemanticRole::Highlight,
         label: "󰅾 Important".as_bytes(),
     },
     Callout {
@@ -74,7 +74,7 @@ const CALLOUTS: [Callout; 17] = [
     Callout {
         tag: b"[!TLDR]",
         role: SemanticRole::Info,
-        label: "󰨸 TL;DR".as_bytes(),
+        label: "󰨸 Tldr".as_bytes(),
     },
     Callout {
         tag: b"[!INFO]",
@@ -99,7 +99,7 @@ const CALLOUTS: [Callout; 17] = [
     Callout {
         tag: b"[!FAILURE]",
         role: SemanticRole::Danger,
-        label: "󱐌 Failure".as_bytes(),
+        label: "󰅖 Failure".as_bytes(),
     },
     Callout {
         tag: b"[!DANGER]",
@@ -113,7 +113,7 @@ const CALLOUTS: [Callout; 17] = [
     },
     Callout {
         tag: b"[!EXAMPLE]",
-        role: SemanticRole::Accent,
+        role: SemanticRole::Highlight,
         label: "󰉹 Example".as_bytes(),
     },
     Callout {
@@ -152,20 +152,35 @@ fn bold(out: &mut Vec<u8>, palette: &Palette, role_: SemanticRole) {
 fn inline(src: &[u8], palette: &Palette, out: &mut Vec<u8>) {
     let mut pos = 0;
     while pos < src.len() {
-        let Some(rel) = memchr(b'`', &src[pos..]) else {
+        let Some(rel) = memchr::memchr2(b'`', b'*', &src[pos..]) else {
             out.extend_from_slice(&src[pos..]);
             return;
         };
         let at = pos + rel;
         out.extend_from_slice(&src[pos..at]);
-        if let Some(end) = memchr(b'`', &src[at + 1..]) {
-            role(out, palette, SemanticRole::Accent);
-            out.extend_from_slice(&src[at..at + end + 2]);
-            out.extend_from_slice(SGR_RESET);
-            pos = at + end + 2;
+        let (delimiter, count, role_) = if src[at] == b'`' {
+            (b"`".as_slice(), 1, SemanticRole::Warn)
+        } else if src[at..].starts_with(b"**") {
+            (b"**".as_slice(), 2, SemanticRole::TextPrimary)
         } else {
-            out.extend_from_slice(&src[at..]);
-            return;
+            out.push(b'*');
+            pos = at + 1;
+            continue;
+        };
+        if let Some(end) =
+            memchr::memmem::find(&src[at + count..], delimiter).filter(|&end| end > 0)
+        {
+            if count == 2 {
+                bold(out, palette, role_);
+            } else {
+                role(out, palette, role_);
+            }
+            out.extend_from_slice(&src[at + count..at + count + end]);
+            out.extend_from_slice(SGR_RESET);
+            pos = at + count + end + count;
+        } else {
+            out.extend_from_slice(delimiter);
+            pos = at + count;
         }
     }
 }
@@ -208,7 +223,9 @@ fn table_sep(line: &[u8]) -> bool {
 }
 
 fn width(src: &[u8]) -> usize {
-    src.iter().filter(|b| (**b & 0xc0) != 0x80).count()
+    core::str::from_utf8(src).map_or(src.len(), |text| {
+        text.chars().map(crate::viewport::cells).sum()
+    })
 }
 
 fn border(
@@ -392,8 +409,11 @@ fn heading(line: &[u8]) -> Option<(usize, &[u8])> {
         Some((marker, &line[marker + 1..]))
     } else {
         let marker = line.iter().take_while(|&&b| b == b'=').count();
-        ((1..=6).contains(&marker) && line.get(marker) == Some(&b' '))
-            .then_some((marker, &line[marker + 1..]))
+        if (1..=6).contains(&marker) && line.get(marker) == Some(&b' ') {
+            Some((marker, &line[marker + 1..]))
+        } else {
+            None
+        }
     }
 }
 
@@ -406,15 +426,15 @@ fn emit_heading(indent_: &[u8], level: usize, body: &[u8], palette: &Palette, ou
         "󰲩 ".as_bytes(),
         "󰲫 ".as_bytes(),
     ];
-    let role_ = match level {
-        1 => SemanticRole::Info,
-        2 => SemanticRole::Accent,
-        3 => SemanticRole::Success,
-        4 => SemanticRole::Warn,
-        _ => SemanticRole::TextMuted,
-    };
     out.extend_from_slice(indent_);
-    bold(out, palette, role_);
+    let token = match level {
+        1 => crate::theme::ColorToken::INFO,
+        2..=4 => crate::theme::ColorToken::series(u8::try_from(level).unwrap_or(2)),
+        _ => crate::theme::ColorToken::TEXT_MUTED,
+    };
+    let seq = &palette.sgr[token.index()];
+    out.extend_from_slice(&seq.buf[..usize::from(seq.len)]);
+    out.extend_from_slice(b"\x1b[1m");
     out.extend_from_slice(ICONS[level - 1]);
     inline(body, palette, out);
     out.extend_from_slice(SGR_RESET);
@@ -448,22 +468,21 @@ fn task(line: &[u8]) -> Option<(&[u8], SemanticRole, bool)> {
     let rest = line
         .strip_prefix(b"- ")
         .or_else(|| line.strip_prefix(b"* "))?;
-    let (needle, icon, role_) = if let Some(x) = rest
+    let (needle, role_) = if let Some(x) = rest
         .strip_prefix(b"[x] ")
         .or_else(|| rest.strip_prefix(b"[X] "))
     {
-        (x, "󰄵 ".as_bytes(), SemanticRole::Success)
+        (x, SemanticRole::Success)
     } else if let Some(x) = rest.strip_prefix(b"[ ] ") {
-        (x, "󰄱 ".as_bytes(), SemanticRole::TextMuted)
+        (x, SemanticRole::TextMuted)
     } else if let Some(x) = rest.strip_prefix(b"[-] ") {
-        (x, "󰥔 ".as_bytes(), SemanticRole::Warn)
+        (x, SemanticRole::Warn)
     } else if let Some(x) = rest.strip_prefix(b"[!] ") {
-        (x, "󰀨 ".as_bytes(), SemanticRole::Danger)
+        (x, SemanticRole::Danger)
     } else {
         let x = rest.strip_prefix(b"[~] ")?;
-        (x, "󰰱 ".as_bytes(), SemanticRole::TextMuted)
+        (x, SemanticRole::TextMuted)
     };
-    let _ = icon;
     Some((
         needle,
         role_,
@@ -530,8 +549,8 @@ fn emit_line(line: &[u8], palette: &Palette, state: &mut State, out: &mut Vec<u8
         .or_else(|| clean.strip_prefix(b"* "))
     {
         out.extend_from_slice(indent_);
-        bold(out, palette, SemanticRole::TextMuted);
-        out.extend_from_slice("• ".as_bytes());
+        bold(out, palette, SemanticRole::Info);
+        out.extend_from_slice("● ".as_bytes());
         out.extend_from_slice(SGR_RESET);
         inline(body, palette, out);
     } else if clean.len() >= 3
@@ -557,10 +576,23 @@ fn emit_line(line: &[u8], palette: &Palette, state: &mut State, out: &mut Vec<u8
 
 /// Append styled prose to `out`. The caller owns the reusable `State`.
 pub fn emit_prose(src: &[u8], palette: &Palette, state: &mut State, out: &mut Vec<u8>) {
+    if src
+        .iter()
+        .any(|&b| b < 32 && b != b'\n' && b != b'\t' || b == 127)
+    {
+        let mut safe = Vec::with_capacity(src.len());
+        emit_literal(src, &mut safe);
+        emit_safe_prose(&safe, palette, state, out);
+    } else {
+        emit_safe_prose(src, palette, state, out);
+    }
+}
+
+fn emit_safe_prose(src: &[u8], palette: &Palette, state: &mut State, out: &mut Vec<u8>) {
     if src.is_empty() {
         return;
     }
-    if !src.iter().any(|b| CANDIDATE[*b as usize]) {
+    if !state.in_fence && !src.iter().any(|b| CANDIDATE[*b as usize]) {
         out.extend_from_slice(src);
         return;
     }
@@ -575,5 +607,20 @@ pub fn emit_prose(src: &[u8], palette: &Palette, state: &mut State, out: &mut Ve
             out.push(b'\n');
         }
         pos = end.saturating_add(1);
+    }
+}
+
+/// Emit source text while neutralizing terminal control bytes.
+pub fn emit_literal(src: &[u8], out: &mut Vec<u8>) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for &byte in src {
+        match byte {
+            b'\n' | b'\t' | 0x20..=0x7e | 0x80..=0xff => out.push(byte),
+            _ => {
+                out.extend_from_slice(b"\\x");
+                out.push(HEX[usize::from(byte >> 4)]);
+                out.push(HEX[usize::from(byte & 15)]);
+            }
+        }
     }
 }

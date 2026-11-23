@@ -208,7 +208,11 @@ fn svg_dot_chart_and_ipynb_emit_valid_scenes() -> Result<(), Error> {
         &DARK,
         &mut rewritten,
     );
-    assert!(rewritten.windows(7).any(|v| v == b"#E6EDF3"));
+    assert!(rewritten.windows(7).any(|v| {
+        v == DARK
+            .hex_str(ii::theme::SemanticRole::TextPrimary)
+            .as_bytes()
+    }));
     assert!(rewritten.windows(5).any(|v| v == b"#000f"));
 
     let mut scene = Scene::with_capacity(32, 1024);
@@ -277,7 +281,7 @@ fn markdown_scanner_frontmatter_fences_inline_math_and_prop_fuzz() {
     md::scan(doc, &mut spans);
 
     let kinds: Vec<Kind> = spans.iter().map(|sp| sp.kind()).collect();
-    assert_eq!(kinds, [Kind::TexInline, Kind::Tex, Kind::Dot, Kind::Csv]);
+    assert_eq!(kinds, [Kind::TexInline, Kind::Tex, Kind::Dot]);
     assert_eq!(
         &doc[spans[0].inner_start as usize..spans[0].inner_end() as usize],
         b"a+b"
@@ -352,4 +356,32 @@ fn prose_tables_are_native_box_drawing() {
     assert!(text.contains("├"));
     assert!(text.contains("└"));
     assert!(text.contains("│"));
+}
+
+#[test]
+fn historical_styles_use_catppuccin_markers_and_no_terminal_background() {
+    for (palette, text, info) in [
+        (&DARK, [205, 214, 244, 255], [137, 180, 250, 255]),
+        (&LIGHT, [76, 79, 105, 255], [30, 102, 245, 255]),
+    ] {
+        assert_eq!(
+            palette
+                .role_color(ii::theme::SemanticRole::TextPrimary)
+                .to_array(),
+            text
+        );
+        assert_eq!(
+            palette.role_color(ii::theme::SemanticRole::Info).to_array(),
+            info
+        );
+        assert_eq!(palette.role_color(ii::theme::SemanticRole::Surface).a(), 0);
+        let mut out = Vec::new();
+        style::emit_prose("# Title\n## Detail\n- [x] Done\n- [ ] Pending\n> [!NOTE] Context\n**strong** and `code`\n".as_bytes(),palette,&mut style::State::default(),&mut out);
+        let rendered = core::str::from_utf8(&out).unwrap_or("");
+        for required in ["󰲡 ", "󰲣 ", "󰄵 ", "󰄱 ", "󰋽 Note", "strong", "code"] {
+            assert!(rendered.contains(required));
+        }
+        assert!(!rendered.contains("**strong**") && !rendered.contains("`code`"));
+        assert!(memchr::memmem::find(&out, b"\x1b[48;").is_none());
+    }
 }

@@ -1,6 +1,6 @@
 //! `ii` entry point: CLI, daemon control, and local L2-cached KGP pipeline.
 
-use std::{ffi::OsString, path::Path};
+use std::{ffi::OsString, os::unix::ffi::OsStrExt, path::Path};
 
 use rustix::{
     fd::{AsFd, BorrowedFd},
@@ -11,15 +11,13 @@ use rustix::{
 };
 
 use ii::{
-    cache, daemon,
+    cache, compose, daemon,
     err::Error,
-    fmt::{self, Kind, md},
-    ipc::{self, Cmd, MAX_PAYLOAD, SpanCoord},
-    kitty::{self, StageParams},
-    raster,
-    scene::RenderScratch,
-    theme::{ColorToken, Palette, ThemeChoice},
-    tty, vram,
+    fmt,
+    ipc::{self, Cmd, MAX_PAYLOAD},
+    style,
+    theme::ThemeChoice,
+    tty,
 };
 
 const VERSION_LINE: &[u8] = concat!("ii ", env!("CARGO_PKG_VERSION"), "\n").as_bytes();
@@ -28,13 +26,14 @@ const USAGE: &[u8] = concat!(
     env!("CARGO_PKG_VERSION"),
     " - Terminal graphical coprocessor\n\
 Usage: ii [OPTIONS] [FILE]\n\
-       ii init <kitty|yazi|ii.yazi|nvim|ii.nvim|fzf>\n\
        ii doctor\n\
 \n\
 Geometry:\n\
   -s, --size <WxH>        Viewport bounds in cells (cols x rows)\n\
       --cell-size <WxH>   Physical cell size in pixels (cell_w x cell_h)\n\
       --skip <N>          Vertical line offset for paging\n\
+      --machine           Framed graphics and text output for adapters\n\
+      --ansi              Styled text on piped stdout\n\
 \n\
 Theme:\n\
   -t, --theme <THEME>     Palette polarity: [dark | light]\n\
@@ -51,21 +50,24 @@ Info:\n\
 )
 .as_bytes();
 
-const KITTY_CONF: &[u8] = include_bytes!("../plugins/kitty/kitty.conf");
-const YAZI_CONF: &[u8] = include_bytes!("../plugins/yazi/yazi.toml");
-const II_YAZI: &[u8] = include_bytes!("../plugins/ii.yazi/main.lua");
-const II_NVIM: &[u8] = include_bytes!("../plugins/ii.nvim/lua/ii/init.lua");
-const FZF: &[u8] = include_bytes!("../plugins/fzf/fzf.sh");
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Control {
+    #[default]
+    Render,
+    Daemon,
+    Ping,
+    Shutdown,
+}
 
 #[derive(Debug)]
 pub struct CliArgs<'a> {
     pub size: Option<(u16, u16)>,
     pub cell_size: Option<(u16, u16)>,
-    pub skip: usize,
+    pub skip: u32,
+    pub machine: bool,
+    pub ansi: bool,
     pub theme: Option<ThemeChoice>,
-    pub is_daemon: bool,
-    pub is_ping: bool,
-    pub is_shutdown: bool,
+    control: Control,
     pub socket_path: Option<&'a Path>,
     pub file_path: Option<&'a Path>,
 }
@@ -96,17 +98,30 @@ impl<'a> CliArgs<'a> {
             size: None,
             cell_size: None,
             skip: 0,
+            machine: false,
+            ansi: false,
             theme: None,
-            is_daemon: false,
-            is_ping: false,
-            is_shutdown: false,
+            control: Control::Render,
             socket_path: None,
             file_path: None,
         };
 
         let mut it = args.iter();
         while let Some(arg) = it.next() {
-            let Some(s) = arg.to_str() else { continue };
+            if arg == "--" {
+                let path = it.next().ok_or(Error::InvalidCli)?;
+                if parsed.file_path.is_some() || it.next().is_some() {
+                    return Err(Error::InvalidCli);
+                }
+                parsed.file_path = Some(Path::new(path));
+                break;
+            }
+            let Some(s) = arg.to_str() else {
+                if parsed.file_path.replace(Path::new(arg)).is_some() {
+                    return Err(Error::InvalidCli);
+                }
+                continue;
+            };
             match s {
                 "-s" | "--size" => {
                     let val = it
@@ -127,7 +142,7 @@ impl<'a> CliArgs<'a> {
                         .next()
                         .and_then(|v| v.to_str())
                         .ok_or(Error::InvalidCli)?;
-                    parsed.skip = val.parse::<usize>().map_err(|_| Error::InvalidCli)?;
+                    parsed.skip = val.parse::<u32>().map_err(|_| Error::InvalidCli)?;
                 }
                 "-t" | "--theme" => {
                     let val = it
@@ -140,9 +155,11 @@ impl<'a> CliArgs<'a> {
                         _ => return Err(Error::InvalidCli),
                     };
                 }
-                "--daemon" => parsed.is_daemon = true,
-                "--ping" => parsed.is_ping = true,
-                "--shutdown" => parsed.is_shutdown = true,
+                "--machine" => parsed.machine = true,
+                "--ansi" => parsed.ansi = true,
+                "--daemon" => parsed.control = Control::Daemon,
+                "--ping" => parsed.control = Control::Ping,
+                "--shutdown" => parsed.control = Control::Shutdown,
                 "--socket" => {
                     let val = it.next().ok_or(Error::InvalidCli)?;
                     parsed.socket_path = Some(Path::new(val));
@@ -156,7 +173,9 @@ impl<'a> CliArgs<'a> {
                     std::process::exit(0);
                 }
                 pos if !pos.starts_with('-') => {
-                    parsed.file_path = Some(Path::new(arg));
+                    if parsed.file_path.replace(Path::new(arg)).is_some() {
+                        return Err(Error::InvalidCli);
+                    }
                 }
                 _ => return Err(Error::InvalidCli),
             }
@@ -175,17 +194,6 @@ fn write_all(fd: BorrowedFd<'_>, mut buf: &[u8]) -> Result<(), Error> {
         }
     }
     Ok(())
-}
-
-fn init_template(target: &str) -> Option<&'static [u8]> {
-    match target {
-        "kitty" => Some(KITTY_CONF),
-        "yazi" => Some(YAZI_CONF),
-        "ii.yazi" => Some(II_YAZI),
-        "nvim" | "ii.nvim" => Some(II_NVIM),
-        "fzf" => Some(FZF),
-        _ => None,
-    }
 }
 
 fn run_doctor() -> Result<(), Error> {
@@ -293,225 +301,111 @@ fn render_file_local(
     data: &[u8],
     ext: &str,
     args: &CliArgs<'_>,
-    is_interactive: bool,
+    interactive: bool,
 ) -> Result<(), Error> {
-    let metrics = tty::resolve_metrics(args.size, args.cell_size, is_interactive);
+    let metrics = tty::resolve_metrics(args.size, args.cell_size, interactive);
     let palette = tty::resolve_theme(args.theme);
-    let kind = fmt::detect_kind(data, ext);
-    if kind == Kind::Md {
-        return render_markdown_local(data, args, metrics, palette, is_interactive);
-    }
-    let fg = palette.color(ColorToken::FG_PRIMARY);
-    let fg_rgb = [fg.r(), fg.g(), fg.b()];
-    let image_id = vram::compute_tag(
-        metrics.cell_w,
-        metrics.cell_h,
-        metrics.cols,
-        kind as u8,
-        fg_rgb,
-        data,
-    )
-    .image_id()
-    .get();
-
-    let mut scratch = RenderScratch::new();
-    let mut lz4 = Vec::new();
-    let l2_dir = cache::ensure_dirs().ok();
-    let b3 = cache::blake3_key(
-        metrics.cell_w,
-        metrics.cell_h,
-        metrics.max_width_px(),
-        kind as u8,
-        fg_rgb,
-        palette.is_dark,
-        data,
-    );
-
-    let cached = if let Some(ref dir_fd) = l2_dir
-        && let Ok(Some((w32, h32))) =
-            cache::read_blob(dir_fd.as_fd(), &b3, &mut scratch.rgba_buf, &mut lz4)
-        && let (Ok(w), Ok(h)) = (u16::try_from(w32), u16::try_from(h32))
-    {
-        let cols = w.div_ceil(metrics.cell_w.max(1)).max(1);
-        let rows = h.div_ceil(metrics.cell_h.max(1)).max(1);
-        Some((w, h, cols, rows))
-    } else {
-        None
-    };
-
-    let (w, h, cols, rows) = if let Some(hit) = cached {
-        hit
-    } else {
-        fmt::dispatch_kind(kind, data, &mut scratch.scene)?;
-        let res = raster::rasterize_scene(
-            &scratch.scene,
-            palette,
-            metrics.cell_w,
-            metrics.cell_h,
-            metrics.max_width_px(),
-            &mut scratch.rgba_buf,
-        )?;
-        if let Some(ref dir_fd) = l2_dir {
-            let _ = cache::write_blob(
-                dir_fd.as_fd(),
-                &b3,
-                u32::from(res.0),
-                u32::from(res.1),
-                &scratch.rgba_buf,
-                &mut lz4,
-            );
-        }
-        res
-    };
-
-    let params = StageParams {
-        image_id,
-        w,
-        h,
-        cols,
-        rows,
-        is_tmux: metrics.is_tmux != 0,
-    };
-    let mut seq = 0u32;
-    let pid = getpid().as_raw_nonzero().get().unsigned_abs();
-    let mut apc_buf = Vec::new();
-    if metrics.is_remote != 0
-        || kitty::stage_shm(&scratch.rgba_buf, params, &mut seq, pid, &mut apc_buf).is_err()
-    {
-        apc_buf.clear();
-        let mut b64 = Vec::new();
-        kitty::stage_base64(&scratch.rgba_buf, params, &mut apc_buf, &mut b64);
-    }
-
-    let mut text_buf = Vec::new();
-    kitty::emit_placeholder(image_id, cols, rows, &mut text_buf);
-
     let stdout = std::io::stdout();
-    let stdout_fd = stdout.as_fd();
-
-    if is_interactive {
-        write_all(stdout_fd, &apc_buf)?;
-        write_all(stdout_fd, &text_buf)?;
-    } else {
-        emit_dual_channel(stdout_fd, &apc_buf, &text_buf)?;
+    if !interactive && !args.machine {
+        let mut text = Vec::new();
+        if args.ansi {
+            style::emit_prose(data, palette, &mut style::State::default(), &mut text);
+        } else {
+            style::emit_literal(data, &mut text);
+        }
+        let mut page = Vec::new();
+        ii::viewport::append(
+            &text,
+            metrics.cols,
+            args.skip,
+            args.size.map_or(0, |(_, h)| u32::from(h)),
+            &mut page,
+        );
+        return write_all(stdout.as_fd(), &page);
     }
-    Ok(())
+    let mut scratch = compose::ComposeScratch::new();
+    let mut out = compose::ComposeOut::new();
+    let dir = cache::ensure_dirs().ok();
+    let context = compose::ComposeCtx {
+        cell_w: metrics.cell_w,
+        cell_h: metrics.cell_h,
+        cols: metrics.cols,
+        rows: metrics.rows,
+        max_w: metrics.max_width_px(),
+        palette,
+        is_tmux: metrics.is_tmux != 0,
+        is_remote: metrics.is_remote != 0 || args.machine,
+        skip_lines: args.skip,
+        max_lines: args.size.map_or(0, |(_, h)| u32::from(h)),
+    };
+    let mut seq = 0;
+    compose::render_file(
+        data,
+        fmt::detect_kind(data, ext),
+        context,
+        dir.as_ref().map(AsFd::as_fd),
+        &mut scratch,
+        &mut seq,
+        getpid().as_raw_nonzero().get().unsigned_abs(),
+        &mut out,
+    )?;
+    if args.machine {
+        emit_dual_channel(stdout.as_fd(), &out.apc, &out.ansi)
+    } else {
+        write_all(stdout.as_fd(), &out.apc)?;
+        write_all(stdout.as_fd(), &out.ansi)
+    }
 }
 
-fn render_markdown_local(
-    data: &[u8],
-    _args: &CliArgs<'_>,
-    metrics: tty::Metrics,
-    palette: &Palette,
-    is_interactive: bool,
-) -> Result<(), Error> {
-    let mut spans = Vec::with_capacity(32);
-    md::scan(data, &mut spans);
-    let mut placements = Vec::with_capacity(spans.len());
-    let mut scratch = RenderScratch::new();
-    let mut lz4 = Vec::with_capacity(256 * 1024);
-    let mut b64 = Vec::with_capacity(256 * 1024);
-    let l2_dir = cache::ensure_dirs().ok();
-    let fg = palette.color(ColorToken::FG_PRIMARY);
-    let fg_rgb = [fg.r(), fg.g(), fg.b()];
-    let mut apc = Vec::with_capacity(64 * 1024);
-    let mut seq = 0u32;
-    let pid = getpid().as_raw_nonzero().get().unsigned_abs();
-
-    for sp in spans {
-        let start = sp.inner_start as usize;
-        let end = sp.inner_end() as usize;
-        if start > end || end > data.len() {
-            continue;
-        }
-        let payload = &data[start..end];
-        let kind = sp.kind();
-        let tag = vram::compute_tag(
-            metrics.cell_w,
-            metrics.cell_h,
-            metrics.cols,
-            kind as u8,
-            fg_rgb,
-            payload,
-        );
-        let key = cache::blake3_key(
-            metrics.cell_w,
-            metrics.cell_h,
-            metrics.max_width_px(),
-            kind as u8,
-            fg_rgb,
-            palette.is_dark,
-            payload,
-        );
-        let cached = if let Some(dir) = l2_dir.as_ref()
-            && let Ok(Some((w, h))) =
-                cache::read_blob(dir.as_fd(), &key, &mut scratch.rgba_buf, &mut lz4)
-            && let (Ok(w), Ok(h)) = (u16::try_from(w), u16::try_from(h))
-        {
-            Some((w, h))
-        } else {
-            None
-        };
-        let (w, h) = if let Some(hit) = cached {
-            hit
-        } else {
-            scratch.scene.clear();
-            let result = fmt::dispatch_kind(kind, payload, &mut scratch.scene).and_then(|()| {
-                raster::rasterize_scene(
-                    &scratch.scene,
-                    palette,
-                    metrics.cell_w,
-                    metrics.cell_h,
-                    metrics.max_width_px(),
-                    &mut scratch.rgba_buf,
-                )
-            });
-            let (w, h, _, _) = result?;
-            if let Some(dir) = l2_dir.as_ref() {
-                let _ = cache::write_blob(
-                    dir.as_fd(),
-                    &key,
-                    u32::from(w),
-                    u32::from(h),
-                    &scratch.rgba_buf,
-                    &mut lz4,
-                );
-            }
-            (w, h)
-        };
-        let cols = w.div_ceil(metrics.cell_w.max(1)).max(1);
-        let rows = h.div_ceil(metrics.cell_h.max(1)).max(1);
-        let image_id = tag.image_id().get();
-        let params = StageParams {
-            image_id,
-            w,
-            h,
-            cols,
-            rows,
-            is_tmux: metrics.is_tmux != 0,
-        };
-        if metrics.is_remote != 0
-            || kitty::stage_shm(&scratch.rgba_buf, params, &mut seq, pid, &mut apc).is_err()
-        {
-            kitty::stage_base64(&scratch.rgba_buf, params, &mut apc, &mut b64);
-        }
-        placements.push(SpanCoord {
-            outer_start: sp.outer_start,
-            outer_end: sp.outer_end,
-            image_id,
-            cols,
-            rows,
-        });
+fn render_preview(path: &Path, args: &CliArgs<'_>, interactive: bool) -> Result<(), Error> {
+    let metrics = tty::resolve_metrics(args.size, args.cell_size, interactive);
+    let path = std::fs::canonicalize(path).map_err(|_| Error::Io(Errno::NOENT))?;
+    let mut payload = args.skip.to_le_bytes().to_vec();
+    payload.extend_from_slice(path.as_os_str().as_bytes());
+    let mut header = ipc::Header::new(
+        Cmd::PreviewFile,
+        u32::try_from(payload.len()).map_err(|_| Error::InvalidCli)?,
+    );
+    header.cols = metrics.cols;
+    header.rows = metrics.rows;
+    header.cell_w = metrics.cell_w;
+    header.cell_h = metrics.cell_h;
+    header.flags = ipc::FLAG_REMOTE;
+    if metrics.is_tmux != 0 {
+        header.flags |= ipc::FLAG_TMUX;
     }
-
-    let mut text = Vec::with_capacity(data.len().saturating_add(1024));
-    tty::render_ansi(data, &placements, palette, &mut text);
+    if !tty::resolve_theme(args.theme).is_dark {
+        header.flags |= ipc::FLAG_THEME_LIGHT;
+    }
+    let mut result = ipc::exchange(header, &payload, args.socket_path);
+    if matches!(result, Err(Error::Io(Errno::NOENT | Errno::CONNREFUSED))) {
+        let exe = std::env::current_exe().map_err(|_| Error::InvalidState)?;
+        let mut child = std::process::Command::new(exe);
+        child.arg("--daemon");
+        if let Some(socket) = args.socket_path {
+            child.arg("--socket").arg(socket);
+        }
+        let _ = child
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        for _ in 0..30 {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            result = ipc::exchange(header, &payload, args.socket_path);
+            if result.is_ok() {
+                break;
+            }
+        }
+    }
+    let (reply, body) = result?;
+    let (apc, text) = body.split_at(reply.flags as usize);
     let stdout = std::io::stdout();
-    if is_interactive {
-        write_all(stdout.as_fd(), &apc)?;
-        write_all(stdout.as_fd(), &text)
+    if args.machine {
+        emit_dual_channel(stdout.as_fd(), apc, text)
     } else {
-        emit_dual_channel(stdout.as_fd(), &apc, &text)
+        write_all(stdout.as_fd(), apc)?;
+        write_all(stdout.as_fd(), text)
     }
 }
 
@@ -520,19 +414,11 @@ fn run_cli() -> Result<(), Error> {
     let (stdin, stdout) = (std::io::stdin(), std::io::stdout());
     let is_interactive = isatty(&stdout);
 
-    if let Some(command) = raw_args.first().and_then(|arg| arg.to_str()) {
-        if command == "doctor" && raw_args.len() == 1 {
-            return run_doctor();
-        }
-        if command == "init" {
-            let target = raw_args
-                .get(1)
-                .and_then(|arg| arg.to_str())
-                .unwrap_or("nvim");
-            return init_template(target)
-                .ok_or(Error::InvalidCli)
-                .and_then(|template| write_all(stdout.as_fd(), template));
-        }
+    if let Some(command) = raw_args.first().and_then(|arg| arg.to_str())
+        && command == "doctor"
+        && raw_args.len() == 1
+    {
+        return run_doctor();
     }
 
     if raw_args.is_empty() {
@@ -543,10 +429,10 @@ fn run_cli() -> Result<(), Error> {
                 size: None,
                 cell_size: None,
                 skip: 0,
+                machine: false,
+                ansi: false,
                 theme: None,
-                is_daemon: false,
-                is_ping: false,
-                is_shutdown: false,
+                control: Control::Render,
                 socket_path: None,
                 file_path: None,
             };
@@ -556,17 +442,23 @@ fn run_cli() -> Result<(), Error> {
 
     let args = CliArgs::parse(&raw_args)?;
 
-    if args.is_daemon {
+    if args.control == Control::Daemon {
         return daemon::run(args.socket_path);
     }
-    if args.is_ping {
-        return write_all(stdout.as_fd(), &ipc::client_send(Cmd::Ping, &[])?);
+    if args.control == Control::Ping {
+        return write_all(
+            stdout.as_fd(),
+            &ipc::client_send_to(Cmd::Ping, &[], args.socket_path)?,
+        );
     }
-    if args.is_shutdown {
-        return ipc::client_send(Cmd::Shutdown, &[]).map(|_| ());
+    if args.control == Control::Shutdown {
+        return ipc::client_send_to(Cmd::Shutdown, &[], args.socket_path).map(|_| ());
     }
 
     if let Some(file_path) = args.file_path {
+        if args.machine || is_interactive {
+            return render_preview(file_path, &args, is_interactive);
+        }
         let ext = file_path.extension().and_then(|s| s.to_str()).unwrap_or("");
         let data = read_file_bounded(file_path)?;
         render_file_local(&data, ext, &args, is_interactive)

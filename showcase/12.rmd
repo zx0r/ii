@@ -6,7 +6,7 @@ output: html_document
 ## Species richness along elevation
 
 We model richness $y_{ij}$ at site $i$ in region $j$:
-$$ y_{ij}=\beta_0+\beta_1\,\mathrm{elev}_{ij}+\beta_2\,\mathrm{elev}_{ij}^2+u_j+\varepsilon_{ij},\quad u_j\sim\mathcal N(0,\sigma_u^2),\ \varepsilon_{ij}\sim\mathcal N(0,\sigma^2). $$
+$$ y_{ij}=\beta_0+\beta_1\,\mathrm{elev}_{ij}+\beta_2\,\mathrm{elev}_{ij}^2+u_j+\varepsilon_{ij},\quad u_j\sim\mathcal N(0,\sigma_u^2),\ \varepsilon_{ij}\sim\mathcal N(0,\sigma^2) $$
 
 ```{r}
 library(lme4)
@@ -14,12 +14,12 @@ m <- lmer(richness ~ elev + I(elev^2) + temp + (1 | region), data = df)
 summary(m)
 ```
 
-The intraclass correlation is $\mathrm{ICC}=\dfrac{\sigma_u^2}{\sigma_u^2+\sigma^2}=0.34$.
+The intraclass correlation is $\mathrm{ICC}=\dfrac{\sigma_u^2}{\sigma_u^2+\sigma^2}=0.34$
 
 ## Diversity indices
 
 Shannon: $H'=-\sum_{i=1}^S p_i\ln p_i$; Simpson: $D=1-\sum p_i^2$; Hill numbers
-$$ {}^qD=\left(\sum_{i=1}^S p_i^q\right)^{1/(1-q)}. $$
+$$ {}^qD=\left(\sum_{i=1}^S p_i^q\right)^{1/(1-q)} $$
 
 | Elevation (m) | Sites | Richness | Shannon H' | Simpson |
 |---:|---:|---:|---:|---:|

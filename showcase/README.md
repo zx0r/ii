@@ -16,8 +16,7 @@ telemetry data are synthetic demonstrations, not production measurements.
   conformance suites for the complete upstream specifications.
 - ZIP/JAR/wheel/TAR files are valid containers; compressed variants carry real
   compressed payloads. The preview shows supported metadata, not an extraction UI.
-- `queueing.typ` explicitly illustrates the current prose subset. Native Typst
-  mathematical layout remains unsupported.
+- `queueing.typ` demonstrates rendered headings, a Typst fraction and a native measurement table. No Typst code is executed.
 
 Rebuild inputs with `python3 showcase/build_stands.py` (Python standard library).
 

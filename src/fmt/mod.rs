@@ -9,9 +9,11 @@ pub mod heal;
 pub mod ipynb;
 pub mod json;
 pub mod md;
+pub mod mdx;
 pub mod mermaid;
 pub mod svg;
 pub mod tex;
+pub mod typst;
 
 use crate::{
     err::Error,
@@ -35,10 +37,14 @@ pub enum Kind {
     Chart = 10,
     Archive = 11,
     Png = 12,
+    Typst = 13,
+    Mdx = 14,
 }
 
 const EXT_MAP: &[(&[&str], Kind)] = &[
-    (&["md", "markdown", "qmd", "mdx", "rmd", "typ"], Kind::Md),
+    (&["md", "markdown", "qmd", "rmd"], Kind::Md),
+    (&["mdx"], Kind::Mdx),
+    (&["typ", "typst"], Kind::Typst),
     (&["ipynb"], Kind::Ipynb),
     (&["tex", "latex"], Kind::Tex),
     (&["chem", "mhchem"], Kind::Chem),
@@ -117,18 +123,28 @@ pub fn dispatch_with_palette(
 ) -> Result<(), Error> {
     match kind {
         Kind::Md => md::parse_with_palette(src, palette, scene),
+        Kind::Mdx => {
+            let mut presentation = Vec::new();
+            mdx::presentation_source(src, &mut presentation)?;
+            md::parse_with_palette(&presentation, palette, scene)
+        }
         Kind::Ipynb => ipynb::parse_with_palette(src, palette, scene),
         Kind::Tex => tex::parse_with_palette(src, true, false, palette, scene),
         Kind::TexInline => tex::parse_with_palette(src, false, false, palette, scene),
         Kind::Chem => tex::parse_with_palette(src, true, true, palette, scene),
         Kind::Mermaid => mermaid::parse_with_palette(src, palette, scene),
-        Kind::Dot => dot::parse_into_scene(src, scene),
+        Kind::Dot => dot::parse_with_palette(src, palette, scene),
         Kind::Svg => svg::parse_into_scene_with_palette(src, palette, scene),
         Kind::Csv => csv::parse_into_scene(src, scene),
         Kind::Tsv => csv::parse_tsv_into_scene(src, scene),
-        Kind::Chart => chart::parse_into_scene(src, scene),
+        Kind::Chart => chart::parse_with_palette(src, palette, scene),
         Kind::Archive => archive::parse_into_scene(src, scene),
         Kind::Png => Err(Error::PngDecode),
+        Kind::Typst => {
+            let mut normalized = Vec::new();
+            typst::to_markdown(src, &mut normalized)?;
+            md::parse_with_palette(&normalized, palette, scene)
+        }
     }
 }
 

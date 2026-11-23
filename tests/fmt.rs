@@ -76,7 +76,7 @@ fn build_synthetic_tar(entry_name: &[u8], body: &[u8]) -> Vec<u8> {
 #[test]
 fn fmt_mod_detection_and_formatters() {
     assert_eq!(fmt::detect_kind(b"", "qmd"), Kind::Md);
-    assert_eq!(fmt::detect_kind(b"", "TYP"), Kind::Md);
+    assert_eq!(fmt::detect_kind(b"", "TYP"), Kind::Typst);
     assert_eq!(fmt::detect_kind(b"", "ipynb"), Kind::Ipynb);
     assert_eq!(fmt::detect_kind(b"", "latex"), Kind::Tex);
     assert_eq!(fmt::detect_kind(b"", "mmd"), Kind::Mermaid);
@@ -230,18 +230,22 @@ fn svg_dot_chart_and_ipynb_emit_valid_scenes() -> Result<(), Error> {
     assert!(dot_svg.ends_with(b"</svg>"));
     scene.clear();
     dot::parse_into_scene(dot_src, &mut scene)?;
-    assert_eq!(scene.rects.len(), 3);
-    assert_eq!(scene.paths.len(), 3);
+    assert_eq!(scene.svgs.len(), 1);
+    assert!(memchr::memmem::find(&scene.text_pool, b"marker-end").is_some());
+    assert_eq!(
+        memchr::memmem::find_iter(&scene.text_pool, b"marker-end=").count(),
+        3
+    );
 
     let vl = br#"{"mark":"bar","data":{"values":[{"x":1,"y":10},{"x":2,"y":25}]}}"#;
     scene.clear();
     chart::parse_into_scene(vl, &mut scene)?;
-    assert_eq!(scene.rects.len(), 3);
+    assert_eq!(scene.svgs.len(), 1);
 
     let plotly = br#"{"data":[{"type":"scatter","x":[0,1,2],"y":[3.0,5.5,2.0]}]}"#;
     scene.clear();
     chart::parse_into_scene(plotly, &mut scene)?;
-    assert_eq!(scene.paths.len(), 1);
+    assert_eq!(scene.svgs.len(), 1);
     assert_eq!(
         chart::parse_into_scene(b"{}", &mut scene),
         Err(Error::JsonNav)
@@ -384,4 +388,182 @@ fn historical_styles_use_catppuccin_markers_and_no_terminal_background() {
         assert!(!rendered.contains("**strong**") && !rendered.contains("`code`"));
         assert!(memchr::memmem::find(&out, b"\x1b[48;").is_none());
     }
+}
+
+#[test]
+fn archives_render_actual_tree_for_all_supported_compressions() -> Result<(), Error> {
+    for data in [
+        include_bytes!("../showcase/scenarios/evidence.zip").as_slice(),
+        include_bytes!("../showcase/scenarios/evidence.tar"),
+        include_bytes!("../showcase/scenarios/evidence.tgz"),
+        include_bytes!("../showcase/scenarios/evidence.tbz2"),
+        include_bytes!("../showcase/scenarios/evidence.txz"),
+        include_bytes!("../showcase/scenarios/evidence.tzst"),
+    ] {
+        let mut out = Vec::new();
+        archive::to_tree(data, &mut out)?;
+        let text = core::str::from_utf8(&out).unwrap_or("");
+        assert!(text.contains("incident"));
+        assert!(text.contains("report.md"));
+        assert!(text.contains("├──") || text.contains("└──"));
+        assert!(!text.contains("Container"));
+    }
+    assert!(archive::to_tree(b"\x1f\x8btruncated", &mut Vec::new()).is_err());
+    Ok(())
+}
+
+#[test]
+fn svg_uses_css_viewport_not_viewbox_as_display_size() {
+    assert_eq!(
+        svg::extract_svg_dimensions(br#"<svg width="200" height="100" viewBox="0 0 1000 500">"#),
+        (200.0, 100.0)
+    );
+    assert_eq!(
+        svg::extract_svg_dimensions(b"<svg width='72pt' height='36pt' viewBox='0 0 1000 500'>"),
+        (96.0, 48.0)
+    );
+    assert_eq!(
+        svg::extract_svg_dimensions(b"<svg stroke-width='2' viewBox='0 0 80 40'>"),
+        (80.0, 40.0)
+    );
+}
+
+#[test]
+fn dot_reference_presentation_preserves_labels_arrows_and_bounded_cycles() -> Result<(), Error> {
+    let mut scene = Scene::with_capacity(4, 512);
+    dot::parse_into_scene(
+        b"digraph {a [label=\"Long readable label\"]; a -> b -> c; c -> a;}",
+        &mut scene,
+    )?;
+    assert!(scene.height < 400.0, "cycle inflated the document");
+    assert!(memchr::memmem::find(&scene.text_pool, b"Long readable label").is_some());
+    assert_eq!(
+        memchr::memmem::find_iter(&scene.text_pool, b"marker-end=").count(),
+        3
+    );
+    assert_eq!(
+        memchr::memmem::find_iter(&scene.text_pool, b"<rect ").count(),
+        3
+    );
+    assert!(memchr::memmem::find(&scene.text_pool, b"text-anchor=\"middle\"").is_some());
+    Ok(())
+}
+
+#[test]
+fn typst_normalizes_headings_math_tables_and_unicode_without_execution() -> Result<(), Error> {
+    let mut normalized = Vec::new();
+    fmt::typst::to_markdown("= Study\n$ frac(alpha_1, sqrt(beta)) <= gamma $\n#table(columns: 2, [Material], [$E_g$], [Кремний], [1.12])\n#import \"never-run.typ\"\n".as_bytes(),&mut normalized)?;
+    let text = core::str::from_utf8(&normalized).map_err(|_| Error::InvalidState)?;
+    assert!(text.starts_with("# Study\n"));
+    assert!(text.contains(r"\frac{\alpha _1}{\sqrt{\beta }}"));
+    assert!(text.contains("|Кремний|1.12|"));
+    assert!(text.contains("|Material|E_g|"));
+    assert!(text.contains("#import \"never-run.typ\""));
+    let mut scene = Scene::with_capacity(4, 512);
+    md::parse_into_scene(&normalized, &mut scene)?;
+    assert_ne!(scene.svgs, []);
+    Ok(())
+}
+
+#[test]
+fn chart_reference_styles_preserve_titles_axes_and_independent_traces() -> Result<(), Error> {
+    let mut scene = Scene::with_capacity(4, 4096);
+    chart::parse_with_palette(br#"{"layout":{"title":{"text":"Latency"},"xaxis":{"title":"Time"},"yaxis":{"title":"ms"}},"data":[{"name":"A","x":[0,1],"y":[2,3]},{"name":"B","type":"scatter","mode":"markers","x":[10,20],"y":[5,8]}]}"#,&LIGHT,&mut scene)?;
+    let svg = core::str::from_utf8(&scene.text_pool).map_err(|_| Error::SvgParse)?;
+    for label in [
+        "Latency",
+        "Time",
+        "ms",
+        ">A<",
+        ">B<",
+        "<polyline",
+        "<circle",
+        "536.0",
+    ] {
+        assert!(svg.contains(label), "missing chart element: {label}");
+    }
+    assert!(svg.contains(LIGHT.hex_str(ii::theme::SemanticRole::TextPrimary)));
+    scene.clear();
+    chart::parse_into_scene(
+        br#"{"data":[{"type":"pie","labels":["East","West"],"values":[3,1]}]}"#,
+        &mut scene,
+    )?;
+    let svg = core::str::from_utf8(&scene.text_pool).map_err(|_| Error::SvgParse)?;
+    assert!(svg.contains("East (75%)") && svg.contains("West (25%)"));
+    assert!(svg.contains(" A") && svg.contains(" Z"));
+    Ok(())
+}
+
+#[test]
+fn archive_theme_roles_are_applied_without_backgrounds() -> Result<(), Error> {
+    let mut dark = Vec::new();
+    let mut light = Vec::new();
+    archive::to_tree_with_palette(
+        include_bytes!("../showcase/scenarios/evidence.zip"),
+        &DARK,
+        &mut dark,
+    )?;
+    archive::to_tree_with_palette(
+        include_bytes!("../showcase/scenarios/evidence.zip"),
+        &LIGHT,
+        &mut light,
+    )?;
+    assert_ne!(dark, light);
+    assert!(memchr::memmem::find(&dark, "󰉋 ".as_bytes()).is_some());
+    assert!(memchr::memmem::find(&dark, "󰈙 ".as_bytes()).is_some());
+    assert!(memchr::memmem::find(&dark, b"48;").is_none());
+    Ok(())
+}
+
+#[test]
+fn typst_showcase_math_uses_glyphs_for_each_expression() -> Result<(), Error> {
+    let mut normalized = Vec::new();
+    fmt::typst::to_markdown(include_bytes!("../showcase/14.typ"), &mut normalized)?;
+    let mut spans = Vec::new();
+    md::scan(&normalized, &mut spans);
+    let mut failed = Vec::new();
+    for span in spans {
+        if matches!(span.kind(), Kind::Tex | Kind::TexInline) {
+            let expr = &normalized[span.inner_start as usize..span.inner_end() as usize];
+            let mut svg = Vec::new();
+            if fmt::tex::compile_latex(expr, true, &DARK, &mut svg).is_err() {
+                failed.push(String::from_utf8_lossy(expr).into_owned());
+            }
+        }
+    }
+    assert_eq!(failed, Vec::<String>::new());
+    Ok(())
+}
+
+#[test]
+fn actual_vega_stand_has_plotted_curve_and_nonzero_axis_range() -> Result<(), Error> {
+    let mut scene = Scene::with_capacity(4, 8192);
+    chart::parse_into_scene(
+        include_bytes!("../showcase/scenarios/latency.vl"),
+        &mut scene,
+    )?;
+    let svg = core::str::from_utf8(&scene.text_pool).map_err(|_| Error::SvgParse)?;
+    assert!(svg.contains("<polyline"));
+    assert!(
+        svg.contains(">200<"),
+        "chart silently collapsed its y domain: {svg}"
+    );
+    assert!(svg.contains("536.0"));
+    Ok(())
+}
+
+#[test]
+fn vega_color_encoding_keeps_independent_sir_compartments() -> Result<(), Error> {
+    let mut scene = Scene::with_capacity(4, 32768);
+    chart::parse_into_scene(include_bytes!("../showcase/18.vl"), &mut scene)?;
+    let svg = core::str::from_utf8(&scene.text_pool).map_err(|_| Error::SvgParse)?;
+    assert_eq!(
+        svg.matches("<polyline").count(),
+        3,
+        "categories were incorrectly joined into a zigzag"
+    );
+    for name in ["Susceptible", "Infectious", "Recovered"] {
+        assert!(svg.contains(name));
+    }
+    Ok(())
 }

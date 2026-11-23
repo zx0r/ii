@@ -168,6 +168,7 @@ fn bench_full_pipeline_warm(c: &mut Criterion) {
         is_remote: true,
         skip_lines: 0,
         max_lines: 24,
+        explicit_graphics: false,
     };
     let mut seq = 0;
     assert!(

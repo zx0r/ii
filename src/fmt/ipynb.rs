@@ -124,9 +124,23 @@ pub fn parse_with_palette(
 /// # Errors
 /// Returns `JsonNav` when the notebook has no cells array or invalid string payloads.
 pub fn to_markdown(src: &[u8], out: &mut Vec<u8>) -> Result<(), Error> {
+    to_markdown_mapped(src, out, |_, _, _, _| {})
+}
+
+/// Normalize with original JSON cell ranges and normalized byte ranges.
+///
+/// # Errors
+/// Returns `JsonNav` when the notebook has no cells array.
+pub fn to_markdown_mapped(
+    src: &[u8],
+    out: &mut Vec<u8>,
+    mut cell_range: impl FnMut(usize, usize, usize, usize),
+) -> Result<(), Error> {
     let cells = json::get_field(src, b"cells").ok_or(Error::JsonNav)?;
     let mut text = Vec::new();
     for cell in json::iter_array(cells) {
+        let start = out.len();
+        let offset = cell.as_ptr().addr() - src.as_ptr().addr();
         let markdown = json::get_field(cell, b"cell_type").is_some_and(|v| v == b"\"markdown\"");
         if let Some(source) = json::get_field(cell, b"source") {
             collect_json_lines(source, &mut text);
@@ -142,6 +156,7 @@ pub fn to_markdown(src: &[u8], out: &mut Vec<u8>) -> Result<(), Error> {
                 output_markdown(output, &mut text, out);
             }
         }
+        cell_range(offset, offset + cell.len(), start, out.len());
     }
     Ok(())
 }

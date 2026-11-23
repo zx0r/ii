@@ -264,6 +264,16 @@ impl Palette {
         entry.buf.split_at(entry.len as usize).0
     }
 
+    /// SVG surfaces are transparent whenever the theme surface alpha is zero.
+    #[must_use]
+    pub const fn svg_surface_fill(&self) -> &'static str {
+        if self.color(ColorToken::SURFACE).a() == 0 {
+            "none"
+        } else {
+            self.hex_str(SemanticRole::Surface)
+        }
+    }
+
     #[inline]
     pub fn write_sgr_fg(&self, out: &mut Vec<u8>, role: SemanticRole) {
         out.extend_from_slice(self.sgr_fg(role));
@@ -271,12 +281,14 @@ impl Palette {
 }
 
 // Historical ii_old palettes (a2d84066); surfaces retain RGB identity but have zero alpha.
+const DARK_MUTED: Rgba = Rgba::from_rgba(161, 167, 194, 255);
+const LIGHT_MUTED: Rgba = Rgba::from_rgba(116, 119, 140, 255);
 #[rustfmt::skip]
 const DARK_COLORS: [Rgba; 32] = [
     Rgba::from_rgba(205, 214, 244, 255),
-    Rgba::from_rgba(161, 167, 194, 255),
+    DARK_MUTED,
     Rgba::from_rgba(30, 30, 46, 0),
-    Rgba::from_rgba(79, 81, 101, 255),
+    DARK_MUTED,
     Rgba::from_rgba(203, 166, 247, 255),
     Rgba::from_rgba(137, 180, 250, 255),
     Rgba::from_rgba(166, 227, 161, 255),
@@ -309,9 +321,9 @@ const DARK_COLORS: [Rgba; 32] = [
 #[rustfmt::skip]
 const LIGHT_COLORS: [Rgba; 32] = [
     Rgba::from_rgba(76, 79, 105, 255),
-    Rgba::from_rgba(116, 119, 140, 255),
+    LIGHT_MUTED,
     Rgba::from_rgba(239, 241, 245, 0),
-    Rgba::from_rgba(187, 190, 201, 255),
+    LIGHT_MUTED,
     Rgba::from_rgba(136, 57, 239, 255),
     Rgba::from_rgba(30, 102, 245, 255),
     Rgba::from_rgba(64, 160, 43, 255),

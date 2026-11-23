@@ -27,6 +27,8 @@ pub enum Cmd {
     RenderFile = 0x0004,
     PreviewFile = 0x0005,
     Shutdown = 0x0006,
+    RenderBuffer = 0x0007,
+    DecorateBuffer = 0x0008,
 }
 
 impl Cmd {
@@ -43,6 +45,8 @@ impl Cmd {
             0x0004 => Ok(Self::RenderFile),
             0x0005 => Ok(Self::PreviewFile),
             0x0006 => Ok(Self::Shutdown),
+            0x0007 => Ok(Self::RenderBuffer),
+            0x0008 => Ok(Self::DecorateBuffer),
             other => Err(Error::UnknownCommand(other)),
         }
     }

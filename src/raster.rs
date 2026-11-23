@@ -552,6 +552,30 @@ pub fn rasterize_scene(
     max_width_px: u16,
     rgba: &mut Vec<u8>,
 ) -> Result<(u16, u16, u16, u16), Error> {
+    rasterize_scene_scaled(
+        scene,
+        palette,
+        cell_w,
+        cell_h,
+        max_width_px,
+        (f32::from(cell_h.max(1)) / 20.0).clamp(1.0, 4.0),
+        rgba,
+    )
+}
+
+/// Rasterize with a format-specific preferred scale, still fitting both axes.
+///
+/// # Errors
+/// Propagates SVG parsing and bounded image allocation errors.
+pub fn rasterize_scene_scaled(
+    scene: &Scene,
+    palette: &Palette,
+    cell_w: u16,
+    cell_h: u16,
+    max_width_px: u16,
+    preferred_scale: f32,
+    rgba: &mut Vec<u8>,
+) -> Result<(u16, u16, u16, u16), Error> {
     let max_w = u32::from(max_width_px.max(cell_w.max(1))).min(MAX_DIM);
     #[expect(
         clippy::cast_precision_loss,
@@ -575,7 +599,13 @@ pub fn rasterize_scene(
         reason = "bounded pixel dimensions are exact in f32"
     )]
     let max_h = ((MAX_DIM / u32::from(cell_h.max(1))).min(297) * u32::from(cell_h.max(1))) as f32;
-    let scale = 1.0_f32.min(max_w_f / src_w).min(max_h / src_h);
+    if !preferred_scale.is_finite() || preferred_scale <= 0.0 {
+        return Err(Error::SvgParse);
+    }
+    let scale = preferred_scale
+        .min(4.0)
+        .min(max_w_f / src_w)
+        .min(max_h / src_h);
 
     #[expect(
         clippy::cast_possible_truncation,

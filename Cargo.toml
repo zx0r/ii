@@ -49,10 +49,21 @@ name = "render"
 path = "tests/render.rs"
 
 [dependencies]
+pulldown-cmark = { version = "0.13.4", default-features = false }
+flate2 = { version = "1.1.11", default-features = false, features = [
+  "rust_backend",
+] }
+bzip2-rs = "0.1.2"
+lzma-rust2 = { version = "0.25.0", default-features = false, features = [
+  "std",
+  "xz",
+] }
+ruzstd = "0.9.1"
 blake3 = "1.8.7"
 lz4_flex = { version = "0.14.2", default-features = false }
 memchr = "2.8.3"
 mermaid-svg = "0.7.0"
+tiny-skia = "0.12.0"
 png = { version = "0.18.1", default-features = false }
 ratex-layout = "0.1.16"
 ratex-parser = "0.1.16"
@@ -72,7 +83,6 @@ rustix = { version = "1.1.6", features = [
   "termios",
   "shm",
 ] }
-tiny-skia = "0.12.0"
 
 [dev-dependencies]
 criterion = { version = "0.8.2", default-features = false }

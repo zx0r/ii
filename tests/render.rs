@@ -11,6 +11,104 @@ use ii::{
 };
 
 #[test]
+fn showcase_math_spans_compile_without_literal_fallback() -> Result<(), Box<dyn std::error::Error>>
+{
+    let mut failures = Vec::new();
+    let mut count = 0;
+    for root in ["showcase", "showcase/scenarios"] {
+        for entry in std::fs::read_dir(root)? {
+            let path = entry?.path();
+            let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+            let Some(kind) = fmt::kind_from_ext(ext) else {
+                continue;
+            };
+            if !matches!(
+                kind,
+                fmt::Kind::Md
+                    | fmt::Kind::Mdx
+                    | fmt::Kind::Tex
+                    | fmt::Kind::Typst
+                    | fmt::Kind::Ipynb
+            ) {
+                continue;
+            }
+            let src = std::fs::read(&path)?;
+            let mut normalized = Vec::new();
+            match kind {
+                fmt::Kind::Tex => tex::document_to_markdown(&src, &mut normalized)?,
+                fmt::Kind::Typst => fmt::typst::to_markdown(&src, &mut normalized)?,
+                fmt::Kind::Ipynb => fmt::ipynb::to_markdown(&src, &mut normalized)?,
+                _ => normalized.extend_from_slice(&src),
+            }
+            let mut spans = Vec::new();
+            fmt::md::scan(&normalized, &mut spans);
+            for span in spans {
+                if !matches!(
+                    span.kind(),
+                    fmt::Kind::Tex | fmt::Kind::TexInline | fmt::Kind::Chem
+                ) {
+                    continue;
+                }
+                let payload = &normalized[span.inner_start as usize..span.inner_end() as usize];
+                let mut scene = Scene::with_capacity(8, 1024);
+                tex::parse_with_palette(
+                    payload,
+                    span.kind() != fmt::Kind::TexInline,
+                    span.kind() == fmt::Kind::Chem,
+                    &DARK,
+                    &mut scene,
+                )?;
+                count += 1;
+                if scene.svgs.is_empty() {
+                    failures.push(format!(
+                        "{}: {}",
+                        path.display(),
+                        String::from_utf8_lossy(payload)
+                    ));
+                }
+            }
+        }
+    }
+    assert!(count > 100, "math corpus unexpectedly small: {count}");
+    assert!(
+        failures.is_empty(),
+        "literal math fallbacks:\n{}",
+        failures.join("\n")
+    );
+    Ok(())
+}
+
+#[test]
+fn notebook_plotly_outputs_render_actual_bars_and_heatmap() -> Result<(), Error> {
+    let mut normalized = Vec::new();
+    fmt::ipynb::to_markdown(include_bytes!("../showcase/03.ipynb"), &mut normalized)?;
+    let mut spans = Vec::new();
+    fmt::md::scan(&normalized, &mut spans);
+    let mut plotly = 0;
+    for span in spans {
+        let payload = &normalized[span.inner_start as usize..span.inner_end() as usize];
+        if span.kind() != fmt::Kind::Chart || !payload.windows(8).any(|w| w == b"\"layout\"") {
+            continue;
+        }
+        for palette in [&DARK, &ii::theme::LIGHT] {
+            let mut scene = Scene::with_capacity(8, 4096);
+            fmt::dispatch_with_palette(span.kind(), payload, palette, &mut scene)?;
+            assert_eq!(scene.svgs.len(), 1);
+            let svg = core::str::from_utf8(scene.svg_bytes(&scene.svgs[0])).unwrap();
+            assert!(svg.contains("fill=\"none\""));
+            if payload.windows(7).any(|w| w == b"heatmap") {
+                assert_eq!(svg.matches("class=\"heatmap-cell\"").count(), 36);
+                assert!(svg.contains("0.82"));
+                assert!(svg.contains("The"));
+            }
+        }
+        plotly += 1;
+    }
+    assert_eq!(plotly, 2);
+    Ok(())
+}
+
+#[test]
 fn latex_and_mhchem_compile_to_valid_svg() -> Result<(), Error> {
     let mut out_svg = Vec::new();
     tex::compile_latex(b"$$E = mc^2$$", true, &DARK, &mut out_svg)?;
@@ -69,7 +167,16 @@ fn showcase_corpus_dispatches_and_rasterizes_without_panic()
             continue;
         }
         let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+        let Some(kind) = fmt::kind_from_ext(ext) else {
+            continue;
+        };
         let data = std::fs::read(&path)?;
+        if kind == fmt::Kind::Png {
+            let (w, h) = raster::decode_png(&data, &mut rgba)?;
+            assert_eq!(rgba.len(), usize::try_from(w)? * usize::try_from(h)? * 4);
+            count += 1;
+            continue;
+        }
         scene.clear();
         let res = fmt::dispatch_into_scene(&data, ext, &mut scene);
         assert!(
@@ -184,6 +291,102 @@ fn generated_format_canvases_remain_transparent_in_both_themes() -> Result<(), E
                 rgba.as_chunks::<4>().0.iter().any(|p| p[3] > 0),
                 "empty raster: {kind:?}"
             );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn chemistry_is_compiled_to_glyphs_not_literal_fallback() -> Result<(), Error> {
+    for src in [
+        br"\ce{2H2 + O2 -> 2H2O}".as_slice(),
+        br"\ce{NH3 + H2O <=> NH4^+ + OH^-}",
+        br"\ce{2 H2 (g) + O2 (g) <=>[\Delta][\text{Pt}] 2 H2O (l)} + \ce{CuSO4.5H2O} + \ce{^14_6C}",
+    ] {
+        let mut scene = Scene::with_capacity(4, 4096);
+        fmt::dispatch_with_palette(fmt::Kind::Chem, src, &DARK, &mut scene)?;
+        assert!(
+            !scene.svgs.is_empty(),
+            "chemistry fell back to source: {}",
+            String::from_utf8_lossy(src)
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn vector_scale_matches_reference_dpi_and_fits_narrow_viewports() -> Result<(), Error> {
+    let mut scene = Scene::with_capacity(4, 256);
+    fmt::dispatch_kind(fmt::Kind::Svg, br#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="60"><path d="M5 5L95 55" stroke="red"/></svg>"#,&mut scene)?;
+    let mut rgba = Vec::new();
+    let (normal, _, _, _) = raster::rasterize_scene(&scene, &DARK, 9, 18, 720, &mut rgba)?;
+    let (retina, h, cols, rows) = raster::rasterize_scene(&scene, &DARK, 18, 36, 1440, &mut rgba)?;
+    assert!(f32::from(retina) >= f32::from(normal) * 1.6);
+    assert_eq!(
+        u32::from(retina) * u32::from(h) * 4,
+        u32::try_from(rgba.len()).map_err(|_| Error::ResourceLimit)?
+    );
+    assert!(cols <= 12 && rows <= 4);
+    let (narrow, _, _, _) = raster::rasterize_scene(&scene, &DARK, 18, 36, 90, &mut rgba)?;
+    assert!(narrow <= 90);
+    Ok(())
+}
+
+#[test]
+fn simple_inline_math_fits_one_terminal_row() -> Result<(), Error> {
+    use ii::compose::{ComposeCtx, ComposeOut, ComposeScratch, compose_document};
+    let mut scratch = ComposeScratch::new();
+    let mut out = ComposeOut::new();
+    for (cell_w, cell_h) in [(4, 8), (9, 18), (18, 36)] {
+        compose_document(
+            br"Before $\lambda$ after",
+            ComposeCtx {
+                cell_w,
+                cell_h,
+                cols: 40,
+                rows: 12,
+                max_w: 40 * cell_w,
+                palette: &DARK,
+                is_tmux: false,
+                is_remote: true,
+                skip_lines: 0,
+                max_lines: 0,
+                explicit_graphics: false,
+            },
+            None,
+            &mut scratch,
+            &mut 0,
+            1,
+            &mut out,
+        )?;
+        assert_eq!(out.extmarks.len(), 1);
+        assert_eq!(
+            out.extmarks[0].rows, 1,
+            "inline glyph at cell height {cell_h}"
+        );
+        assert_eq!(
+            memchr::memchr(b'\n', &out.ansi),
+            None,
+            "formula split the prose"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn diagram_surfaces_follow_transparent_theme_including_quadrants() -> Result<(), Error> {
+    for source in [
+        b"sequenceDiagram\nparticipant A\nparticipant B\nNote over A,B: Context\nA->>B: Request\nactivate B\nB-->>A: Response\ndeactivate B\n".as_slice(),
+        b"quadrantChart\nx-axis Low --> High\ny-axis Low --> High\nquadrant-1 Q1\nquadrant-2 Q2\nquadrant-3 Q3\nquadrant-4 Q4\nA: [0.7, 0.7]\n",
+    ] {
+        for palette in [&DARK,&ii::theme::LIGHT] {
+            assert_eq!(palette.svg_surface_fill(),"none");
+            let mut scene=Scene::with_capacity(8,4096);
+            mermaid::parse_with_palette(source,palette,&mut scene)?;
+            let mut rgba=Vec::new();
+            raster::rasterize_scene(&scene,palette,9,18,720,&mut rgba)?;
+            let clear=rgba.as_chunks::<4>().0.iter().filter(|p|p[3]==0).count();
+            assert!(clear>rgba.len()/4*3/4,"opaque diagram surface");
         }
     }
     Ok(())

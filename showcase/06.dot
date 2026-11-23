@@ -1,5 +1,5 @@
 digraph GRN {
-  rankdir=LR;
+  rankdir=TB;
   node [shape=box];
   TP53;
   MDM2;

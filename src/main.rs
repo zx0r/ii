@@ -337,6 +337,7 @@ fn render_file_local(
         is_remote: metrics.is_remote != 0 || args.machine,
         skip_lines: args.skip,
         max_lines: args.size.map_or(0, |(_, h)| u32::from(h)),
+        explicit_graphics: false,
     };
     let mut seq = 0;
     compose::render_file(

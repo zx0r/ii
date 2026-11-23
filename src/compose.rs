@@ -21,9 +21,18 @@ pub struct ComposeCtx<'a> {
     pub is_remote: bool,
     pub skip_lines: u32,
     pub max_lines: u32,
+    pub explicit_graphics: bool,
 }
 
 impl<'a> ComposeCtx<'a> {
+    fn emit_graphic(self, id: u32, cols: u16, rows: u16, ansi: &mut Vec<u8>) {
+        if self.explicit_graphics {
+            kitty::emit_explicit_placeholder(id, cols, rows, ansi);
+        } else {
+            kitty::emit_placeholder(id, cols, rows, ansi);
+        }
+    }
+
     const fn image(self) -> image::Context<'a> {
         image::Context {
             cell_w: self.cell_w,
@@ -34,6 +43,7 @@ impl<'a> ComposeCtx<'a> {
             palette: self.palette,
             is_tmux: self.is_tmux,
             is_remote: self.is_remote,
+            fit_viewport: false,
         }
     }
 }
@@ -60,6 +70,7 @@ impl ComposeScratch {
 #[derive(Debug, Default)]
 pub struct ComposeOut {
     pub uploads: Vec<Upload>,
+    pub blocks: Vec<(usize, usize, usize, usize)>,
     pub apc: Vec<u8>,
     pub ansi: Vec<u8>,
     pub extmarks: Vec<Extmark>,
@@ -78,6 +89,7 @@ impl ComposeOut {
     }
     pub fn clear(&mut self) {
         self.uploads.clear();
+        self.blocks.clear();
         self.apc.clear();
         self.ansi.clear();
         self.extmarks.clear();
@@ -110,33 +122,77 @@ pub fn render_file(
 ) -> Result<(), Error> {
     out.clear();
     let mut normalized = Vec::new();
+    if kind == Kind::Mdx {
+        crate::fmt::mdx::presentation_source(src, &mut normalized)?;
+        return compose_document(&normalized, ctx, dir, scratch, seq, pid, out);
+    }
+    if kind == Kind::Archive {
+        crate::fmt::archive::to_tree_with_palette(src, ctx.palette, &mut out.ansi)?;
+        paginate(out, ctx);
+        return Ok(());
+    }
     if matches!(kind, Kind::Csv | Kind::Tsv) {
         crate::fmt::csv::to_markdown(
             src,
             if kind == Kind::Tsv { b'\t' } else { b',' },
             &mut normalized,
         )?;
+        let mut state = style::State::with_width(ctx.cols);
+        state.full_width_tables = true;
+        style::emit_prose(&normalized, ctx.palette, &mut state, &mut out.ansi);
+        paginate(out, ctx);
+        return Ok(());
+    }
+    if kind == Kind::Typst {
+        crate::fmt::typst::to_markdown(src, &mut normalized)?;
         return compose_document(&normalized, ctx, dir, scratch, seq, pid, out);
     }
     if kind == Kind::Ipynb {
-        crate::fmt::ipynb::to_markdown(src, &mut normalized)?;
-        return compose_document(&normalized, ctx, dir, scratch, seq, pid, out);
+        let mut cells = Vec::new();
+        crate::fmt::ipynb::to_markdown_mapped(src, &mut normalized, |a, b, c, d| {
+            cells.push((a, b, c, d));
+        })?;
+        compose_document(&normalized, ctx, dir, scratch, seq, pid, out)?;
+        let normalized_blocks = core::mem::take(&mut out.blocks);
+        let mut source_cursor = 0;
+        for (index, &(_, _, start_md, end_md)) in cells.iter().enumerate() {
+            let first = normalized_blocks.partition_point(|&(_, b, _, _)| b <= start_md);
+            let last = normalized_blocks.partition_point(|&(a, _, _, _)| a < end_md);
+            let source_end = if index + 1 == cells.len() {
+                src.len()
+            } else {
+                let next = cells[index + 1].0;
+                memchr::memrchr(b'\n', &src[..next]).map_or(next, |i| i + 1)
+            };
+            if first < last {
+                out.blocks.push((
+                    source_cursor,
+                    source_end,
+                    normalized_blocks[first].2,
+                    normalized_blocks[last - 1].3,
+                ));
+            } else {
+                let at = normalized_blocks.get(first).map_or(out.ansi.len(), |b| b.2);
+                out.blocks.push((source_cursor, source_end, at, at));
+            }
+            source_cursor = source_end;
+        }
+        return Ok(());
     }
     if kind == Kind::Tex && src.windows(14).any(|s| s == b"\\documentclass") {
-        let text = String::from_utf8_lossy(src)
-            .replace("\\[", "$$")
-            .replace("\\]", "$$")
-            .replace("\\(", "$")
-            .replace("\\)", "$");
-        return compose_document(text.as_bytes(), ctx, dir, scratch, seq, pid, out);
+        crate::fmt::tex::document_to_markdown(src, &mut normalized)?;
+        return compose_document(&normalized, ctx, dir, scratch, seq, pid, out);
     }
     if kind == Kind::Md {
         compose_document(src, ctx, dir, scratch, seq, pid, out)?;
     } else {
+        let mut image_ctx = ctx.image();
+        image_ctx.fit_viewport =
+            matches!(kind, Kind::Mermaid | Kind::Dot | Kind::Svg | Kind::Chart);
         let (_, _, cols, rows, id) = image::render(
             kind,
             src,
-            ctx.image(),
+            image_ctx,
             dir,
             &mut scratch.image,
             seq,
@@ -148,7 +204,7 @@ pub fn render_file(
             start: 0,
             end: out.apc.len(),
         });
-        kitty::emit_placeholder(id, cols, rows, &mut out.ansi);
+        ctx.emit_graphic(id, cols, rows, &mut out.ansi);
         paginate(out, ctx);
     }
     Ok(())
@@ -172,13 +228,26 @@ pub fn compose_document(
     scratch.coords.clear();
     scratch.image_ids.clear();
     let mut cursor = 0;
-    let mut state = style::State::default();
+    let mut state = style::State::with_width(ctx.cols);
+    state.prepare(src);
+    // A table owns every cell. Extracting a graphical span from its source
+    // would split the native table after the header (and can drop body rows).
+    scratch
+        .spans
+        .retain(|span| !state.overlaps_table(span.outer_start as usize, span.outer_end as usize));
     for index in 0..scratch.spans.len() {
         let span = scratch.spans[index];
         let start = span.outer_start as usize;
-        style::emit_prose(&src[cursor..start], ctx.palette, &mut state, &mut out.ansi);
+        style::emit_blocks(
+            &src[cursor..start],
+            ctx.palette,
+            &mut state,
+            &mut out.ansi,
+            |a, b, c, d| out.blocks.push((cursor + a, cursor + b, c, d)),
+        );
         let payload = &src[span.inner_start as usize..span.inner_end() as usize];
         let apc_start = out.apc.len();
+        let ansi_start = out.ansi.len();
         match image::render(
             span.kind(),
             payload,
@@ -210,7 +279,7 @@ pub fn compose_document(
                 if !inline && !out.ansi.is_empty() && !out.ansi.ends_with(b"\n") {
                     out.ansi.push(b'\n');
                 }
-                kitty::emit_placeholder(id, cols, rows, &mut out.ansi);
+                ctx.emit_graphic(id, cols, rows, &mut out.ansi);
                 if inline {
                     out.ansi.pop();
                 }
@@ -222,6 +291,8 @@ pub fn compose_document(
                 &mut out.ansi,
             ),
         }
+        out.blocks
+            .push((start, span.outer_end as usize, ansi_start, out.ansi.len()));
         cursor = span.outer_end as usize;
         if span.kind() != Kind::TexInline
             && src.get(cursor.wrapping_sub(1)) != Some(&b'\n')
@@ -231,7 +302,13 @@ pub fn compose_document(
             cursor += 1;
         }
     }
-    style::emit_prose(&src[cursor..], ctx.palette, &mut state, &mut out.ansi);
+    style::emit_blocks(
+        &src[cursor..],
+        ctx.palette,
+        &mut state,
+        &mut out.ansi,
+        |a, b, c, d| out.blocks.push((cursor + a, cursor + b, c, d)),
+    );
     ipc::compose_extmarks(src, &scratch.coords, &mut scratch.lines, &mut out.extmarks);
     paginate(out, ctx);
     Ok(())
@@ -265,6 +342,9 @@ pub fn crop_lines(bytes: &mut Vec<u8>, skip: u32, max: u32) {
 }
 
 fn paginate(out: &mut ComposeOut, ctx: ComposeCtx<'_>) {
+    if ctx.skip_lines == 0 && ctx.max_lines == 0 {
+        return;
+    }
     let full = core::mem::take(&mut out.ansi);
     crate::viewport::append(
         &full,

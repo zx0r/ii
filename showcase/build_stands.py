@@ -60,10 +60,10 @@ The final observation is LATEX-END.
     for ext in ["tex", "latex"]:
         write("queueing." + ext, latex)
     write("queueing.typ", "= Queue saturation experiment\n\n"
-          "This file demonstrates the supported heading and prose subset of Typst.\n"
-          "The following native Typst mathematics is retained for inspection.\n"
-          "$ L = rho / (1 - rho) $\n\n== Measured observations\n"
-          "At 75% utilisation, average queue depth was three requests.\nTYPST-END\n")
+          "Typst headings, native mathematics and measurement tables share the document renderer.\n"
+          "The following equation is compiled from Typst mathematical notation.\n"
+          "$ L = frac(rho, 1 - rho) $\n\n== Measured observations\n"
+          "At 75% utilisation, average queue depth was three requests.\n#table(columns: 3, [Utilisation], [Queue depth], [Status], [50%], [1], [healthy], [75%], [3], [watch], [90%], [9], [saturated])\n\nTYPST-END\n")
     mermaid = """flowchart TD
     Receive[Receive checkout] --> Validate[Validate request]
     Validate --> Reserve[Reserve inventory]
@@ -75,7 +75,7 @@ The final observation is LATEX-END.
 """
     for ext in ["mmd", "mermaid"]:
         write("checkout." + ext, mermaid)
-    dot = 'digraph rollout {\nrankdir=LR;\n'
+    dot = 'digraph rollout {\nrankdir=TB;\n'
     dot += '\n'.join(f'  n{i} [label="{label}"];' for i, label in enumerate(
         ["Build", "Integration", "Canary", "Observe", "Production", "Rollback"]))
     dot += '\n n0 -> n1; n1 -> n2; n2 -> n3; n3 -> n4; n3 -> n5; n5 -> n1;\n}\n'

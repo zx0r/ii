@@ -194,6 +194,33 @@ fn daemon_lifecycle_lock_ping_render_bad_magic_and_shutdown()
     assert!(edited.windows(4).any(|w| w == b"chan"));
     assert!(memchr::memchr_iter(b'\n', &edited).count() <= 4);
 
+    // Unsaved data-science buffers must route by declared format, not Markdown.
+    let plotly = b"plotly\0{\"data\":[{\"x\":[0,1],\"y\":[2,3]}]}";
+    let mut h = Header::new(Cmd::RenderBuffer, u32::try_from(plotly.len())?);
+    h.flags = ii::ipc::FLAG_REMOTE;
+    let (reply, body) = ii::ipc::exchange(h, plotly, Some(&sock))?;
+    assert!(reply.flags > 0);
+    assert!(memchr::memmem::find(&body[reply.flags as usize..], "\u{10eeee}".as_bytes()).is_some());
+    assert!(ii::ipc::exchange(Header::new(Cmd::RenderBuffer, 3), b"bad", Some(&sock)).is_err());
+
+    // Source rows remain stable when one table expands into several visual rows.
+    let source = b"md\0intro\n| A | B |\n|---|---|\n| 1 | 2 |\ntail";
+    let h = Header::new(Cmd::DecorateBuffer, u32::try_from(source.len())?);
+    let (reply, body) = ii::ipc::exchange(h, source, Some(&sock))?;
+    let mut pos = reply.flags as usize;
+    let mut ranges = Vec::new();
+    while pos < body.len() {
+        let first = u32::from_le_bytes(body[pos..pos + 4].try_into()?);
+        let last = u32::from_le_bytes(body[pos + 4..pos + 8].try_into()?);
+        let size = u32::from_le_bytes(body[pos + 8..pos + 12].try_into()?) as usize;
+        ranges.push((first, last));
+        pos += 12 + size;
+        assert!(pos <= body.len());
+    }
+    assert_eq!(ranges, [(0, 1), (1, 4), (4, 5)]);
+
+    assert_notebook_cell_anchors(&sock)?;
+
     // Corrupt magic frame must yield `ERR_FLAG` without crashing the reactor.
     let mut bad_hdr = Header::new(Cmd::Ping, 0);
     bad_hdr.magic = 0xDEAD_BEEF;
@@ -212,5 +239,32 @@ fn daemon_lifecycle_lock_ping_render_bad_magic_and_shutdown()
     let status = daemon.0.wait()?;
     assert!(status.success());
     assert!(!sock.exists(), "socket leaked after graceful shutdown");
+    Ok(())
+}
+
+fn assert_notebook_cell_anchors(sock: &Path) -> Result<(), Box<dyn core::error::Error>> {
+    // Notebook cells keep independent source anchors, rather than one giant
+    // virtual block attached to the first JSON row.
+    let notebook = include_bytes!("../showcase/scenarios/analysis.ipynb");
+    let mut payload = b"ipynb\0".to_vec();
+    payload.extend_from_slice(notebook);
+    let mut header = Header::new(Cmd::DecorateBuffer, u32::try_from(payload.len())?);
+    header.flags = ii::ipc::FLAG_REMOTE;
+    let (reply, body) = ii::ipc::exchange(header, &payload, Some(sock))?;
+    let mut offset = reply.flags as usize;
+    let mut count = 0;
+    let mut previous_end = 0;
+    while offset < body.len() {
+        let first = u32::from_le_bytes(body[offset..offset + 4].try_into()?);
+        let last = u32::from_le_bytes(body[offset + 4..offset + 8].try_into()?);
+        let len = u32::from_le_bytes(body[offset + 8..offset + 12].try_into()?) as usize;
+        assert!(last > first && first >= previous_end);
+        previous_end = last;
+        count += 1;
+        offset += 12 + len;
+    }
+    assert_eq!(offset, body.len());
+    assert_eq!(count, 32, "notebook cells collapsed into one cursor anchor");
+
     Ok(())
 }

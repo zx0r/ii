@@ -5,6 +5,7 @@ No mock renderer and no third-party Python packages. Run from any directory.
 import argparse
 import base64
 import json
+import os
 import re
 import socket
 import statistics
@@ -90,7 +91,8 @@ def main():
     results = []
     with tempfile.TemporaryDirectory(prefix="ii-verify-") as tmp:
         address = str(Path(tmp) / "ii.sock")
-        daemon = subprocess.Popen([str(args.binary.resolve()), "--daemon", "--socket", address], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        run_env=dict(os.environ,XDG_CACHE_HOME=str(Path(tmp)/'cache'))
+        daemon = subprocess.Popen([str(args.binary.resolve()), "--daemon", "--socket", address], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=run_env)
         try:
             for _ in range(200):
                 if Path(address).exists(): break
@@ -118,7 +120,7 @@ def main():
                     graphics, text = exchange(address, path, cols=cols, light=light)
                     pixels(graphics)
                     assert text and ANSI.sub(b"", text).count(b"\n") <= 12
-                cli = subprocess.run([str(args.binary.resolve()), "--socket", address, "--machine", "--size", "80x12", "--cell-size", "9x18", "--theme", "dark", "--", str(path)], capture_output=True, check=True)
+                cli = subprocess.run([str(args.binary.resolve()), "--socket", address, "--machine", "--size", "80x12", "--cell-size", "9x18", "--theme", "dark", "--", str(path)], capture_output=True, check=True, env=run_env)
                 n = struct.unpack("<I", cli.stdout[:4])[0]
                 assert (cli.stdout[4:4+n], cli.stdout[4+n:]) == top, (path, "CLI/daemon mismatch")
                 results.append(dict(file=str(path.relative_to(ROOT / "showcase")), cold_ms=round(cold_ms,3), warm_median_ms=round(statistics.median(samples),3), apc_bytes=len(top[0]), text_bytes=len(top[1]), decoded_images=image_count))

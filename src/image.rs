@@ -21,6 +21,42 @@ pub struct Context<'a> {
     pub palette: &'a Palette,
     pub is_tmux: bool,
     pub is_remote: bool,
+    pub fit_viewport: bool,
+}
+
+impl Context<'_> {
+    fn cache_key(self, kind: Kind, payload: &[u8]) -> [u8; 32] {
+        let fg = self.palette.color(ColorToken::FG_PRIMARY);
+        let fg_rgb = [fg.r(), fg.g(), fg.b()];
+        let key = cache::blake3_key(
+            self.cell_w,
+            self.cell_h,
+            self.max_w,
+            kind as u8,
+            fg_rgb,
+            self.palette.is_dark,
+            payload,
+        );
+
+        // The scene/compiler revision and complete palette invalidate persisted pixels.
+        let mut identity = blake3::Hasher::new();
+        identity.update(&key);
+        identity.update(&self.palette.theme_hash.to_le_bytes());
+        identity.update(b"ii-image-16-math-cell-scale");
+        identity.update(&[u8::from(self.fit_viewport)]);
+        if self.fit_viewport {
+            identity.update(&self.rows.to_le_bytes());
+        }
+        *identity.finalize().as_bytes()
+    }
+
+    fn vector_scale(self, kind: Kind) -> f32 {
+        if matches!(kind, Kind::Tex | Kind::TexInline | Kind::Chem) {
+            (f32::from(self.cell_h.max(1)) / 18.0).min(4.0)
+        } else {
+            (f32::from(self.cell_h.max(1)) / 20.0).clamp(1.0, 4.0)
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -63,24 +99,7 @@ pub fn render(
     pid: u32,
     apc_out: &mut Vec<u8>,
 ) -> Result<(u16, u16, u16, u16, u32), Error> {
-    let fg = ctx.palette.color(ColorToken::FG_PRIMARY);
-    let fg_rgb = [fg.r(), fg.g(), fg.b()];
-    let mut key = cache::blake3_key(
-        ctx.cell_w,
-        ctx.cell_h,
-        ctx.max_w,
-        kind as u8,
-        fg_rgb,
-        ctx.palette.is_dark,
-        payload,
-    );
-
-    // The scene/compiler revision and complete palette invalidate persisted pixels.
-    let mut identity = blake3::Hasher::new();
-    identity.update(&key);
-    identity.update(&ctx.palette.theme_hash.to_le_bytes());
-    identity.update(b"ii-image-8-transparent");
-    key = *identity.finalize().as_bytes();
+    let key = ctx.cache_key(kind, payload);
 
     let mut raw_tag = [0; 8];
     raw_tag.copy_from_slice(&key[..8]);
@@ -139,12 +158,24 @@ pub fn render(
             )?
         } else {
             fmt::dispatch_with_palette(kind, payload, ctx.palette, &mut scratch.render.scene)?;
-            let (w, h, _, _) = raster::rasterize_scene(
+            let mut preferred_scale = if ctx.fit_viewport {
+                4.0
+            } else {
+                ctx.vector_scale(kind)
+            };
+            if ctx.fit_viewport && scratch.render.scene.height > 0.0 {
+                preferred_scale = preferred_scale.min(
+                    f32::from(ctx.rows.max(1)) * f32::from(ctx.cell_h.max(1))
+                        / scratch.render.scene.height,
+                );
+            }
+            let (w, h, _, _) = raster::rasterize_scene_scaled(
                 &scratch.render.scene,
                 ctx.palette,
                 ctx.cell_w,
                 ctx.cell_h,
                 ctx.max_w,
+                preferred_scale,
                 &mut scratch.render.rgba_buf,
             )?;
             (w, h)

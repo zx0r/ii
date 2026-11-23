@@ -50,7 +50,11 @@ fn compile_expr(
     let opts = ratex_layout::LayoutOptions::default().with_style(style);
     let lbox = ratex_layout::layout(&nodes, &opts);
     let display_list = ratex_layout::to_display_list(&lbox);
+    // Canonical 18px terminal cell; image::Context scales this with actual DPI.
+    // ratex's 40pt/10pt defaults turn an inline glyph into a four-row poster.
     let svg_opts = ratex_svg::SvgOptions {
+        font_size: if display { 12.24 } else { 11.7 },
+        padding: 1.2,
         embed_glyphs: true,
         ..ratex_svg::SvgOptions::default()
     };
@@ -210,5 +214,53 @@ pub fn parse_with_palette(
     scene: &mut Scene,
 ) -> Result<(), Error> {
     stage_or_fallback(src, display, chem, palette, scene);
+    Ok(())
+}
+
+/// Normalize non-executing document wrappers and section headings for prose composition.
+///
+/// # Errors
+/// Rejects invalid UTF-8.
+pub fn document_to_markdown(src: &[u8], out: &mut Vec<u8>) -> Result<(), Error> {
+    let text = core::str::from_utf8(src).map_err(|_| Error::LatexCompile)?;
+    for line in text.lines() {
+        let clean = line.trim();
+        if [
+            "\\documentclass",
+            "\\usepackage",
+            "\\begin{document}",
+            "\\end{document}",
+        ]
+        .iter()
+        .any(|prefix| clean.starts_with(prefix))
+        {
+            continue;
+        }
+        let heading = [
+            ("\\section{", b"# ".as_slice()),
+            ("\\subsection{", b"## ".as_slice()),
+            ("\\subsubsection{", b"### ".as_slice()),
+        ]
+        .into_iter()
+        .find_map(|(tag, marker)| {
+            clean
+                .strip_prefix(tag)
+                .and_then(|s| s.strip_suffix('}'))
+                .map(|body| (marker, body))
+        });
+        if let Some((marker, body)) = heading {
+            out.extend_from_slice(marker);
+            out.extend_from_slice(body.as_bytes());
+        } else {
+            out.extend_from_slice(
+                line.replace("\\[", "$$")
+                    .replace("\\]", "$$")
+                    .replace("\\(", "$")
+                    .replace("\\)", "$")
+                    .as_bytes(),
+            );
+        }
+        out.push(b'\n');
+    }
     Ok(())
 }

@@ -1,5 +1,5 @@
 digraph rollout {
-rankdir=LR;
+rankdir=TB;
   n0 [label="Build"];
   n1 [label="Integration"];
   n2 [label="Canary"];

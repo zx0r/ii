@@ -72,18 +72,18 @@ ii --machine --size 80x24 --cell-size 9x18 -- showcase/01.md > /tmp/ii-frame.bin
 |---|---|---|
 | `.md`, `.markdown` | Нативный текст, заголовки, задачи, callouts, таблицы, code fences; графические spans | Поддерживаемый Markdown-поднабор, не браузер |
 | `.mdx`, `.qmd`, `.rmd` | Текстовый путь и распознаваемые графические/математические блоки | JavaScript, R, Quarto/Pandoc-процессинг не исполняются |
-| `.typ` | Текстовый поднабор, заголовки и распознаваемая математика | Не полноценный компилятор Typst |
-| `.tex`, `.latex` | Математика ratex; у документов нормализуются скобочные math delimiters | Не TeX distribution: нет полного article/layout/packages/bibliography |
+| `.typ`, `.typst` | Заголовки, таблицы и математическая нотация Typst через общий TeX-компилятор | Не полноценный компилятор Typst |
+| `.tex`, `.latex` | Математика ratex; нормализация preamble, section headings и math delimiters | Не TeX distribution: нет полного article/layout/packages/bibliography |
 | `.chem`, `.mhchem` | Химические выражения через mhchem в ratex | В пределах реализации библиотеки |
 | `.mmd`, `.mermaid` | Mermaid → SVG → RGBA с прозрачной темой | В пределах mermaid-svg, не произвольный Mermaid JS runtime |
 | `.dot`, `.gv` | Встроенный разбор и раскладка графа | Поднабор DOT; системный Graphviz не вызывается |
 | `.svg` | SVG через resvg, настоящие текстовые глифы и тематизация | В пределах resvg; ресурсные ограничения действуют |
 | `.png` | Декодирование, масштабирование и прозрачное дополнение до ячеек | Собственные непрозрачные пиксели изображения сохраняются |
-| `.csv`, `.tsv` | Нативные таблицы полного документа; экранирование, пустые поля, quoted newline | Векторный parser имеет собственный ограниченный Scene-путь |
-| `.vl`, `.vega-lite`, `.plotly` | Встроенные числовые графики из JSON | Частичные спецификации; не полный Vega/Plotly runtime |
+| `.csv`, `.tsv` | Нативные полноширинные таблицы; экранирование, пустые поля, quoted newline | Векторный parser имеет собственный ограниченный Scene-путь |
+| `.vl`, `.vega-lite`, `.plotly` | Bar, line, area, scatter, pie из inline JSON; Plotly heatmap до 64×64; заголовки, оси и до 4 рядов | Частичные спецификации; не полный Vega/Plotly runtime |
 | `.ipynb` | Markdown, код, stream/error, сохранённые MIME SVG/PNG/LaTeX/Markdown/графики | Kernel не запускается; поддерживаются выбранные MIME alternatives |
-| `.zip`, `.jar`, `.whl`, `.tar` | Инспекция доступных записей и метаданных контейнера | Не распаковщик и не редактор архива |
-| `.tgz`, `.tbz2`, `.txz`, `.tzst` | Инспекция распознаваемого сжатого контейнера | Нельзя приравнивать сведения о сжатом контейнере к полному списку вложений |
+| `.zip`, `.jar`, `.whl`, `.tar` | Нативное дерево каталогов и файлов | Просмотр без извлечения; ограниченный список записей |
+| `.tgz`, `.tbz2`, `.txz`, `.tzst` | Декодирование и дерево вложенного TAR/ZIP | До 64 MiB распакованных данных; без shell и извлечения |
 
 Kind определяется расширением и ограниченным sniffing содержимого. `.json` не
 является самостоятельным обещанием поддержки любого JSON-документа. Шрифты
@@ -155,10 +155,11 @@ require('ii').setup({
 })
 ```
 
-Команды: `IiRender`, `IiToggle`, `IiClear`. Автоматическое оформление предназначено
-для Markdown/MDX/Quarto/R Markdown, а не для всех самостоятельных форматов из таблицы.
-Окна одного буфера имеют отдельные кадры и ширину. Сейчас формулы используют
-виртуальные строки, включая inline-формулы. [Подробности](plugins/ii.nvim/README.md).
+Команды: `IiRender`, `IiToggle`, `IiClear`. Normal показывает подготовленные декорации поверх исходного буфера. Плагин не
+перехватывает клавиши и не переключает режимы: Insert/Replace открывают исходник,
+InsertLeave обновляет декорации. Скролл и движение мыши используют готовые блоки. Plotly/Vega-Lite, CSV/TSV и
+notebook направляются в свои обработчики по формату несохранённого буфера.
+Окна имеют отдельные кадры и ширину. [Подробности](plugins/ii.nvim/README.md).
 
 ### fzf и Kitty
 
@@ -244,6 +245,8 @@ IXPC v1 использует 32-байтный little-endian header. `flags` о�
 | `4 RenderFile` | Путь → полный результат файла |
 | `5 PreviewFile` | `u32 skip LE` + байты Unix-пути → viewport |
 | `6 Shutdown` | Штатное завершение |
+| `7 RenderBuffer` | `extension + NUL + unsaved bytes` → графика и ANSI |
+| `8 DecorateBuffer` | Тот же запрос → графика, затем блоки `[u32 first_row, u32 last_exclusive, u32 ansi_len, ANSI]` |
 
 Текущие ограничения: 64 MiB входного файла/IXPC payload, 32 socket clients,
 5 секунд send/receive timeout клиента, отдельный timeout редакторского запроса.
@@ -315,7 +318,7 @@ python3 showcase/checks/compare_scan.py --history ../ii_old --report /tmp/ii-sca
 следует скрывать результатом другого корпуса. Чистый текст — около 28 GiB/s.
 Скорость сканера не равна скорости рендера или терминального транспорта.
 
-45 Rust-тестов проверяют контракт, форматы, кодеки, кэш, SHM и растры; Python-стенд
+47 Rust-тестов проверяют контракт, форматы, кодеки, кэш, SHM и растры; Python-стенд
 проверяет настоящий IPC и декодирует RGBA/PNG; PTY-стенд посылает стрелки и скролл
 настоящему Yazi. Headless Neovim проверяет lifecycle и окна. Эти проверки дополняют,
 но не заменяют визуальную проверку конкретного терминала, шрифта и tmux.
@@ -349,7 +352,9 @@ python3 showcase/checks/compare_scan.py --history ../ii_old --report /tmp/ii-sca
 | Файл | Ответственность |
 |---|---|
 | `src/fmt/mod.rs` | Kind, extensions, sniffing и общий dispatch |
+| `src/fmt/mdx.rs` | Неисполняемая MDX-презентация: скрытие ESM import/export с сохранением byte offsets |
 | `src/fmt/md.rs` | Scanner графических spans и компиляция графической части Markdown |
+| `src/fmt/typst.rs` | Нормализация Typst без исполнения: заголовки, таблицы, математика |
 | `src/fmt/tex.rs` | ratex, mhchem, inline/display, глифы и ограниченный fallback |
 | `src/fmt/heal.rs` | Ограниченное восстановление незавершённых формул |
 | `src/fmt/mermaid.rs` | Прозрачная Mermaid theme и SVG adapter |

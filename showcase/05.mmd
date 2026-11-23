@@ -1,4 +1,4 @@
-flowchart LR
+flowchart TD
     RAW[(Raw FASTQ<br/>2x150bp)] --> QC[FastQC / MultiQC]
     QC --> TRIM[fastp adapter trim]
     TRIM --> ALIGN[STAR 2-pass alignment]

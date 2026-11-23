@@ -43,6 +43,8 @@ impl Span {
             10 => Kind::Chart,
             11 => Kind::Archive,
             12 => Kind::Png,
+            13 => Kind::Typst,
+            14 => Kind::Mdx,
             _ => Kind::Md,
         }
     }
@@ -75,7 +77,8 @@ fn fence_kind(info: &[u8]) -> Option<Kind> {
     if tag.eq_ignore_ascii_case("graphviz") {
         return Some(Kind::Dot);
     }
-    fmt::kind_from_ext(tag).filter(|kind| !matches!(kind, Kind::Md | Kind::Ipynb | Kind::Archive))
+    fmt::kind_from_ext(tag)
+        .filter(|kind| !matches!(kind, Kind::Md | Kind::Mdx | Kind::Ipynb | Kind::Archive))
 }
 
 #[inline]

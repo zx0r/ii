@@ -13,6 +13,7 @@ pub fn append(src: &[u8], cols: u16, skip: u32, max: u32, out: &mut Vec<u8>) {
     let mut pos = 0;
     let mut sgr = Vec::new();
     let mut started = false;
+    let mut graphic_left = 0;
     while pos < src.len() && row < end {
         if src[pos..].starts_with(b"\x1b[") {
             let tail = &src[pos + 2..];
@@ -31,6 +32,23 @@ pub fn append(src: &[u8], cols: u16, skip: u32, max: u32, out: &mut Vec<u8>) {
                 }
                 pos += seq.len();
                 continue;
+            }
+        }
+        let graphic = src[pos..].starts_with(&crate::kitty::PLACEHOLDER_UTF8);
+        if graphic && graphic_left == 0 {
+            let tail = &src[pos..];
+            let stop = memchr::memchr2(0x1b, b'\n', tail).unwrap_or(tail.len());
+            graphic_left =
+                memchr::memmem::find_iter(&tail[..stop], &crate::kitty::PLACEHOLDER_UTF8).count();
+            if col > 0 && graphic_left <= width && col + graphic_left > width {
+                if row >= u64::from(skip) {
+                    out.push(b'\n');
+                }
+                row += 1;
+                col = 0;
+                if row >= end {
+                    break;
+                }
             }
         }
         let byte = src[pos];
@@ -80,6 +98,9 @@ pub fn append(src: &[u8], cols: u16, skip: u32, max: u32, out: &mut Vec<u8>) {
             col = 0;
         } else {
             col += cells;
+        }
+        if graphic {
+            graphic_left = graphic_left.saturating_sub(1);
         }
         pos += len;
     }

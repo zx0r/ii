@@ -368,6 +368,7 @@ fn handle_preview_file(
             is_remote: true,
             skip_lines: 0,
             max_lines: 0,
+            explicit_graphics: false,
         };
         if compose::render_file(
             file_buf,
@@ -427,6 +428,7 @@ fn render_response(
         is_remote: ctx.is_remote,
         skip_lines: 0,
         max_lines: 0,
+        explicit_graphics: matches!(cmd, Cmd::DecorateBuffer | Cmd::RenderFile),
     };
     let dir = state.l2_dir.as_ref().map(AsFd::as_fd);
     if compose::render_file(
@@ -444,7 +446,47 @@ fn render_response(
         encode_error(cmd as u16, b"render failed", &mut slot.buf);
         return;
     }
-    if cmd == Cmd::ComposeExtmarks {
+    if cmd == Cmd::DecorateBuffer {
+        let out = &state.compose_out;
+        let mut blocks = Vec::<(usize, usize, Vec<u8>)>::new();
+        if matches!(kind, Kind::Md | Kind::Mdx | Kind::Ipynb) {
+            let mut cursor = 0;
+            let mut row = 0;
+            for &(a, b, c, d) in &out.blocks {
+                row += memchr::memchr_iter(b'\n', &src[cursor..a]).count();
+                let start = row;
+                let end = start
+                    + memchr::memchr_iter(b'\n', &src[a..b]).count()
+                    + usize::from(b > a && src.get(b - 1) != Some(&b'\n'));
+                if let Some(last) = blocks.last_mut().filter(|last| start < last.1) {
+                    last.1 = last.1.max(end);
+                    last.2.extend_from_slice(&out.ansi[c..d]);
+                } else {
+                    blocks.push((start, end.max(start + 1), out.ansi[c..d].to_vec()));
+                }
+                row += memchr::memchr_iter(b'\n', &src[a..b]).count();
+                cursor = b;
+            }
+        } else {
+            blocks.push((
+                0,
+                memchr::memchr_iter(b'\n', src).count() + 1,
+                out.ansi.clone(),
+            ));
+        }
+        state.text_buf.clear();
+        for (a, b, text) in blocks {
+            let mut wrapped = Vec::new();
+            crate::viewport::append(&text, ctx.cols, 0, 0, &mut wrapped);
+            for n in [a, b, wrapped.len()] {
+                state
+                    .text_buf
+                    .extend_from_slice(&u32::try_from(n).unwrap_or(u32::MAX).to_le_bytes());
+            }
+            state.text_buf.extend_from_slice(&wrapped);
+        }
+        encode_dual_response(cmd, &out.apc, &state.text_buf, &mut slot.buf);
+    } else if cmd == Cmd::ComposeExtmarks {
         encode_extmarks(&state.compose_out.extmarks, &mut state.text_buf);
         encode_dual_response(cmd, &state.compose_out.apc, &state.text_buf, &mut slot.buf);
     } else {
@@ -491,6 +533,16 @@ fn dispatch_and_respond(
         Cmd::RenderFile => handle_render_file(slot, ctx, state, file_buf),
         Cmd::PreviewFile => handle_preview_file(slot, header, state, file_buf),
         Cmd::ComposeAnsi | Cmd::ComposeExtmarks => handle_compose(slot, cmd, ctx, state),
+        Cmd::RenderBuffer | Cmd::DecorateBuffer => {
+            let src = core::mem::take(&mut slot.buf);
+            if let Some(end) = memchr::memchr(0, &src).filter(|&end| end <= 32) {
+                let ext = core::str::from_utf8(&src[..end]).unwrap_or("");
+                let bytes = &src[end + 1..];
+                render_response(slot, cmd, ctx, state, bytes, fmt::detect_kind(bytes, ext));
+            } else {
+                encode_error(cmd as u16, b"invalid format prefix", &mut slot.buf);
+            }
+        }
     }
     if slot.buf.len() >= 16 {
         slot.buf[8..12].copy_from_slice(&header.req_id_lo.to_le_bytes());

@@ -326,7 +326,7 @@ pub static DIACRITICS_UTF8: [&[u8]; 297] = [
 ];
 
 const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-const PLACEHOLDER_UTF8: [u8; 4] = [0xF4, 0x8E, 0xBB, 0xAE];
+pub(crate) const PLACEHOLDER_UTF8: [u8; 4] = [0xF4, 0x8E, 0xBB, 0xAE];
 const SHM_NAME_LEN: usize = 21;
 
 struct ShmGuard<'a> {
@@ -632,8 +632,7 @@ fn stage_encoded(rgba: &[u8], format: u32, p: StageParams, apc: &mut Vec<u8>, b6
     emit_virtual_placement(p, apc);
 }
 
-/// Emit a single row of `U+10EEEE` virtual placement grid.
-pub fn emit_placeholder_row(image_id: u32, cols: u16, row: u16, text: &mut Vec<u8>) {
+fn placeholder_row<const EXPLICIT: bool>(image_id: u32, cols: u16, row: u16, text: &mut Vec<u8>) {
     if cols == 0 {
         return;
     }
@@ -652,25 +651,39 @@ pub fn emit_placeholder_row(image_id: u32, cols: u16, row: u16, text: &mut Vec<u
     let sgr_slice = &sgr[..=pos];
 
     let max_idx = DIACRITICS_UTF8.len() - 1;
-    let first_col = DIACRITICS_UTF8[0];
-    text.reserve(sgr_slice.len() + usize::from(cols) * 4 + 10);
+    text.reserve(sgr_slice.len() + usize::from(cols) * if EXPLICIT { 12 } else { 4 } + 14);
     text.extend_from_slice(sgr_slice);
     let r_diac = DIACRITICS_UTF8[usize::from(row).min(max_idx)];
-    text.extend_from_slice(&PLACEHOLDER_UTF8);
-    text.extend_from_slice(r_diac);
-    text.extend_from_slice(first_col);
-    for _ in 1..cols {
+    if EXPLICIT {
+        for col in 0..usize::from(cols) {
+            text.extend_from_slice(&PLACEHOLDER_UTF8);
+            // Neovim may redraw only a fragment of the row.
+            if let Some(c_diac) = DIACRITICS_UTF8.get(col) {
+                text.extend_from_slice(r_diac);
+                text.extend_from_slice(c_diac);
+            }
+        }
+    } else {
         text.extend_from_slice(&PLACEHOLDER_UTF8);
+        text.extend_from_slice(r_diac);
+        text.extend_from_slice(DIACRITICS_UTF8[0]);
+        for _ in 1..cols {
+            text.extend_from_slice(&PLACEHOLDER_UTF8);
+        }
     }
     text.extend_from_slice(b"\x1b[39m\n");
 }
 
-/// Emit `U+10EEEE` virtual placement grid (explicit row+col0 diacritic, auto-incremented columns).
+/// Emit compact Kitty graphics rows. Columns continue from the first cell.
 pub fn emit_placeholder(image_id: u32, cols: u16, rows: u16, text: &mut Vec<u8>) {
-    if cols == 0 || rows == 0 {
-        return;
-    }
     for row in 0..rows {
-        emit_placeholder_row(image_id, cols, row, text);
+        placeholder_row::<false>(image_id, cols, row, text);
+    }
+}
+
+/// Emit explicit cell coordinates for clients that redraw fragments of rows.
+pub fn emit_explicit_placeholder(image_id: u32, cols: u16, rows: u16, text: &mut Vec<u8>) {
+    for row in 0..rows {
+        placeholder_row::<true>(image_id, cols, row, text);
     }
 }

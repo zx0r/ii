@@ -2,9 +2,9 @@
 
 use crate::{
     err::Error,
-    fmt::{push_f64_1, push_u32, write_xml_escaped},
-    scene::{Rect, Scene},
-    theme::{ColorToken, Palette, SemanticRole},
+    fmt::write_xml_escaped,
+    scene::Scene,
+    theme::{Palette, SemanticRole},
 };
 
 const MAX_NODES: usize = 128;
@@ -19,6 +19,7 @@ struct Node {
     x: f32,
     y: f32,
     layer: u8,
+    w: f32,
 }
 const _: () = assert!(size_of::<[Node; MAX_NODES]>() <= 4096);
 
@@ -31,6 +32,7 @@ impl Node {
         x: 0.0,
         y: 0.0,
         layer: 0,
+        w: 60.0,
     };
 
     #[inline]
@@ -51,6 +53,7 @@ struct Graph {
     node_len: usize,
     edges: [Edge; MAX_EDGES],
     edge_len: usize,
+    horizontal: bool,
 }
 
 impl Graph {
@@ -60,6 +63,7 @@ impl Graph {
             node_len: 0,
             edges: [Edge { from: 0, to: 0 }; MAX_EDGES],
             edge_len: 0,
+            horizontal: false,
         }
     }
 
@@ -85,6 +89,7 @@ impl Graph {
             x: 0.0,
             y: 0.0,
             layer: 0,
+            w: 60.0,
         };
         self.node_len += 1;
         u8::try_from(idx).ok()
@@ -110,7 +115,9 @@ fn next_ident(src: &[u8], pos: &mut usize) -> Option<(usize, usize)> {
     let start = *pos;
     if src.get(start) == Some(&b'"') {
         *pos += 1;
-        while *pos < src.len() && src[*pos] != b'"' {
+        while *pos < src.len()
+            && (src[*pos] != b'"' || (*pos > start + 1 && src[*pos - 1] == b'\\'))
+        {
             *pos += 1;
         }
         let inner = (start + 1, *pos);
@@ -162,11 +169,24 @@ fn parse_graph(src: &[u8]) -> Graph {
             pos += 1;
         }
         if src[pos..].starts_with(b"->") || src[pos..].starts_with(b"--") {
-            pos += 2;
-            if let Some(rhs) = next_ident(src, &mut pos)
-                && let (Some(a), Some(b)) = (graph.intern(src, lhs), graph.intern(src, rhs))
+            let mut from = lhs;
+            while src[pos..].starts_with(b"->") || src[pos..].starts_with(b"--") {
+                pos += 2;
+                let Some(to) = next_ident(src, &mut pos) else {
+                    break;
+                };
+                if let (Some(a), Some(b)) = (graph.intern(src, from), graph.intern(src, to)) {
+                    graph.add_edge(a, b);
+                }
+                from = to;
+                while src.get(pos).is_some_and(u8::is_ascii_whitespace) {
+                    pos += 1;
+                }
+            }
+            if src.get(pos) == Some(&b'[')
+                && let Some(close) = memchr::memchr(b']', &src[pos..])
             {
-                graph.add_edge(a, b);
+                pos += close + 1;
             }
         } else if let Some(idx) = graph.intern(src, lhs)
             && src.get(pos) == Some(&b'[')
@@ -196,143 +216,201 @@ fn parse_graph(src: &[u8]) -> Graph {
         }
     }
 
-    for _ in 0..graph.node_len {
-        let mut changed = false;
-        for edge in &graph.edges[..graph.edge_len] {
-            let next_layer = graph.nodes[usize::from(edge.from)].layer.saturating_add(1);
-            let dst = &mut graph.nodes[usize::from(edge.to)];
-            if next_layer > dst.layer && usize::from(next_layer) < graph.node_len {
-                dst.layer = next_layer;
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-
-    let mut per_layer = [0u16; MAX_NODES];
-    for idx in 0..graph.node_len {
-        let layer = usize::from(graph.nodes[idx].layer);
-        let slot = per_layer[layer];
-        per_layer[layer] += 1;
-        graph.nodes[idx].x = f32::from(slot).mul_add(140.0, 24.0);
-        graph.nodes[idx].y = f32::from(graph.nodes[idx].layer).mul_add(72.0, 24.0);
-    }
+    layout_graph(&mut graph, src);
     graph
 }
 
-/// Render DOT graph directly into standalone SVG bytes inside `out`.
-pub fn render(src: &[u8], palette: &Palette, width: u16, out: &mut Vec<u8>) {
-    let graph = parse_graph(src);
-    let max_x = graph.nodes[..graph.node_len]
-        .iter()
-        .map(|n| n.x + 120.0)
-        .fold(f32::from(width.min(320)), f32::max);
-    let max_y = graph.nodes[..graph.node_len]
-        .iter()
-        .map(|n| n.y + 52.0)
-        .fold(120.0_f32, f32::max);
-
-    out.extend_from_slice(b"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"");
-    push_f64_1(out, f64::from(max_x));
-    out.extend_from_slice(b"\" height=\"");
-    push_f64_1(out, f64::from(max_y));
-    out.extend_from_slice(b"\">");
-
-    let stroke = palette.series_hex_str(0).as_bytes();
-    let fill = b"none";
-    let text_col = palette.hex_str(SemanticRole::TextPrimary).as_bytes();
-
-    for edge in &graph.edges[..graph.edge_len] {
-        let (a, b) = (
-            graph.nodes[usize::from(edge.from)],
-            graph.nodes[usize::from(edge.to)],
-        );
-        out.extend_from_slice(b"<line x1=\"");
-        push_f64_1(out, f64::from(a.x + 56.0));
-        out.extend_from_slice(b"\" y1=\"");
-        push_f64_1(out, f64::from(a.y + 32.0));
-        out.extend_from_slice(b"\" x2=\"");
-        push_f64_1(out, f64::from(b.x + 56.0));
-        out.extend_from_slice(b"\" y2=\"");
-        push_f64_1(out, f64::from(b.y));
-        out.extend_from_slice(b"\" stroke=\"");
-        out.extend_from_slice(stroke);
-        out.extend_from_slice(b"\" stroke-width=\"1.5\"/>");
+fn layout_graph(graph: &mut Graph, src: &[u8]) {
+    // Kahn ordering with a deterministic cycle break. Back edges are drawn but
+    // never repeatedly increase every rank in a cycle.
+    let mut done = [false; MAX_NODES];
+    for _ in 0..graph.node_len {
+        let candidate = (0..graph.node_len)
+            .filter(|&i| !done[i])
+            .find(|&i| {
+                !graph.edges[..graph.edge_len]
+                    .iter()
+                    .any(|e| usize::from(e.to) == i && !done[usize::from(e.from)])
+            })
+            .or_else(|| (0..graph.node_len).find(|&i| !done[i]));
+        let Some(i) = candidate else { break };
+        done[i] = true;
+        for edge in &graph.edges[..graph.edge_len] {
+            let to = usize::from(edge.to);
+            if usize::from(edge.from) == i && !done[to] {
+                graph.nodes[to].layer = graph.nodes[to]
+                    .layer
+                    .max(graph.nodes[i].layer.saturating_add(1));
+            }
+        }
     }
+    let horizontal = src.windows(7).any(|w| w == b"rankdir")
+        && core::str::from_utf8(src).is_ok_and(|s| {
+            s.split("rankdir").skip(1).any(|s| {
+                s.trim_start()
+                    .strip_prefix('=')
+                    .is_some_and(|s| s.trim_start().starts_with("LR"))
+            })
+        });
+    graph.horizontal = horizontal;
+    let mut rank_widths = [0.0_f32; MAX_NODES];
+    for node in &mut graph.nodes[..graph.node_len] {
+        let chars = core::str::from_utf8(node.label(src)).map_or(1, |s| s.chars().count());
+        node.w = f32::from(u16::try_from(chars).unwrap_or(u16::MAX))
+            .mul_add(8.5, 32.0)
+            .clamp(60.0, 300.0);
+        rank_widths[usize::from(node.layer)] += if horizontal { 60.0 } else { node.w + 24.0 };
+    }
+    let widest = rank_widths.iter().copied().fold(0.0_f32, f32::max);
+    let mut offsets = [0.0_f32; MAX_NODES];
+    let mut rank_x = [20.0_f32; MAX_NODES];
+    if horizontal {
+        for layer in 1..MAX_NODES {
+            let prev = graph.nodes[..graph.node_len]
+                .iter()
+                .filter(|n| usize::from(n.layer) == layer - 1)
+                .map(|n| n.w)
+                .fold(0.0_f32, f32::max);
+            rank_x[layer] = rank_x[layer - 1] + prev + 48.0;
+        }
+    }
+    for node in &mut graph.nodes[..graph.node_len] {
+        let rank = usize::from(node.layer);
+        let across = (widest - rank_widths[rank]).mul_add(0.5, offsets[rank]) + 20.0;
+        node.x = if horizontal { rank_x[rank] } else { across };
+        node.y = if horizontal {
+            across
+        } else {
+            f32::from(node.layer).mul_add(84.0, 20.0)
+        };
+        offsets[rank] += if horizontal { 60.0 } else { node.w + 24.0 };
+    }
+}
 
-    for node in &graph.nodes[..graph.node_len] {
-        out.extend_from_slice(b"<rect x=\"");
-        push_f64_1(out, f64::from(node.x));
-        out.extend_from_slice(b"\" y=\"");
-        push_f64_1(out, f64::from(node.y));
-        out.extend_from_slice(b"\" width=\"112\" height=\"32\" rx=\"4\" fill=\"");
-        out.extend_from_slice(fill);
-        out.extend_from_slice(b"\" stroke=\"");
-        out.extend_from_slice(stroke);
-        out.extend_from_slice(b"\"/><text x=\"");
-        push_f64_1(out, f64::from(node.x + 8.0));
-        out.extend_from_slice(b"\" y=\"");
-        push_f64_1(out, f64::from(node.y + 20.0));
-        out.extend_from_slice(b"\" fill=\"");
-        out.extend_from_slice(text_col);
-        out.extend_from_slice(b"\" font-size=\"");
-        push_u32(out, 12);
-        out.extend_from_slice(b"\">");
-        write_xml_escaped(node.label(src), out);
+/// Render DOT as one SVG, sharing geometry and labels with the Scene adapter.
+pub fn render(src: &[u8], palette: &Palette, _width: u16, out: &mut Vec<u8>) {
+    use std::fmt::Write;
+    let graph = parse_graph(src);
+    let body_w = graph.nodes[..graph.node_len]
+        .iter()
+        .map(|n| n.x + n.w + 20.0)
+        .fold(1.0_f32, f32::max);
+    let body_h = graph.nodes[..graph.node_len]
+        .iter()
+        .map(|n| n.y + 56.0)
+        .fold(1.0_f32, f32::max);
+    let has_return = graph.edges[..graph.edge_len]
+        .iter()
+        .any(|e| graph.nodes[usize::from(e.to)].layer <= graph.nodes[usize::from(e.from)].layer);
+    let w = body_w
+        + if has_return && !graph.horizontal {
+            64.0
+        } else {
+            0.0
+        };
+    let h = body_h
+        + if has_return && graph.horizontal {
+            64.0
+        } else {
+            0.0
+        };
+    let accent = palette.series_hex_str(0);
+    let line = palette.series_hex_str(1);
+    let fg = palette.hex_str(SemanticRole::TextPrimary);
+    let bg = palette.svg_surface_fill();
+    let mut svg = format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {w} {h}\"><defs><marker id=\"arrow\" viewBox=\"0 0 10 10\" refX=\"9\" refY=\"5\" markerWidth=\"6\" markerHeight=\"6\" orient=\"auto-start-reverse\"><path d=\"M0 1L10 5L0 9z\" fill=\"{line}\"/></marker></defs>"
+    );
+    let horizontal = graph.horizontal;
+    for edge in &graph.edges[..graph.edge_len] {
+        let a = graph.nodes[usize::from(edge.from)];
+        let b = graph.nodes[usize::from(edge.to)];
+        if b.layer <= a.layer {
+            let (x1, y1, x2, y2, c1x, c1y, c2x, c2y) = if horizontal {
+                let detour = body_h + 36.0;
+                (
+                    a.w.mul_add(0.5, a.x),
+                    a.y + 36.0,
+                    b.w.mul_add(0.5, b.x),
+                    b.y + 36.0,
+                    a.w.mul_add(0.5, a.x),
+                    detour,
+                    b.w.mul_add(0.5, b.x),
+                    detour,
+                )
+            } else {
+                let detour = body_w + 36.0;
+                (
+                    a.x + a.w,
+                    a.y + 18.0,
+                    b.x + b.w,
+                    b.y + 18.0,
+                    detour,
+                    a.y + 18.0,
+                    detour,
+                    b.y + 18.0,
+                )
+            };
+            let _ = write!(
+                svg,
+                "<path d=\"M{x1} {y1} C{c1x} {c1y} {c2x} {c2y} {x2} {y2}\" fill=\"none\" stroke=\"{line}\" stroke-width=\"2\" marker-end=\"url(#arrow)\"/>"
+            );
+            continue;
+        }
+        let (x1, y1, x2, y2) = if horizontal {
+            (a.x + a.w, a.y + 18.0, b.x, b.y + 18.0)
+        } else if a.y <= b.y {
+            (
+                a.w.mul_add(0.5, a.x),
+                a.y + 36.0,
+                b.w.mul_add(0.5, b.x),
+                b.y,
+            )
+        } else {
+            (
+                a.w.mul_add(0.5, a.x),
+                a.y,
+                b.w.mul_add(0.5, b.x),
+                b.y + 36.0,
+            )
+        };
+        let (cx, cy) = (f32::midpoint(x1, x2), f32::midpoint(y1, y2));
+        let (c1x, c1y, c2x, c2y) = if horizontal {
+            (cx, y1, cx, y2)
+        } else {
+            (x1, cy, x2, cy)
+        };
+        let _ = write!(
+            svg,
+            "<path d=\"M{x1} {y1} C{c1x} {c1y} {c2x} {c2y} {x2} {y2}\" fill=\"none\" stroke=\"{line}\" stroke-width=\"2\" marker-end=\"url(#arrow)\"/>"
+        );
+    }
+    out.extend_from_slice(svg.as_bytes());
+    for n in &graph.nodes[..graph.node_len] {
+        let (x, y, w) = (n.x, n.y, n.w);
+        let cx = w.mul_add(0.5, x);
+        let baseline = y + 22.0;
+        out.extend_from_slice(format!("<rect x=\"{x}\" y=\"{y}\" width=\"{w}\" height=\"36\" rx=\"5\" fill=\"{bg}\" stroke=\"{accent}\" stroke-width=\"2\"/><text x=\"{cx}\" y=\"{baseline}\" text-anchor=\"middle\" font-family=\"monospace\" font-size=\"12\" fill=\"{fg}\">").as_bytes());
+        write_xml_escaped(n.label(src), out);
         out.extend_from_slice(b"</text>");
     }
     out.extend_from_slice(b"</svg>");
 }
 
-/// Emit DOT/GV graph natively as `Rect` + `Path` + `GlyphRun` primitives into `Scene`.
+/// Compile the same DOT presentation through the shared SVG ingestion boundary.
 ///
 /// # Errors
-/// Returns `Ok(())` on valid or empty DOT graphs.
-pub fn parse_into_scene(src: &[u8], scene: &mut Scene) -> Result<(), Error> {
-    let graph = parse_graph(src);
-    let base_y = scene.height;
-    let mut max_w = 0.0_f32;
-    let mut max_h = 0.0_f32;
+/// Returns SVG validation errors.
+pub fn parse_with_palette(src: &[u8], palette: &Palette, scene: &mut Scene) -> Result<(), Error> {
+    let mut svg = Vec::new();
+    render(src, palette, 0, &mut svg);
+    crate::fmt::dispatch_with_palette(crate::fmt::Kind::Svg, &svg, palette, scene)
+}
 
-    for edge in &graph.edges[..graph.edge_len] {
-        let (a, b) = (
-            graph.nodes[usize::from(edge.from)],
-            graph.nodes[usize::from(edge.to)],
-        );
-        scene.push_series_line(
-            &[
-                [a.x + 56.0, base_y + a.y + 32.0],
-                [b.x + 56.0, base_y + b.y],
-            ],
-            ColorToken::BORDER,
-            2,
-        );
-    }
-    for node in &graph.nodes[..graph.node_len] {
-        scene.push_rect(Rect {
-            x: node.x,
-            y: base_y + node.y,
-            w: 112.0,
-            h: 32.0,
-            color: ColorToken::BG_SURFACE,
-            radius: 4,
-            stroke_width: 1,
-            flags: Rect::FILL | Rect::STROKE,
-        });
-        let label = core::str::from_utf8(node.label(src)).unwrap_or("");
-        scene.push_text(
-            node.x + 8.0,
-            base_y + node.y + 20.0,
-            label,
-            ColorToken::FG_PRIMARY,
-            12,
-        );
-        max_w = max_w.max(node.x + 128.0);
-        max_h = max_h.max(node.y + 48.0);
-    }
-    scene.width = scene.width.max(max_w);
-    scene.height = base_y + max_h;
-    Ok(())
+/// Compile DOT with the default dark palette.
+///
+/// # Errors
+/// Returns SVG validation errors.
+pub fn parse_into_scene(src: &[u8], scene: &mut Scene) -> Result<(), Error> {
+    parse_with_palette(src, &crate::theme::DARK, scene)
 }

@@ -84,41 +84,50 @@ pub(crate) fn rewrite_colors_as(
     }
 }
 
-#[inline]
-fn parse_attr_f32(header: &[u8], key: &[u8]) -> Option<f32> {
-    let pos = header.windows(key.len()).position(|w| w == key)?;
-    let rest = &header[pos + key.len()..];
-    let quote = *rest.first()?;
-    if quote != b'"' && quote != b'\'' {
-        return None;
+fn attr<'a>(header: &'a [u8], key: &[u8]) -> Option<&'a [u8]> {
+    for pos in memchr::memmem::find_iter(header, key) {
+        if pos > 0 && !header[pos - 1].is_ascii_whitespace() {
+            continue;
+        }
+        let rest = &header[pos + key.len()..];
+        let quote = *rest.first()?;
+        if !matches!(quote, b'"' | b'\'') {
+            continue;
+        }
+        let end = memchr::memchr(quote, &rest[1..])?;
+        return Some(&rest[1..=end]);
     }
-    let val_bytes = &rest[1..];
-    let end = memchr::memchr(quote, val_bytes)?;
-    let num_end = val_bytes[..end]
-        .iter()
-        .position(|&b| !(b.is_ascii_digit() || b == b'.' || b == b'-'))
-        .unwrap_or(end);
-    core::str::from_utf8(&val_bytes[..num_end])
-        .ok()?
-        .parse::<f32>()
-        .ok()
-        .filter(|v| v.is_finite() && *v > 0.0)
+    None
 }
 
-#[inline]
+fn parse_attr_f32(header: &[u8], key: &[u8]) -> Option<f32> {
+    let raw = core::str::from_utf8(attr(header, key)?).ok()?.trim();
+    let end = raw
+        .find(|c: char| !(c.is_ascii_digit() || matches!(c, '.' | '-' | '+' | 'e' | 'E')))
+        .unwrap_or(raw.len());
+    let factor = match raw[end..].trim() {
+        "" | "px" => 1.0,
+        "pt" => 96.0 / 72.0,
+        "pc" => 16.0,
+        "in" => 96.0,
+        "cm" => 96.0 / 2.54,
+        "mm" => 96.0 / 25.4,
+        _ => return None,
+    };
+    let value = raw[..end].parse::<f32>().ok()? * factor;
+    (value.is_finite() && value > 0.0).then_some(value)
+}
+
 fn parse_viewbox(header: &[u8]) -> Option<(f32, f32)> {
-    let pos = header.windows(9).position(|w| w == b"viewBox=\"")?;
-    let rest = &header[pos + 9..];
-    let end = memchr::memchr(b'"', rest)?;
-    let text = core::str::from_utf8(&rest[..end]).ok()?;
+    let text = core::str::from_utf8(attr(header, b"viewBox=")?).ok()?;
     let mut nums = text
         .split(|c: char| c.is_ascii_whitespace() || c == ',')
         .filter(|s| !s.is_empty())
-        .filter_map(|s| s.parse::<f32>().ok());
-    let _x = nums.next()?;
-    let _y = nums.next()?;
-    let width = nums.next()?;
-    let height = nums.next()?;
+        .map(str::parse::<f32>);
+    let _x = nums.next()?.ok()?;
+    let _y = nums.next()?.ok()?;
+    let width = nums.next()?.ok()?;
+    let height = nums.next()?.ok()?;
     (width.is_finite() && height.is_finite() && width > 0.0 && height > 0.0)
         .then_some((width, height))
 }
@@ -130,12 +139,16 @@ pub fn extract_svg_dimensions(src: &[u8]) -> (f32, f32) {
     let src = &src[start..];
     let tag_end = memchr::memchr(b'>', src).unwrap_or_else(|| src.len().min(512));
     let header = &src[..tag_end.min(src.len())];
-    if let Some(dims) = parse_viewbox(header) {
-        return dims;
+    let viewbox = parse_viewbox(header);
+    let width = parse_attr_f32(header, b"width=");
+    let height = parse_attr_f32(header, b"height=");
+    match (width, height, viewbox) {
+        (Some(w), Some(h), _) => (w, h),
+        (Some(w), None, Some((vw, vh))) => (w, w * vh / vw),
+        (None, Some(h), Some((vw, vh))) => (h * vw / vh, h),
+        (None, None, Some(dims)) => dims,
+        (w, h, _) => (w.unwrap_or(320.0), h.unwrap_or(180.0)),
     }
-    let width = parse_attr_f32(header, b"width=").unwrap_or(320.0);
-    let height = parse_attr_f32(header, b"height=").unwrap_or(180.0);
-    (width, height)
 }
 
 /// Stage color-normalized SVG payload directly into `Scene::svgs` using caller-provided palette.

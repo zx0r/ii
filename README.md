@@ -22,7 +22,7 @@ Graphics Protocol.
 
 ### Integrations
 
-###### Yazi (`ii.yazi`)
+#### Yazi (`ii.yazi`)
 
 Install using the Yazi package manager:
 
@@ -34,20 +34,25 @@ Configure `~/.config/yazi/yazi.toml`:
 
 ```toml
 [plugin]
+# Background preloader: caches rendered frames before cursor navigation
 prepend_preloaders = [
-  { url = "*.{md,markdown,mdx,qmd,rmd,ipynb,mmd,mermaid,dot,gv,svg,tex,latex,typ,csv,tsv}", run = "ii" },
+  { url = "*.{md,markdown,mdx,qmd,rmd,ipynb,mmd,mermaid,dot,gv,svg,svgz,ttf,otf,ttc,tex,latex,typ,csv,tsv,vl,vega,plotly}", run = "ii" },
 ]
+
+# Tier 0 previewers: high-priority graphic coprocessor
 prepend_previewers = [
   { url = "*.{md,markdown,mdx,qmd,rmd}", run = "ii" },
   { url = "*.ipynb",                     run = "ii" },
-  { url = "*.{mmd,mermaid,dot,gv,svg}",  run = "ii" },
-  { url = "*.{csv,tsv}",                 run = "ii" },
   { url = "*.{tex,latex,typ}",           run = "ii" },
-  { mime = "application/{*zip,tar,bzip2,7z*,rar,xz,zstd}", run = "ii" },
+  { url = "*.{mmd,mermaid,dot,gv,svg,svgz,vl,vega,vega-lite,plotly,chem,mhchem,html,htm}", run = "ii" },
+  { url = "*.{csv,tsv}",                 run = "ii" },
+  { url = "*.{ttf,otf,ttc}",             run = "ii" },
+  { mime = "application/{*zip,tar,bzip2,7z*,rar,xz,zstd,java-archive}", run = "ii" },
+  { url = "*.{zip,tar,gz,tgz,bz2,tbz2,xz,txz,zst,tzst,7z,rar,iso,dmg,pkg,deb,rpm,whl,jar}", run = "ii" },
 ]
 ```
 
-###### Neovim (`ii.nvim`)
+#### Neovim (`ii.nvim`)
 
 Install and configure with `lazy.nvim`:
 

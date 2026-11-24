@@ -1,8 +1,0 @@
-flowchart TD
-    Receive[Receive checkout] --> Validate[Validate request]
-    Validate --> Reserve[Reserve inventory]
-    Reserve --> Charge[Charge payment]
-    Charge --> Commit[Commit order]
-    Commit --> Notify[Publish confirmation]
-    Charge --> Retry[Retry transient failure]
-    Retry --> Charge

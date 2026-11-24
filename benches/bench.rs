@@ -202,7 +202,7 @@ fn bench_full_pipeline_warm(c: &mut Criterion) {
             black_box((out.apc.len(), out.ansi.len()))
         });
     });
-    let notebook = include_bytes!("../showcase/scenarios/analysis.ipynb");
+    let notebook = include_bytes!("../showcase/03.ipynb");
     let mut normalized = Vec::new();
     group.throughput(Throughput::Bytes(notebook.len() as u64));
     group.bench_function("notebook_normalize_32_cells", |b| {

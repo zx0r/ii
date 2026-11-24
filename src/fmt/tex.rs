@@ -135,7 +135,7 @@ fn stage_or_fallback(
     scene: &mut Scene,
 ) {
     let start = scene.text_pool.len();
-    let compiled = if is_chem && !raw_src.windows(4).any(|w| w == b"\\ce{") {
+    let compiled = if is_chem && memchr::memmem::find(raw_src, b"\\ce{").is_none() {
         let mut wrapped = b"\\ce{".to_vec();
         wrapped.extend_from_slice(trim_ascii(raw_src));
         wrapped.push(b'}');

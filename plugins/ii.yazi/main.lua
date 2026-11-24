@@ -4,34 +4,41 @@
 local M = {}
 
 local emit = ya.mgr_emit or ya.emit or ya.manager_emit
-local last_page
 local REPLAY_BYTES = 8 * 1024 * 1024
 
 -- Commit graphics on Yazi's main loop, after rejecting superseded jobs. Writing
 -- from the CLI races Yazi's own terminal writer during rapid navigation.
 local publish_graphics = ya.sync(function(state, url, skip, geometry, packets, bytes)
-  local tab = cx.tab or cx.active
+  local tab = cx.active
   local hovered = tab.current.hovered
-  if not hovered or tostring(hovered.url) ~= url or tab.preview.skip ~= skip then return false end
+  if not hovered or tostring(hovered.url) ~= url then return false end
   local page = state.page
-  local _, page_height = geometry:match("^(%d+)/(%d+)")
-  local overlap = tonumber(page_height) or 0
-  local reuse = page and page.skip ~= skip and page.url == url
+  local same_context = page and page.url == url
     and page.tab == tab.id and page.geometry == geometry
-    and math.abs(skip - page.skip) < overlap
-  state.page, state.next_skip = nil, nil
-  local sent, tty = {}, nil
+  state.page = nil
+  local sent = same_context and page.sent or {}
+  local sent_bytes = same_context and page.sent_bytes or 0
+  local tty = nil
   for _, packet in ipairs(packets) do
-    if not (reuse and page.sent[packet]) then
+    if not sent[packet] then
       tty = tty or io.open("/dev/tty", "wb")
       if not tty then return false end
       if not tty:write(packet) then tty:close(); return false end
+      if sent_bytes + #packet <= REPLAY_BYTES then
+        sent[packet] = true
+        sent_bytes = sent_bytes + #packet
+      end
     end
-    if bytes <= REPLAY_BYTES then sent[packet] = true end
   end
   if tty and not tty:close() then return false end
-  state.page = { url = url, tab = tab.id, skip = skip, geometry = geometry, sent = sent }
-  last_page = state.page
+  state.page = {
+    url = url,
+    tab = tab.id,
+    skip = skip,
+    geometry = geometry,
+    sent = sent,
+    sent_bytes = sent_bytes,
+  }
   return true
 end)
 
@@ -102,22 +109,14 @@ function M:peek(job)
 end
 
 function M:seek(job)
-  local tab = cx.tab or cx.active
-  local hovered = tab.current.hovered
-  local url = tostring(job.file.url)
-  if not hovered or tostring(hovered.url) ~= url then return end
-  local from = tonumber(tab.preview.skip) or 0
+  local active = cx.active
+  local hovered = active.current.hovered
+  if not hovered or hovered.url ~= job.file.url then return end
+  local from = tonumber(active.preview.skip) or 0
   local units = tonumber(job.units) or 0
   local target = math.max(0, from + units)
   if target == from then return end
-  self.next_skip = last_page and last_page.skip == from
-    and last_page.url == url
-    and last_page.tab == tab.id
-    and math.abs(target - from) < (job.area and job.area.h or 0)
-    and target or nil
-  -- Keep the operation scoped to the current preview. Passing job.scope here
-  -- lets a manager-level seek move the hovered file while the preview is busy.
-  emit("peek", { target, only_if = url })
+  emit("peek", { target, only_if = job.file.url })
 end
 
 function M:preload(_) return true end

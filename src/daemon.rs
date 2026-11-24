@@ -34,6 +34,7 @@ const READ_CHUNK: usize = 64 * 1024;
 const BUF_HIGH_WATER: usize = 64 * 1024;
 const RECV_BUF_BYTES: usize = 512 * 1024;
 const MAX_FILE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
 const MAX_PATH_BYTES: usize = 4096;
 const IDLE_TIMEOUT: Timespec = Timespec {
     tv_sec: 30,
@@ -412,6 +413,14 @@ fn handle_preview_file(
         &mut state.page,
     );
     compose::append_visible_uploads(&state.preview, &state.page, &mut state.compose_out.apc);
+    if state.compose_out.apc.len().saturating_add(state.page.len()) > MAX_FRAME_BYTES {
+        encode_error(
+            Cmd::PreviewFile as u16,
+            b"preview exceeds frame limit",
+            &mut slot.buf,
+        );
+        return;
+    }
     encode_dual_response(
         Cmd::PreviewFile,
         &state.compose_out.apc,
@@ -459,6 +468,16 @@ fn render_response(
     .is_err()
     {
         encode_error(cmd as u16, b"render failed", &mut slot.buf);
+        return;
+    }
+    if state
+        .compose_out
+        .apc
+        .len()
+        .saturating_add(state.compose_out.ansi.len())
+        > MAX_FRAME_BYTES
+    {
+        encode_error(cmd as u16, b"render exceeds frame limit", &mut slot.buf);
         return;
     }
     if cmd == Cmd::DecorateBuffer {
@@ -512,9 +531,23 @@ fn render_response(
                 u32::try_from(state.text_buf.len() - content_start).unwrap_or(u32::MAX);
             state.text_buf[size_at..size_at + 4].copy_from_slice(&content_len.to_le_bytes());
         }
+        if out.apc.len().saturating_add(state.text_buf.len()) > MAX_FRAME_BYTES {
+            encode_error(cmd as u16, b"render exceeds frame limit", &mut slot.buf);
+            return;
+        }
         encode_dual_response(cmd, &out.apc, &state.text_buf, &mut slot.buf);
     } else if cmd == Cmd::ComposeExtmarks {
         encode_extmarks(&state.compose_out.extmarks, &mut state.text_buf);
+        if state
+            .compose_out
+            .apc
+            .len()
+            .saturating_add(state.text_buf.len())
+            > MAX_FRAME_BYTES
+        {
+            encode_error(cmd as u16, b"render exceeds frame limit", &mut slot.buf);
+            return;
+        }
         encode_dual_response(cmd, &state.compose_out.apc, &state.text_buf, &mut slot.buf);
     } else {
         encode_dual_response(

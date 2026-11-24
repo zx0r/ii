@@ -122,6 +122,10 @@ pub fn render_file(
 ) -> Result<(), Error> {
     out.clear();
     let mut normalized = Vec::new();
+    if kind == Kind::Html {
+        crate::fmt::html::presentation_source(src, &mut normalized)?;
+        return compose_document(&normalized, ctx, dir, scratch, seq, pid, out);
+    }
     if kind == Kind::Mdx {
         crate::fmt::mdx::presentation_source(src, &mut normalized)?;
         return compose_document(&normalized, ctx, dir, scratch, seq, pid, out);

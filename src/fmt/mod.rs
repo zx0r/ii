@@ -6,6 +6,7 @@ pub mod csv;
 pub mod dot;
 pub mod font;
 pub mod heal;
+pub mod html;
 pub mod ipynb;
 pub mod json;
 pub mod md;
@@ -39,11 +40,13 @@ pub enum Kind {
     Png = 12,
     Typst = 13,
     Mdx = 14,
+    Html = 15,
 }
 
 const EXT_MAP: &[(&[&str], Kind)] = &[
     (&["md", "markdown", "qmd", "rmd"], Kind::Md),
     (&["mdx"], Kind::Mdx),
+    (&["html", "htm"], Kind::Html),
     (&["typ", "typst"], Kind::Typst),
     (&["ipynb"], Kind::Ipynb),
     (&["tex", "latex"], Kind::Tex),
@@ -126,6 +129,11 @@ pub fn dispatch_with_palette(
         Kind::Mdx => {
             let mut presentation = Vec::new();
             mdx::presentation_source(src, &mut presentation)?;
+            md::parse_with_palette(&presentation, palette, scene)
+        }
+        Kind::Html => {
+            let mut presentation = Vec::new();
+            html::presentation_source(src, &mut presentation)?;
             md::parse_with_palette(&presentation, palette, scene)
         }
         Kind::Ipynb => ipynb::parse_with_palette(src, palette, scene),

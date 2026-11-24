@@ -627,7 +627,9 @@ fn emit_heading(
     out.extend_from_slice(indent_);
     let token = match level {
         1 => crate::theme::ColorToken::INFO,
-        2..=4 => crate::theme::ColorToken::series(u8::try_from(level).unwrap_or(2)),
+        2 => crate::theme::ColorToken::SUCCESS,
+        3 => crate::theme::ColorToken::WARN,
+        4 => crate::theme::ColorToken::DANGER,
         _ => crate::theme::ColorToken::TEXT_MUTED,
     };
     let seq = &palette.sgr[token.index()];

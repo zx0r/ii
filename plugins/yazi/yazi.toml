@@ -3,5 +3,5 @@
 # ii must be on PATH. Restart Yazi after updating the Lua adapter.
 [plugin]
 prepend_previewers = [
-  { url = "*.{md,markdown,mdx,qmd,rmd,ipynb,mmd,mermaid,dot,gv,svg,png,tex,latex,typ,typst,chem,mhchem,csv,tsv,vl,vega-lite,plotly,zip,tar,tgz,tbz2,txz,tzst,jar,whl}", run = "ii" },
+  { url = "*.{md,markdown,mdx,qmd,rmd,html,htm,ipynb,mmd,mermaid,dot,gv,svg,png,tex,latex,typ,typst,chem,mhchem,csv,tsv,vl,vega,vega-lite,plotly,zip,tar,tgz,tbz2,txz,tzst,jar,whl}", run = "ii" },
 ]

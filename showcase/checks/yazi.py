@@ -79,7 +79,8 @@ def main():
         cfg=Path(tmp)/'config';(cfg/'plugins').mkdir(parents=True)
         (cfg/'plugins/ii.yazi').symlink_to(ROOT/'plugins/ii.yazi')
         (cfg/'yazi.toml').write_text('[plugin]\nprepend_previewers=[{url="*.{md,mdx,qmd,rmd,svg,dot,gv,ipynb}",run="ii"}]\n')
-        (cfg/'keymap.toml').write_text('[mgr]\nprepend_keymap=[{on="J",run="seek 5"},{on="K",run="seek -5"}]\n')
+        step = 10 if args.notebook else 5
+        (cfg/'keymap.toml').write_text(f'[mgr]\nprepend_keymap=[{{on="J",run="seek {step}"}},{{on="K",run="seek -{step}"}}]\n')
         # A private executable path avoids changing any installed binary or configuration.
         bindir=Path(tmp)/'bin';bindir.mkdir();(bindir/'ii').symlink_to(args.binary.resolve())
         master,slave=pty.openpty()
@@ -106,12 +107,14 @@ def main():
                 initial_packets = peer.graphics
                 assert initial_packets > 0, 'initial notebook frame did not upload its formulas'
                 reused = 0
-                for key in [b'J'] * 16 + [b'K'] * 16:
+                notebook_keys = [b'J'] * 25 + [b'K'] * 25
+                for key in notebook_keys:
                     before, packets = len(peer.visible), peer.graphics
                     os.write(master,key);pump(.6)
                     if len(peer.visible)>before and peer.graphics == packets:
                         reused += 1
-                assert b'Confusion Matrix' in peer.visible, 'notebook did not advance past the first chart'
+                for heading in (b'Distribution Plots', b'Transformer Architecture', b'Attention Pattern'):
+                    assert heading in peer.visible, f'notebook did not reach {heading.decode()}'
                 assert reused > 0, 'every scroll retransmitted graphics'
             else:
                 for _ in range(20):
@@ -134,7 +137,7 @@ def main():
             assert not re.search(r'[A-Za-z0-9+/]{100,}',text), 'Base64 escaped into visible text'
             assert 'ii:' not in text and 'stack traceback' not in text, text[-1000:]
             assert not re.search(r'A{4,}|D{4,}|B{4,}',text), 'arrow key bytes became visible'
-            result=dict(graphic_packets=peer.graphics,unquiet_commands=peer.unquiet,interleaved_packets=peer.broken,exit=child.returncode,arrow_keys=0 if args.notebook else 40,scroll_keys=32 if args.notebook else 40)
+            result=dict(graphic_packets=peer.graphics,unquiet_commands=peer.unquiet,interleaved_packets=peer.broken,exit=child.returncode,arrow_keys=0 if args.notebook else 40,scroll_keys=len(notebook_keys) if args.notebook else 40)
             if args.notebook: result.update(initial_packets=initial_packets, redraws_without_upload=reused)
             print(json.dumps(result,indent=2))
             if args.report: args.report.write_text(json.dumps(result,indent=2)+'\n')

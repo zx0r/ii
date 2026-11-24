@@ -284,7 +284,12 @@ fn render_file_local(
     if !interactive && !args.machine {
         let mut text = Vec::new();
         if args.ansi {
-            style::emit_prose(data, palette, &mut style::State::default(), &mut text);
+            style::emit_prose(
+                data,
+                palette,
+                &mut style::State::with_width(metrics.cols),
+                &mut text,
+            );
         } else {
             style::emit_literal(data, &mut text);
         }

@@ -17,6 +17,7 @@ local next_generation = 0
 local requests = {}
 local timers = {}
 local suspended_highlights = {}
+local yank_preview = {}
 local placeholder = "\244\142\187\174"
 local max_payload = 64 * 1024 * 1024
 
@@ -190,17 +191,27 @@ local function view_mode(win, rendered)
   end
 end
 
+local function editing_source(mode)
+  mode = (mode or vim.fn.mode()):sub(1, 1)
+  return mode == "i" or mode == "R" or mode == "v" or mode == "V" or mode == "\22"
+    or mode == "s" or mode == "S" or mode == "\19"
+end
+
+local function preview_visible(win, buf)
+  return not editing_source() and not yank_preview[win] and vim.api.nvim_win_get_buf(win) == buf
+end
+
 local function sync_source_highlights(buf)
   if not vim.api.nvim_buf_is_loaded(buf) then
     suspended_highlights[buf] = nil
     return
   end
   local active = vim.treesitter.highlighter.active[buf]
-  if not vim.fn.mode():match("^[iR]") then
+  if not editing_source() then
     local tick = vim.api.nvim_buf_get_changedtick(buf)
     for win, frame in pairs(frames) do
       if frame.bufnr == buf and frame.tick == tick and frame.ns
-          and vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win) == buf then
+          and vim.api.nvim_win_is_valid(win) and preview_visible(win, buf) then
         -- A Tree-sitter conceal_lines mark hides the rendered overlay and any
         -- virtual image rows anchored there. The preview supplies its own colors.
         if active then
@@ -222,6 +233,7 @@ local function discard(win)
     vim.api.nvim_buf_clear_namespace(frame.bufnr, frame.ns, 0, -1)
   end
   frames[win] = nil
+  yank_preview[win] = nil
   view_mode(win, false)
   saved[win] = nil
   if frame then sync_source_highlights(frame.bufnr) end
@@ -235,52 +247,62 @@ local function fail(win, bufnr, tick, message)
   vim.notify("ii: " .. message, vim.log.levels.WARN)
 end
 
+local function preview_anchors(block)
+  local rows = {}
+  local in_graphic = false
+  local has_text = false
+  for _, line in ipairs(block.lines) do
+    local chunk = line[1]
+    local graphic = #line == 1 and chunk[1]:sub(1, #placeholder) == placeholder
+    local top = graphic and chunk[1]:sub(#placeholder + 1, #placeholder + 2) == "\204\133"
+    local anchor = rows[#rows]
+    if not anchor or (#rows < block.last - block.first and (not graphic or not in_graphic or top)) then
+      rows[#rows + 1] = { text = line, below = {} }
+    else
+      anchor.below[#anchor.below + 1] = line
+    end
+    in_graphic = graphic
+    has_text = has_text or not graphic
+  end
+  if #rows == 0 then rows[1] = { text = {}, below = {} } end
+  return rows, #rows == 1 and in_graphic and not has_text
+end
+
 local function decorate(win)
   local frame=frames[win]
-  if not frame or not vim.api.nvim_buf_is_valid(frame.bufnr) then return end
+  if not frame or not vim.api.nvim_win_is_valid(win) or not vim.api.nvim_buf_is_valid(frame.bufnr) then return end
   frame.ns=frame.ns or vim.api.nvim_create_namespace("ii_window_"..win)
   vim.api.nvim__ns_set(frame.ns,{wins={win}})
   vim.api.nvim_buf_clear_namespace(frame.bufnr,frame.ns,0,-1)
+  local visible = preview_visible(win, frame.bufnr) and frame.tick == vim.api.nvim_buf_get_changedtick(frame.bufnr)
+  view_mode(win, visible)
   sync_source_highlights(frame.bufnr)
-  if vim.fn.mode():match("^[iR]") or frame.tick~=vim.api.nvim_buf_get_changedtick(frame.bufnr) then return end
-  for _,block in ipairs(frame.blocks) do
-    -- Give each rendered row a native cursor anchor while source rows remain
-    -- available. Only overflow within this source block needs virtual lines.
+  if not visible then return end
+  for _, block in ipairs(frame.blocks) do
     local first = block.first
-    local anchors=math.min(math.max(1,#block.lines),block.last-first)
-    if anchors > 1 then
-      -- A display graphic shares one source anchor. Otherwise scrolling to
-      -- the next source line can paint the bottom half as a standalone image.
-      local graphic = true
-      for _, line in ipairs(block.lines) do
-        local chunk = line[1]
-        if #line ~= 1 or not chunk or chunk[1]:sub(1,#placeholder) ~= placeholder then
-          graphic = false
-          break
-        end
-      end
-      if graphic then
-        first = block.last - 1
-        anchors = 1
-        vim.api.nvim_buf_set_extmark(frame.bufnr, frame.ns, block.first, 0, {
-          end_row = first - 1, end_col = 0, conceal_lines = "",
-        })
-      end
+    if not block.anchors then block.anchors, block.standalone = preview_anchors(block) end
+    local rows = block.anchors
+
+    -- Anchor a standalone image at the end of its concealed source block.
+    -- Continuation rows of embedded images also stay with their first row.
+    if block.standalone and block.last - first > 1 then
+      first = block.last - 1
+      vim.api.nvim_buf_set_extmark(frame.bufnr, frame.ns, block.first, 0, {
+        end_row = first - 1, end_col = 0, conceal_lines = "",
+      })
     end
-    local source=vim.api.nvim_buf_get_lines(frame.bufnr,first,first+anchors,false)
-    for index=1,anchors do
-      local row=first+index-1
-      local below={}
-      if index==anchors then
-        for i=anchors+1,#block.lines do below[#below+1]=block.lines[i] end
-      end
-      vim.api.nvim_buf_set_extmark(frame.bufnr,frame.ns,row,0,{
-        end_row=row,end_col=#(source[index] or ""),conceal="",virt_text=block.lines[index] or {},
-        virt_text_pos="overlay",virt_lines=below,virt_lines_above=false})
+    local source = vim.api.nvim_buf_get_lines(frame.bufnr, first, first + #rows, false)
+    for index, anchor in ipairs(rows) do
+      local row = first + index - 1
+      vim.api.nvim_buf_set_extmark(frame.bufnr, frame.ns, row, 0, {
+        end_row = row, end_col = #(source[index] or ""), conceal = "", virt_text = anchor.text,
+        virt_text_pos = "overlay", virt_lines = anchor.below, virt_lines_above = false,
+      })
     end
-    if block.last>first+anchors then
-      vim.api.nvim_buf_set_extmark(frame.bufnr,frame.ns,first+anchors,0,{
-        end_row=block.last-1,end_col=0,conceal_lines=""})
+    if block.last > first + #rows then
+      vim.api.nvim_buf_set_extmark(frame.bufnr, frame.ns, first + #rows, 0, {
+        end_row = block.last - 1, end_col = 0, conceal_lines = "",
+      })
     end
   end
 end
@@ -453,7 +475,6 @@ function M.render(bufnr, win, force)
           if apc_len > 0 and #vim.api.nvim_list_uis() > 0 then
             vim.api.nvim_ui_send(full_buf:sub(33, 32 + apc_len))
           end
-          view_mode(win,not vim.fn.mode():match("^[iR]"))
           if frames[win] and frames[win].ns and vim.api.nvim_buf_is_valid(frames[win].bufnr) then vim.api.nvim_buf_clear_namespace(frames[win].bufnr,frames[win].ns,0,-1) end
           errors[win] = nil
           frames[win]={bufnr=bufnr,tick=tick,cols=cols,blocks=blocks,graphics_bytes=apc_len,rows=rows,background=background,cell_w=cell_w,cell_h=cell_h}
@@ -527,6 +548,7 @@ function M.setup(opts)
         local previous=frames[current_win]
         if previous.ns and vim.api.nvim_buf_is_valid(previous.bufnr) then vim.api.nvim_buf_clear_namespace(previous.bufnr,previous.ns,0,-1) end
         frames[current_win]=nil
+        yank_preview[current_win]=nil
         sync_source_highlights(previous.bufnr)
         view_mode(current_win,false);saved[current_win]=nil
       end
@@ -552,7 +574,30 @@ function M.setup(opts)
     end
   vim.api.nvim_create_autocmd({ "BufEnter", "BufWinEnter", "WinEnter", "FileType", "BufWritePost", "TextChanged", "InsertLeave", "WinResized", "ColorScheme" }, {group=augroup,callback=refresh})
   vim.schedule(function() refresh({buf=vim.api.nvim_get_current_buf(),event="Setup"}) end)
-  vim.api.nvim_create_autocmd("ModeChanged",{group=augroup,callback=function() for win,frame in pairs(frames) do view_mode(win,not vim.fn.mode():match("^[iR]") and vim.api.nvim_win_get_buf(win)==frame.bufnr); decorate(win) end; vim.cmd("redraw!") end})
+  vim.api.nvim_create_autocmd("ModeChanged", { group = augroup, callback = function()
+    local event = vim.v.event
+    if event.old_mode and editing_source(event.old_mode) == editing_source(event.new_mode) then return end
+    for win in pairs(frames) do decorate(win) end
+    vim.cmd("redraw!")
+  end })
+  vim.api.nvim_create_autocmd("TextYankPost", { group = augroup, callback = function(ev)
+    if vim.v.event.operator ~= "y" then return end
+    local win = vim.api.nvim_get_current_win()
+    local frame = frames[win]
+    if not frame or frame.bufnr ~= ev.buf then return end
+
+    -- Expose the source while Neovim's yank highlight is drawn beneath the overlay.
+    local token = {}
+    yank_preview[win] = token
+    vim.schedule(function()
+      if yank_preview[win] == token then decorate(win) end
+    end)
+    vim.defer_fn(function()
+      if yank_preview[win] ~= token then return end
+      yank_preview[win] = nil
+      decorate(win)
+    end, 150)
+  end })
   vim.api.nvim_create_autocmd("BufWipeout", {
     group = augroup,
     callback = function(ev)
@@ -565,6 +610,7 @@ function M.setup(opts)
     group = augroup,
     callback = function(ev)
       local win = tonumber(ev.match)
+      yank_preview[win] = nil
       generations[win] = nil
       local frame=frames[win]
       if frame and frame.ns and vim.api.nvim_buf_is_valid(frame.bufnr) then vim.api.nvim_buf_clear_namespace(frame.bufnr,frame.ns,0,-1) end

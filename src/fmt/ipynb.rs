@@ -185,6 +185,23 @@ pub fn to_markdown_mapped(
     mut cell_range: impl FnMut(usize, usize, usize, usize),
 ) -> Result<(), Error> {
     let cells = json::get_field(src, b"cells").ok_or(Error::JsonNav)?;
+    let language = json::get_field(src, b"metadata")
+        .and_then(|metadata| {
+            json::get_field(metadata, b"language_info")
+                .and_then(|info| json::get_field(info, b"name"))
+                .or_else(|| {
+                    json::get_field(metadata, b"kernelspec")
+                        .and_then(|kernel| json::get_field(kernel, b"language"))
+                })
+        })
+        .and_then(|name| name.strip_prefix(b"\"")?.strip_suffix(b"\""))
+        .filter(|name| {
+            matches!(
+                *name,
+                b"python" | b"rust" | b"javascript" | b"typescript" | b"bash" | b"sql" | b"json"
+            )
+        })
+        .unwrap_or(b"text");
     let mut text = Vec::new();
     for cell in json::iter_array(cells) {
         let start = out.len();
@@ -197,7 +214,7 @@ pub fn to_markdown_mapped(
                 check_output(out, text.len() + 2)?;
                 out.extend_from_slice(&text);
             } else {
-                fenced(&text, b"text", out, 2)?;
+                fenced(&text, language, out, 2)?;
             }
             out.extend_from_slice(b"\n\n");
         }

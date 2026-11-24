@@ -2,17 +2,30 @@
 
 Requires Neovim 0.12+ and a terminal with Kitty Unicode placeholders. Configure:
 
+With lazy.nvim, add this spec for a local checkout:
+
 ```lua
-vim.opt.runtimepath:append('/path/to/ii/plugins/ii.nvim')
-require('ii').setup({executable='/path/to/ii/target/release/ii', debounce_ms=20, timeout_ms=5000})
+return {
+  dir = vim.fn.expand("~/src/ii/plugins/ii.nvim"),
+  name = "ii.nvim",
+  main = "ii",
+  ft = { "markdown", "markdown.mdx", "mdx", "quarto", "rmd" },
+  cmd = { "IiRender", "IiToggle", "IiClear" },
+  opts = { executable = "ii" },
+}
 ```
+
+Install a matching ii executable on PATH. After publishing the plugin as a
+separate repository, replace the dir field with its GitHub slug as the first
+entry. Use :IiRender to open a preview explicitly, including for notebooks.
 
 The original Neovim buffer remains active in every mode. The adapter installs no
 keymaps, injects no input and never changes editor modes or source bytes. In Normal
 mode window-scoped persistent extmarks conceal source ranges and display prepared virtual
-lines. Insert and Replace expose the original source; InsertLeave refreshes it.
+lines. Insert, Replace, Visual and Select expose the original source. The adapter
+also exposes it briefly after a yank so Neovim can draw its own highlight.
 The rendered view uses the complete window: number/sign/fold gutters and winbar
-are hidden, source wrapping and folding are disabled. Insert/Replace and
+are hidden, source wrapping and folding are disabled. Source view and
 `IiClear` restore the original window options. `IiClear` removes decorations; `IiToggle`
 switches rendering.
 

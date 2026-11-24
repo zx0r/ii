@@ -623,3 +623,29 @@ fn standalone_diagrams_fit_window_height_and_invalidate_cached_size()
     assert_ne!(ids[0], ids[1], "raster cache ignored viewport height");
     Ok(())
 }
+
+#[test]
+fn fenced_code_uses_its_language_and_preserves_multiline_tokens() {
+    use ii::theme::{DARK, SemanticRole};
+
+    let mut out = Vec::new();
+    ii::style::emit_prose(
+        b"```text\nlet # literal\n```\n```python\ndef f():\n    \"\"\"doc\n    return # still a string\n    \"\"\"\n    return 42\n```\n```sql\nsElEcT 1 -- note\n```\n",
+        &DARK,
+        &mut ii::style::State::with_width(80),
+        &mut out,
+    );
+    let colored = |role, text: &[u8]| {
+        memchr::memmem::find(&out, &[DARK.sgr_fg(role), text].concat()).is_some()
+    };
+    assert!(memchr::memmem::find(&out, b"let # literal").is_some());
+    assert!(colored(SemanticRole::Accent, b"def"));
+    assert!(colored(
+        SemanticRole::Success,
+        b"    return # still a string"
+    ));
+    assert!(colored(SemanticRole::Accent, b"return"));
+    assert!(colored(SemanticRole::Warn, b"42"));
+    assert!(colored(SemanticRole::Accent, b"sElEcT"));
+    assert!(colored(SemanticRole::TextMuted, b"-- note"));
+}

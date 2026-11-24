@@ -28,6 +28,7 @@ pub struct State {
     fence_len: usize,
     fence_byte: u8,
     fence_indent: Vec<u8>,
+    syntax: CodeSyntax,
     references: References,
     table_ranges: Vec<core::ops::Range<usize>>,
     prepared: bool,
@@ -48,6 +49,7 @@ impl State {
             fence_len: 0,
             fence_byte: 0,
             fence_indent: Vec::new(),
+            syntax: CodeSyntax::new(CodeLanguage::Plain),
             references: std::collections::BTreeMap::new(),
             table_ranges: Vec::new(),
             prepared: false,
@@ -780,91 +782,234 @@ fn task(line: &[u8]) -> Option<(&[u8], SemanticRole, bool)> {
     ))
 }
 
-fn code_line(src: &[u8], palette: &Palette, out: &mut Vec<u8>) {
-    let mut pos = 0;
-    while pos < src.len() {
-        let start = pos;
-        let token = if src[pos..].starts_with(b"//") || src[pos] == b'#' {
-            pos = src.len();
-            Some(SemanticRole::TextMuted)
-        } else if matches!(src[pos], b'\'' | b'"') {
-            let quote = src[pos];
-            pos += 1;
-            while pos < src.len() {
-                let b = src[pos];
-                pos += 1;
-                if b == b'\\' {
-                    pos = (pos + 1).min(src.len());
-                } else if b == quote {
-                    break;
-                }
-            }
-            Some(SemanticRole::Success)
-        } else if src[pos].is_ascii_digit() {
-            pos += 1;
-            while pos < src.len() && (src[pos].is_ascii_alphanumeric() || src[pos] == b'.') {
-                pos += 1;
-            }
-            Some(SemanticRole::Warn)
-        } else if src[pos].is_ascii_alphabetic() || src[pos] == b'_' {
-            pos += 1;
-            while pos < src.len() && (src[pos].is_ascii_alphanumeric() || src[pos] == b'_') {
-                pos += 1;
-            }
-            matches!(
-                &src[start..pos],
-                b"def"
-                    | b"class"
-                    | b"import"
-                    | b"from"
-                    | b"as"
-                    | b"return"
-                    | b"for"
-                    | b"in"
-                    | b"if"
-                    | b"else"
-                    | b"elif"
-                    | b"while"
-                    | b"with"
-                    | b"try"
-                    | b"except"
-                    | b"fn"
-                    | b"let"
-                    | b"mut"
-                    | b"pub"
-                    | b"use"
-                    | b"struct"
-                    | b"enum"
-                    | b"impl"
-                    | b"match"
-                    | b"const"
-                    | b"async"
-                    | b"await"
-                    | b"SELECT"
-                    | b"FROM"
-                    | b"WHERE"
-                    | b"GROUP"
-                    | b"BY"
-                    | b"ORDER"
-                    | b"LIMIT"
-                    | b"True"
-                    | b"False"
-                    | b"None"
-                    | b"true"
-                    | b"false"
-                    | b"null"
-            )
-            .then_some(SemanticRole::Accent)
-        } else {
-            pos += 1;
-            None
-        };
-        if let Some(color) = token {
-            role(out, palette, color);
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum CodeLanguage {
+    #[default]
+    Plain,
+    Python,
+    Rust,
+    JavaScript,
+    Shell,
+    Sql,
+    Json,
+}
+
+impl CodeLanguage {
+    const fn from_tag(tag: &[u8]) -> Self {
+        match tag {
+            b"python" | b"py" => Self::Python,
+            b"rust" | b"rs" => Self::Rust,
+            b"js" | b"javascript" | b"jsx" | b"ts" | b"typescript" | b"tsx" => Self::JavaScript,
+            b"sh" | b"bash" | b"zsh" | b"shell" => Self::Shell,
+            b"sql" => Self::Sql,
+            b"json" => Self::Json,
+            _ => Self::Plain,
         }
-        out.extend_from_slice(&src[start..pos]);
-        if token.is_some() {
-            out.extend_from_slice(SGR_RESET);
+    }
+
+    fn keyword(self, word: &[u8]) -> bool {
+        let keywords: &[&[u8]] = match self {
+            Self::Python => &[
+                b"def", b"class", b"import", b"from", b"as", b"return", b"for", b"in", b"if",
+                b"else", b"elif", b"while", b"with", b"try", b"except", b"finally", b"True",
+                b"False", b"None", b"async", b"await", b"lambda", b"yield", b"raise", b"pass",
+                b"not", b"and", b"or",
+            ],
+            Self::Rust => &[
+                b"fn", b"let", b"mut", b"pub", b"use", b"struct", b"enum", b"impl", b"trait",
+                b"match", b"const", b"async", b"await", b"return", b"if", b"else", b"for", b"in",
+                b"while", b"loop", b"move", b"unsafe", b"mod", b"true", b"false", b"Self", b"self",
+            ],
+            Self::JavaScript => &[
+                b"function",
+                b"let",
+                b"const",
+                b"var",
+                b"class",
+                b"return",
+                b"import",
+                b"export",
+                b"from",
+                b"if",
+                b"else",
+                b"for",
+                b"in",
+                b"of",
+                b"new",
+                b"async",
+                b"await",
+                b"true",
+                b"false",
+                b"null",
+                b"undefined",
+                b"interface",
+                b"type",
+            ],
+            Self::Shell => &[
+                b"if",
+                b"then",
+                b"elif",
+                b"else",
+                b"fi",
+                b"for",
+                b"in",
+                b"do",
+                b"done",
+                b"while",
+                b"case",
+                b"esac",
+                b"function",
+            ],
+            Self::Sql => &[
+                b"select", b"from", b"where", b"group", b"by", b"order", b"limit", b"join", b"on",
+                b"having", b"as", b"insert", b"into", b"update", b"delete", b"create", b"table",
+                b"null", b"and", b"or",
+            ],
+            Self::Json => &[b"true", b"false", b"null"],
+            Self::Plain => &[],
+        };
+        keywords.iter().any(|key| {
+            if self == Self::Sql {
+                word.eq_ignore_ascii_case(key)
+            } else {
+                word == *key
+            }
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct CodeSyntax {
+    language: CodeLanguage,
+    closing: &'static [u8],
+    color: Option<SemanticRole>,
+}
+
+fn quoted_end(src: &[u8], mut pos: usize, delimiter: &[u8]) -> (usize, bool) {
+    while pos < src.len() {
+        if src[pos..].starts_with(delimiter) {
+            return (pos + delimiter.len(), true);
+        }
+        pos += if src[pos] == b'\\' && pos + 1 < src.len() {
+            2
+        } else {
+            1
+        };
+    }
+    (pos, false)
+}
+
+impl CodeSyntax {
+    const fn new(language: CodeLanguage) -> Self {
+        Self {
+            language,
+            closing: b"",
+            color: None,
+        }
+    }
+
+    fn line(&mut self, src: &[u8], palette: &Palette, out: &mut Vec<u8>) {
+        let lang = self.language;
+        if lang == CodeLanguage::Plain {
+            out.extend_from_slice(src);
+            return;
+        }
+        let mut pos = 0;
+        while pos < src.len() {
+            let start = pos;
+            let tail = &src[pos..];
+            let byte = tail[0];
+            let color = if let Some(color) = self.color {
+                let closed;
+                (pos, closed) = if color == SemanticRole::TextMuted {
+                    memchr::memmem::find(tail, self.closing).map_or((src.len(), false), |end| {
+                        (pos + end + self.closing.len(), true)
+                    })
+                } else {
+                    quoted_end(src, pos, self.closing)
+                };
+                if closed {
+                    self.color = None;
+                }
+                Some(color)
+            } else if (matches!(lang, CodeLanguage::Rust | CodeLanguage::JavaScript)
+                && tail.starts_with(b"//"))
+                || (lang == CodeLanguage::Sql && tail.starts_with(b"--"))
+                || (byte == b'#'
+                    && (lang == CodeLanguage::Python
+                        || (lang == CodeLanguage::Shell
+                            && (pos == 0 || src[pos - 1].is_ascii_whitespace()))))
+            {
+                pos = src.len();
+                Some(SemanticRole::TextMuted)
+            } else if matches!(
+                lang,
+                CodeLanguage::Rust | CodeLanguage::JavaScript | CodeLanguage::Sql
+            ) && tail.starts_with(b"/*")
+            {
+                self.closing = b"*/";
+                self.color = Some(SemanticRole::TextMuted);
+                pos += 2;
+                role(out, palette, SemanticRole::TextMuted);
+                out.extend_from_slice(b"/*");
+                out.extend_from_slice(SGR_RESET);
+                continue;
+            } else if lang == CodeLanguage::Rust
+                && byte == b'\''
+                && tail
+                    .get(1)
+                    .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_')
+                && tail.get(2) != Some(&b'\'')
+            {
+                pos += 1;
+                None
+            } else if byte == b'"'
+                || (byte == b'\'' && lang != CodeLanguage::Json)
+                || (byte == b'`' && matches!(lang, CodeLanguage::JavaScript | CodeLanguage::Shell))
+            {
+                let delimiter: &'static [u8] = match byte {
+                    b'"' if lang == CodeLanguage::Python && tail.starts_with(b"\"\"\"") => {
+                        b"\"\"\""
+                    }
+                    b'\'' if lang == CodeLanguage::Python && tail.starts_with(b"'''") => b"'''",
+                    b'"' => b"\"",
+                    b'\'' => b"'",
+                    _ => b"`",
+                };
+                let (end, closed) = quoted_end(src, pos + delimiter.len(), delimiter);
+                pos = end;
+                if !closed && (delimiter.len() > 1 || byte == b'`') {
+                    self.closing = delimiter;
+                    self.color = Some(SemanticRole::Success);
+                }
+                (closed || lang != CodeLanguage::Rust).then_some(SemanticRole::Success)
+            } else if byte.is_ascii_alphanumeric() || byte == b'_' || byte >= 128 {
+                pos += 1;
+                while src.get(pos).is_some_and(|b| {
+                    b.is_ascii_alphanumeric()
+                        || *b == b'_'
+                        || *b >= 128
+                        || (byte.is_ascii_digit() && *b == b'.')
+                }) {
+                    pos += 1;
+                }
+                if byte.is_ascii_digit() {
+                    Some(SemanticRole::Warn)
+                } else {
+                    lang.keyword(&src[start..pos])
+                        .then_some(SemanticRole::Accent)
+                }
+            } else {
+                pos += 1;
+                None
+            };
+            if let Some(color) = color {
+                role(out, palette, color);
+            }
+            out.extend_from_slice(&src[start..pos]);
+            if color.is_some() {
+                out.extend_from_slice(SGR_RESET);
+            }
         }
     }
 }
@@ -886,7 +1031,9 @@ fn prefix_cells(src: &[u8], limit: usize) -> (usize, usize) {
     (end, used)
 }
 
-fn emit_code(clean: &[u8], indent_: &[u8], palette: &Palette, cols_limit: u16, out: &mut Vec<u8>) {
+fn emit_code(clean: &[u8], palette: &Palette, state: &mut State, out: &mut Vec<u8>) {
+    let indent_ = state.fence_indent.as_slice();
+    let cols_limit = state.cols;
     let budget = if cols_limit == 0 {
         58
     } else {
@@ -895,8 +1042,28 @@ fn emit_code(clean: &[u8], indent_: &[u8], palette: &Palette, cols_limit: u16, o
             .max(4)
     };
     let inner = budget.saturating_sub(4).max(1);
+    let start_row = |out: &mut Vec<u8>| {
+        out.extend_from_slice(indent_);
+        role(out, palette, SemanticRole::Border);
+        out.extend_from_slice("│ ".as_bytes());
+        role(out, palette, SemanticRole::TextMuted);
+    };
+    let end_row = |out: &mut Vec<u8>, cells| {
+        out.extend_from_slice(SGR_RESET);
+        out.resize(out.len() + inner.saturating_sub(cells), b' ');
+        role(out, palette, SemanticRole::Border);
+        out.extend_from_slice(" │".as_bytes());
+        out.extend_from_slice(SGR_RESET);
+    };
+    let cells = width(clean);
+    if cells <= inner && memchr(b'\t', clean).is_none() {
+        start_row(out);
+        state.syntax.line(clean, palette, out);
+        end_row(out, cells);
+        return;
+    }
     let mut styled = Vec::new();
-    code_line(clean, palette, &mut styled);
+    state.syntax.line(clean, palette, &mut styled);
     let mut wrapped = Vec::new();
     crate::viewport::append(
         &styled,
@@ -909,16 +1076,9 @@ fn emit_code(clean: &[u8], indent_: &[u8], palette: &Palette, cols_limit: u16, o
         if index > 0 {
             out.push(b'\n');
         }
-        out.extend_from_slice(indent_);
-        role(out, palette, SemanticRole::Border);
-        out.extend_from_slice("│ ".as_bytes());
-        role(out, palette, SemanticRole::TextMuted);
+        start_row(out);
         out.extend_from_slice(line);
-        out.extend_from_slice(SGR_RESET);
-        out.resize(out.len() + inner.saturating_sub(width(line)), b' ');
-        role(out, palette, SemanticRole::Border);
-        out.extend_from_slice(" │".as_bytes());
-        out.extend_from_slice(SGR_RESET);
+        end_row(out, width(line));
     }
 }
 
@@ -959,6 +1119,7 @@ fn emit_fence(
             .split(|b| b.is_ascii_whitespace() || matches!(*b, b',' | b'}'))
             .next()
             .unwrap_or(b"");
+        state.syntax = CodeSyntax::new(CodeLanguage::from_tag(lang));
         if !lang.is_empty() && budget >= 8 {
             out.extend_from_slice("─[".as_bytes());
             used += 2;
@@ -983,6 +1144,7 @@ fn emit_fence(
     state.in_fence = !state.in_fence;
     if !state.in_fence {
         state.fence_indent.clear();
+        state.syntax = CodeSyntax::default();
     }
     out.extend_from_slice(SGR_RESET);
 }
@@ -1003,7 +1165,7 @@ fn emit_line(line: &[u8], palette: &Palette, state: &mut State, out: &mut Vec<u8
         let code = line
             .strip_prefix(state.fence_indent.as_slice())
             .unwrap_or(line);
-        emit_code(code, &state.fence_indent, palette, state.cols, out);
+        emit_code(code, palette, state, out);
     } else if let Some((level, body)) = heading(clean) {
         emit_heading(indent_, level, body, palette, out, &state.references);
     } else if let Some(body) = clean.strip_prefix(b">") {

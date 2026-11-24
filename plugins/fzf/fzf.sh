@@ -1,3 +1,6 @@
-# ii — fzf preview (POSIX sh/bash/zsh). Usage: source plugins/fzf/fzf.sh
-# The ii CLI talks to the daemon over AF_UNIX and spawns it on cold start.
-export FZF_CTRL_T_OPTS="--preview 'ii --ansi --size \"\${FZF_PREVIEW_COLUMNS}x\${FZF_PREVIEW_LINES}\" -- {} 2>/dev/null || bat --color=always --line-range=:500 {}' --preview-window right:60%"
+# Source after fzf's shell integration to set the Ctrl-T preview.
+# fzf parses shell-style quotes in this variable.
+# shellcheck disable=SC2089
+FZF_CTRL_T_OPTS="${FZF_CTRL_T_OPTS:+$FZF_CTRL_T_OPTS }--preview 'ii-fzf-preview {}' --preview-window right:60%"
+# shellcheck disable=SC2090
+export FZF_CTRL_T_OPTS

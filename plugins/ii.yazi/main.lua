@@ -4,7 +4,6 @@
 local M = {}
 
 local emit = ya.mgr_emit or ya.emit or ya.manager_emit
-local REPLAY_BYTES = 1024 * 1024
 
 local function current(url, skip)
   local tab = cx.active
@@ -18,37 +17,39 @@ local begin = ya.sync(function(state, url, skip)
   local tab = current(url, skip)
   if not tab then return end
   local seek = state.pending_seek
-  state.pending_seek = nil
-  local from = seek and seek.tab == tab and seek.url == url and seek.target == skip and seek.from
+  if seek and (seek.tab ~= tab or seek.url ~= url) then
+    state.pending_seek = nil
+  end
   state.request = (state.request or 0) + 1
-  return tab, state.request, from
+  return tab, state.request
 end)
 
 -- Commit graphics on Yazi's main loop, after rejecting superseded jobs. Writing
 -- from the CLI races Yazi's own terminal writer during rapid navigation.
-local publish_graphics = ya.sync(function(state, tab, request, url, skip, from, geometry, h, rows, packets)
+local publish_graphics = ya.sync(function(state, tab, request, url, skip, geometry, h, rows, packets)
   if state.request ~= request or current(url, skip) ~= tab then return false end
+  local seek = state.pending_seek
+  local scrolling = seek and seek.tab == tab and seek.url == url and seek.target == skip
+  if scrolling then state.pending_seek = nil end
   if packets == false then state.page = nil; return true end
   local page = state.page
   local same = page and page.tab == tab and page.url == url and page.geometry == geometry
   if not packets then
     return true, same and math.min(skip - 1, page.last) or math.max(0, skip - h)
   end
-  local reuse = same and page.skip == from and math.abs(from - skip) < h
+  local reuse = scrolling and same and skip <= page.last and page.skip < skip + rows
   state.page = nil
-  local sent, sent_bytes, tty = {}, 0, nil
-  for _, packet in ipairs(packets) do
-    if not (reuse and page.sent[packet]) then
+  local sent, tty = {}, nil
+  for _, upload in ipairs(packets) do
+    local packet, key = upload[1], upload[2]
+    if not (reuse and page.sent[key]) then
       tty = tty or io.open("/dev/tty", "wb") or io.stdout
       if not tty:write(packet) then
         if tty ~= io.stdout then tty:close() end
         return false
       end
     end
-    if sent_bytes + #packet <= REPLAY_BYTES then
-      sent[packet] = true
-      sent_bytes = sent_bytes + #packet
-    end
+    sent[key] = true
   end
   if tty then
     local ok
@@ -68,13 +69,15 @@ local publish_graphics = ya.sync(function(state, tab, request, url, skip, from, 
 end)
 
 -- Each replayable upload includes all continuations and its virtual placement.
--- Split in the worker. Keep tmux DCS envelopes intact.
+-- Split and hash in the worker. Keep tmux DCS envelopes intact, and retain
+-- only fingerprints of the uploads from the last successfully committed page.
 local function uploads(apc)
   local prefix = apc:sub(1,2) == "\27P" and "\27Ptmux;\27\27_Ga=t," or "\27_Ga=t,"
   local parts, pos = {}, 1
   while pos <= #apc do
     local next_pos = apc:find(prefix, pos+1, true) or (#apc+1)
-    parts[#parts+1] = apc:sub(pos, next_pos-1)
+    local packet = apc:sub(pos, next_pos-1)
+    parts[#parts+1] = { packet, ya.hash(packet) }
     pos = next_pos
   end
   return parts
@@ -86,7 +89,7 @@ end
 
 function M:peek(job)
   local url, skip = tostring(job.file.url), job.skip
-  local tab, request, from = begin(url, skip)
+  local tab, request = begin(url, skip)
   if not tab then return end
   local path = path_of(job)
   local w = (job.area and job.area.w and job.area.w > 0) and job.area.w or 80
@@ -102,7 +105,7 @@ function M:peek(job)
   local theme_arg = is_light and "light" or "dark"
   local geometry = table.concat({w, h, cell_size_arg or "default", theme_arg}, "/")
   local function fail(message)
-    if publish_graphics(tab, request, url, skip, from, geometry, h, 0, false) then
+    if publish_graphics(tab, request, url, skip, geometry, h, 0, false) then
       ya.preview_widget(job, ui.Text("ii: " .. message):area(job.area))
     end
   end
@@ -135,7 +138,7 @@ function M:peek(job)
   if n > #raw-4 then fail("invalid preview frame"); return end
   local text = raw:sub(5+n)
   if text == "" and skip > 0 then
-    local accepted, upper = publish_graphics(tab, request, url, skip, from, geometry, h)
+    local accepted, upper = publish_graphics(tab, request, url, skip, geometry, h)
     if accepted then
       emit("peek", { upper, only_if = job.file.url, upper_bound = true })
     end
@@ -146,7 +149,7 @@ function M:peek(job)
   if text ~= "" and text:sub(-1) ~= "\n" and text:sub(-5) ~= "\n\27[0m" then
     rows = rows + 1
   end
-  if not publish_graphics(tab, request, url, skip, from, geometry, h, rows, uploads(raw:sub(5,4+n))) then return end
+  if not publish_graphics(tab, request, url, skip, geometry, h, rows, uploads(raw:sub(5,4+n))) then return end
   ya.preview_widget(job, ui.Text.parse(text):area(job.area))
 end
 
@@ -154,16 +157,17 @@ function M:seek(job)
   local active = cx.active
   local hovered = active.current.hovered
   if not hovered or hovered.url ~= job.file.url then return end
-  local from = tonumber(active.preview.skip) or 0
-  local units = tonumber(job.units) or 0
-  local target = math.max(0, from + units)
+  local tab, url = cx.tabs.idx, tostring(job.file.url)
+  local skip = tonumber(active.preview.skip) or 0
+  local pending = self.pending_seek
+  local base = pending and pending.tab == tab and pending.url == url and pending.target or skip
+  local target = math.max(0, base + (tonumber(job.units) or 0))
   local page = self.page
-  if page and page.tab == cx.tabs.idx and page.url == tostring(job.file.url)
-      and page.skip == from and page.eof then
+  if page and page.tab == tab and page.url == url and page.skip == skip and page.eof then
     target = math.min(target, page.last)
   end
-  if target == from then return end
-  self.pending_seek = { tab = cx.tabs.idx, url = tostring(job.file.url), from = from, target = target }
+  if target == base then return end
+  self.pending_seek = { tab = tab, url = url, target = target }
   emit("peek", { target, only_if = job.file.url })
 end
 

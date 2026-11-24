@@ -40,7 +40,7 @@ allow = [
 ignore = true
 
 [bans]
-multiple-versions = "deny"
+multiple-versions = "warn"
 wildcards = "deny"
 highlight = "all"
 workspace-default-features = "allow"

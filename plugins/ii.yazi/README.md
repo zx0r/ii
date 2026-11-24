@@ -3,11 +3,14 @@
 Yazi preview adapter for `ii`. Requires the `ii` executable on `PATH` and a
 terminal supporting Kitty Unicode image placeholders.
 
+After publishing the standalone repository as OWNER/ii.yazi, install it:
+
 ```sh
-cargo +stable build --release
-mkdir -p ~/.config/yazi/plugins/ii.yazi
-cp plugins/ii.yazi/main.lua ~/.config/yazi/plugins/ii.yazi/main.lua
+ya pkg add OWNER/ii
 ```
+
+During development, copy main.lua to
+${YAZI_CONFIG_HOME:-$HOME/.config/yazi}/plugins/ii.yazi/main.lua.
 
 Add preview rules to your Yazi configuration:
 
@@ -29,7 +32,8 @@ redraws a fragment of a row. Every KGP continuation carries `q=2`.
 
 
 `seek` uses Yazi's current offset and the requested number of visual rows. An
-end-of-file request clamps to the last known row. Overlapping frames reuse uploads.
+end-of-file request clamps to the last known row. Overlapping scroll frames reuse uploads by packet fingerprint, including large
+charts. The adapter retains only fingerprints from the last published page.
 
 Use `showcase/03.ipynb`, `08.csv` and `07.svg` to exercise notebook graphics, tables
 and standalone images. Run `python3 showcase/checks/yazi.py --notebook` to check

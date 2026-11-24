@@ -7,9 +7,19 @@ resolver = "3"
 readme = "README.md"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/zx0r/ii"
+homepage = "https://github.com/zx0r/ii#readme"
 categories = ["command-line-utilities", "graphics"]
 keywords = ["jupyter-notebook", "markdown", "latex", "svg", "mermaid"]
 description = "Terminal graphical coprocessor: math, diagrams and charts over the Kitty graphics protocol"
+include = [
+  "src/**/*.rs",
+  "tests/**/*.rs",
+  "benches/**/*.rs",
+  "Cargo.toml",
+  "README.md",
+  "CHANGELOG.md",
+  "LICENSE*",
+]
 
 
 [lib]
@@ -96,6 +106,10 @@ strip = "symbols"
 opt-level = 3
 codegen-units = 1
 incremental = false
+
+[profile.dist]
+inherits = "release"
+lto = "fat"
 
 [profile.bench]
 inherits = "release"

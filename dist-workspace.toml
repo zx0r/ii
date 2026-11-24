@@ -18,11 +18,7 @@ pr-run-mode = "plan"
 precise-cli-versions = true
 
 # Publish Jobs
-publish-jobs = ["homebrew", "github-releases"]
-
-[github-releases]
-allow-dirty = false
-draft = false
+publish-jobs = ["homebrew"]
 
 # Target Platform Triples
 targets = [

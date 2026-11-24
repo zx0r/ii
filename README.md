@@ -60,8 +60,10 @@ Install and configure with `lazy.nvim`:
   "zx0r/ii.nvim",
   ft = {
     "markdown", "markdown.mdx", "md", "mdx", "quarto", "qmd", "rmd", "ipynb",
-    "tex", "plaintex", "latex", "typst", "typ", "mermaid", "mmd", "dot", "gv",
-    "svg", "png", "csv", "tsv", "plotly", "vl", "vega", "chem", "mhchem",
+    "html", "htm", "tex", "plaintex", "latex", "typst", "typ",
+    "mermaid", "mmd", "dot", "gv", "svg", "svgz", "png", "csv", "tsv",
+    "plotly", "vl", "vega", "vega-lite", "chem", "mhchem",
+    "zip", "jar", "whl", "tar", "tgz", "tbz2", "txz", "tzst",
   },
   cmd = { "Ii", "IiRender", "IiToggle", "IiClear", "IiPreview" },
   keys = {

@@ -1,7 +1,0 @@
-# Example rules. Merge into your existing [plugin] section.
-# Copy plugins/ii.yazi/main.lua to ~/.config/yazi/plugins/ii.yazi/main.lua.
-# ii must be on PATH. Restart Yazi after updating the Lua adapter.
-[plugin]
-prepend_previewers = [
-  { url = "*.{md,markdown,mdx,qmd,rmd,html,htm,ipynb,mmd,mermaid,dot,gv,svg,png,tex,latex,typ,typst,chem,mhchem,csv,tsv,vl,vega,vega-lite,plotly,zip,tar,tgz,tbz2,txz,tzst,jar,whl}", run = "ii" },
-]

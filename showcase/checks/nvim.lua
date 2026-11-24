@@ -1,5 +1,6 @@
 vim.o.termguicolors=true
-vim.opt.rtp:append(vim.env.II_ROOT..'/plugins/ii.nvim')
+local plugin_path = vim.fn.isdirectory(vim.env.II_ROOT..'/plugins/ii.nvim') == 1 and (vim.env.II_ROOT..'/plugins/ii.nvim') or vim.fn.expand('~/x/dev/own/ii-plugins/ii.nvim')
+vim.opt.rtp:append(plugin_path)
 vim.cmd('runtime! ftdetect/ii.lua')
 vim.wo.number=true;vim.wo.relativenumber=true;vim.wo.signcolumn='yes:2';vim.wo.foldcolumn='2';vim.wo.winbar='source view';vim.wo.wrap=true
 local showcase = vim.env.II_ROOT .. '/showcase'

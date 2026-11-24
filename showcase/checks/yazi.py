@@ -77,7 +77,8 @@ def main():
     args=parser.parse_args()
     with tempfile.TemporaryDirectory(prefix='ii-yazi-check-') as tmp:
         cfg=Path(tmp)/'config';(cfg/'plugins').mkdir(parents=True)
-        (cfg/'plugins/ii.yazi').symlink_to(ROOT/'plugins/ii.yazi')
+        plugin_src = (ROOT/'plugins/ii.yazi') if (ROOT/'plugins/ii.yazi').exists() else (Path.home()/'x/dev/own/ii-plugins/ii.yazi')
+        (cfg/'plugins/ii.yazi').symlink_to(plugin_src)
         (cfg/'yazi.toml').write_text('[plugin]\nprepend_previewers=[{url="*.{md,mdx,qmd,rmd,svg,dot,gv,ipynb}",run="ii"}]\n')
         step = 10 if args.notebook else 5
         (cfg/'keymap.toml').write_text(f'[mgr]\nprepend_keymap=[{{on="J",run="seek {step}"}},{{on="K",run="seek -{step}"}}]\n')

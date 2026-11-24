@@ -2,6 +2,56 @@
 
 /// Append the requested visual rows, restoring SGR state inherited from skipped rows.
 pub fn append(src: &[u8], cols: u16, skip: u32, max: u32, out: &mut Vec<u8>) {
+    scan(src, cols, skip, max, out, Vec::new(), |_, _, _| {});
+}
+
+/// Sparse visual-row checkpoints for a single immutable source and width.
+/// A page can resume inside a wrapped line with its original foreground/style.
+#[derive(Debug, Default)]
+pub(crate) struct RowIndex(Vec<(usize, Box<[u8]>)>);
+
+impl RowIndex {
+    const STRIDE: u32 = 32;
+    const MAX_ENTRIES: usize = 1024;
+
+    pub(crate) fn clear(&mut self) {
+        self.0.clear();
+    }
+
+    pub(crate) fn page(&mut self, src: &[u8], cols: u16, skip: u32, rows: u32, out: &mut Vec<u8>) {
+        let block = ((skip / Self::STRIDE) as usize).min(self.0.len());
+        let (offset, sgr) = block.checked_sub(1).map_or((0, Vec::new()), |i| {
+            let (offset, sgr) = &self.0[i];
+            (*offset, sgr.to_vec())
+        });
+        let base = u32::try_from(block).unwrap_or(0) * Self::STRIDE;
+        let mut next = (self.0.len() as u64 + 1) * u64::from(Self::STRIDE) - u64::from(base);
+        scan(
+            &src[offset..],
+            cols,
+            skip - base,
+            rows,
+            out,
+            sgr,
+            |row, pos, state| {
+                if row == next && self.0.len() < Self::MAX_ENTRIES {
+                    self.0.push((offset + pos, state.into()));
+                    next += u64::from(Self::STRIDE);
+                }
+            },
+        );
+    }
+}
+
+fn scan(
+    src: &[u8],
+    cols: u16,
+    skip: u32,
+    max: u32,
+    out: &mut Vec<u8>,
+    mut sgr: Vec<u8>,
+    mut checkpoint: impl FnMut(u64, usize, &[u8]),
+) {
     let width = usize::from(cols.max(1));
     let end = if max == 0 {
         u64::MAX
@@ -11,7 +61,6 @@ pub fn append(src: &[u8], cols: u16, skip: u32, max: u32, out: &mut Vec<u8>) {
     let mut row = 0u64;
     let mut col = 0usize;
     let mut pos = 0;
-    let mut sgr = Vec::new();
     let mut started = false;
     let mut graphic_left = 0;
     while pos < src.len() && row < end {
@@ -46,13 +95,14 @@ pub fn append(src: &[u8], cols: u16, skip: u32, max: u32, out: &mut Vec<u8>) {
                 }
                 row += 1;
                 col = 0;
+                checkpoint(row, pos, &sgr);
                 if row >= end {
                     break;
                 }
             }
         }
         let byte = src[pos];
-        let (len, cells) = if byte == b'\n' {
+        let (len, mut cells) = if byte == b'\n' {
             (1, 0)
         } else if byte == b'\t' {
             (1, 4 - col % 4)
@@ -78,6 +128,10 @@ pub fn append(src: &[u8], cols: u16, skip: u32, max: u32, out: &mut Vec<u8>) {
             }
             row += 1;
             col = 0;
+            checkpoint(row, pos, &sgr);
+            if byte == b'\t' {
+                cells = 4;
+            }
             if row >= end {
                 break;
             }
@@ -96,6 +150,7 @@ pub fn append(src: &[u8], cols: u16, skip: u32, max: u32, out: &mut Vec<u8>) {
         if byte == b'\n' {
             row += 1;
             col = 0;
+            checkpoint(row, pos + len, &sgr);
         } else {
             col += cells;
         }
@@ -155,5 +210,29 @@ pub fn cells(ch: char) -> usize {
         | 0x1f300..=0x1faff
         | 0x20000..=0x3fffd => 2,
         _ => 1,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RowIndex, append};
+
+    #[test]
+    fn indexed_scroll_matches_full_layout_in_both_directions() {
+        let mut src = "abc界\t1234567890\n\x1b[1;32mcontinued αβγ "
+            .repeat(63)
+            .into_bytes();
+        crate::kitty::emit_placeholder(42, 12, 7, &mut src);
+        src.extend_from_slice(b"\x1b[0mend");
+        for cols in [3, 7, 13] {
+            let mut index = RowIndex::default();
+            for skip in (0..320).rev().chain(0..320) {
+                let mut reference = Vec::new();
+                append(&src, cols, skip, 7, &mut reference);
+                let mut page = Vec::new();
+                index.page(&src, cols, skip, 7, &mut page);
+                assert_eq!(page, reference, "width {cols}, skip {skip}");
+            }
+        }
     }
 }

@@ -1,9 +1,55 @@
+vim.o.termguicolors=true
 vim.opt.rtp:append(vim.env.II_ROOT..'/plugins/ii.nvim')
 vim.cmd('runtime! ftdetect/ii.lua')
 vim.wo.number=true;vim.wo.relativenumber=true;vim.wo.signcolumn='yes:2';vim.wo.foldcolumn='2';vim.wo.winbar='source view';vim.wo.wrap=true
 vim.cmd('edit '..vim.env.II_ROOT..'/showcase/scenarios/incident.md')
 vim.o.mouse='a'
 local ii=require('ii');ii.setup({socket_path=vim.env.II_SOCKET})
+-- Compare the real editor grid with the independent PreviewFile path used by Yazi.
+-- Use the PTY's 9x18 cell geometry. Headless Neovim has no terminal metrics.
+local function compare_formula_grid(path)
+ if not vim.env.II_BINARY then return end
+ local width, height = vim.api.nvim_win_get_width(0), 18
+ local ref = vim.system({vim.env.II_BINARY, '--machine', '--socket', vim.env.II_SOCKET,
+  '--size', width..'x'..height, '--cell-size', '9x18', '--theme', vim.o.background,
+  '--', path}):wait()
+ assert(ref.code == 0, ref.stderr)
+ local a,b,c,d = ref.stdout:byte(1,4)
+ local text = ref.stdout:sub(5+a+b*256+c*65536+d*16777216)
+ local expected, actual = {}, {}
+ local marker = vim.fn.nr2char(0x10eeee)
+ vim.api.nvim__inspect_cell(1,0,0)
+ vim.cmd('redraw!')
+ for row,line in ipairs(vim.split(text, '\n', {plain=true})) do
+  local pos = 1
+  while true do
+   local first,last,r,g,blue,run = line:find('\27%[38;2;(%d+);(%d+);(%d+)m('..marker..'[^\27]*)',pos)
+   if not first then break end
+   local before = line:sub(1,first-1):gsub('\27%[[%d;]*m','')
+   local col = vim.fn.strdisplaywidth(before)
+   local _,cells = run:gsub(marker,'')
+   local selector = vim.fn.strgetchar(run,1)
+   for i=1,cells do
+    expected[row..','..(col+i)] = {r*65536+g*256+blue,selector}
+   end
+   pos = last+1
+  end
+ end
+ for row=1,height do
+  for col=1,width do
+   local chars=vim.fn.screenchars(row,col)
+   if chars[1]==0x10eeee then
+    local cell=vim.api.nvim__inspect_cell(1,row-1,col-1)
+    actual[row..','..col]={cell[2].foreground,chars[2]}
+   end
+  end
+ end
+ assert(next(expected), 'reference has no formulas: '..path)
+ for key,v in pairs(expected) do
+  assert(vim.deep_equal(v,actual[key]), path..' formula at '..key..': expected '..vim.inspect(v)..', got '..vim.inspect(actual[key]))
+ end
+ assert(vim.tbl_count(actual)==vim.tbl_count(expected), 'extra formula cells: '..path)
+end
 do
  local buf=vim.api.nvim_get_current_buf()
  vim.api.nvim_buf_set_lines(buf,0,-1,false,{
@@ -66,6 +112,7 @@ for _,file in ipairs({'../01.md','../02.qmd','../03.ipynb','../04.tex','../11.md
  if not native then assert(ii.status().graphics_bytes>0,'no graphics for '..file) end
  if file=='../01.md' or file=='../02.qmd' or file=='../12.rmd' then
   vim.cmd('normal! ggzt');vim.api.nvim__redraw({valid=false,flush=true})
+  compare_formula_grid(vim.api.nvim_buf_get_name(buf))
   local top={}
   local graphic_cells=0
   for row=1,vim.o.lines-2 do

@@ -28,7 +28,7 @@ with tempfile.TemporaryDirectory(prefix='ii-nvim-ui-') as tmp:
     fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',40,120,1080,720))
     def session():
         os.setsid();fcntl.ioctl(slave,termios.TIOCSCTTY,0)
-    env=dict(os.environ,TERM='xterm-kitty',II_ROOT=str(ROOT),II_SOCKET=sock,II_FAILURE=str(Path(tmp)/'failure.txt'),XDG_STATE_HOME=str(Path(tmp)/'state'),XDG_CACHE_HOME=str(Path(tmp)/'cache'))
+    env=dict(os.environ,TERM='xterm-kitty',II_ROOT=str(ROOT),II_BINARY=str(args.binary.resolve()),II_SOCKET=sock,II_FAILURE=str(Path(tmp)/'failure.txt'),XDG_STATE_HOME=str(Path(tmp)/'state'),XDG_CACHE_HOME=str(Path(tmp)/'cache'))
     env.pop('TMUX',None)
     child=None
     try:

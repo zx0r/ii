@@ -350,3 +350,41 @@ fn compressed_kitty_upload_reduces_repeated_pixel_payload() -> Result<(), Error>
     assert_eq!(decoded, rgba);
     Ok(())
 }
+
+#[test]
+fn repeated_formula_stages_one_shm_object_per_frame() -> Result<(), Box<dyn core::error::Error>> {
+    use ii::compose::{ComposeCtx, ComposeOut, ComposeScratch, compose_document};
+    let pid = getpid().as_raw_nonzero().get().unsigned_abs();
+    let mut seq = 0x3100_0000;
+    let start = seq;
+    let _guards =
+        [1, 2].map(|n| CString::new(format!("/ii-{pid:08x}-{:08x}", start + n)).map(ShmGuard));
+    let ctx = ComposeCtx {
+        cell_w: 9,
+        cell_h: 18,
+        cols: 80,
+        rows: 24,
+        max_w: 720,
+        palette: &DARK,
+        is_tmux: false,
+        is_remote: false,
+        skip_lines: 0,
+        max_lines: 0,
+        explicit_graphics: false,
+    };
+    let mut out = ComposeOut::new();
+    compose_document(
+        b"first $x^2$ then $x^2$",
+        ctx,
+        None,
+        &mut ComposeScratch::new(),
+        &mut seq,
+        pid,
+        &mut out,
+    )?;
+    assert_eq!(out.extmarks.len(), 2);
+    assert_eq!(out.uploads.len(), 1);
+    assert!(out.apc.starts_with(b"\x1b_Ga=t,t=s,"));
+    assert_eq!(seq - start, 1);
+    Ok(())
+}

@@ -98,6 +98,7 @@ struct DaemonState {
     preview_key: Option<blake3::Hash>,
     preview: compose::ComposeOut,
     page: Vec<u8>,
+    row_index: crate::viewport::RowIndex,
     l2_dir: Option<OwnedFd>,
     compose_scratch: compose::ComposeScratch,
     compose_out: compose::ComposeOut,
@@ -111,6 +112,7 @@ impl DaemonState {
             preview_key: None,
             preview: compose::ComposeOut::new(),
             page: Vec::new(),
+            row_index: crate::viewport::RowIndex::default(),
             l2_dir: cache::ensure_dirs().ok(),
             compose_scratch: compose::ComposeScratch::new(),
             compose_out: compose::ComposeOut::new(),
@@ -356,6 +358,7 @@ fn handle_preview_file(
     let key = hash.finalize();
     if state.preview_key != Some(key) {
         state.preview_key = None;
+        state.row_index.clear();
         let ctx = RenderCtx::from_header(header);
         let context = compose::ComposeCtx {
             cell_w: ctx.cell_w,
@@ -390,7 +393,7 @@ fn handle_preview_file(
         }
     }
     state.page.clear();
-    crate::viewport::append(
+    state.row_index.page(
         &state.preview.ansi,
         header.cols,
         skip,
@@ -406,6 +409,7 @@ fn handle_preview_file(
     );
     if state.preview_key.is_none() {
         state.preview = compose::ComposeOut::new();
+        state.row_index.clear();
     }
 }
 

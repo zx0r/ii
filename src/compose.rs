@@ -248,7 +248,7 @@ pub fn compose_document(
         let payload = &src[span.inner_start as usize..span.inner_end() as usize];
         let apc_start = out.apc.len();
         let ansi_start = out.ansi.len();
-        match image::render(
+        match image::render_if(
             span.kind(),
             payload,
             ctx.image(),
@@ -257,16 +257,15 @@ pub fn compose_document(
             seq,
             pid,
             &mut out.apc,
+            |id| scratch.image_ids.insert(id),
         ) {
             Ok((_, _, cols, rows, id)) => {
-                if scratch.image_ids.insert(id) {
+                if out.apc.len() > apc_start {
                     out.uploads.push(Upload {
                         image_id: id,
                         start: apc_start,
                         end: out.apc.len(),
                     });
-                } else {
-                    out.apc.truncate(apc_start);
                 }
                 scratch.coords.push(SpanCoord {
                     outer_start: span.outer_start,

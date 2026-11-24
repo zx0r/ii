@@ -72,11 +72,12 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', type=Path, default=ROOT/'target/debug/ii')
     parser.add_argument('--report', type=Path)
+    parser.add_argument('--notebook', action='store_true', help='scroll the real analysis notebook in both directions')
     args=parser.parse_args()
     with tempfile.TemporaryDirectory(prefix='ii-yazi-check-') as tmp:
         cfg=Path(tmp)/'config';(cfg/'plugins').mkdir(parents=True)
         (cfg/'plugins/ii.yazi').symlink_to(ROOT/'plugins/ii.yazi')
-        (cfg/'yazi.toml').write_text('[plugin]\nprepend_previewers=[{url="*.{md,mdx,qmd,rmd,svg,dot,gv}",run="ii"}]\n')
+        (cfg/'yazi.toml').write_text('[plugin]\nprepend_previewers=[{url="*.{md,mdx,qmd,rmd,svg,dot,gv,ipynb}",run="ii"}]\n')
         (cfg/'keymap.toml').write_text('[mgr]\nprepend_keymap=[{on="J",run="seek 5"},{on="K",run="seek -5"}]\n')
         # A private executable path avoids changing any installed binary or configuration.
         bindir=Path(tmp)/'bin';bindir.mkdir();(bindir/'ii').symlink_to(args.binary.resolve())
@@ -86,7 +87,8 @@ def main():
         env.pop('TMUX',None)
         def session():
             os.setsid();fcntl.ioctl(slave,termios.TIOCSCTTY,0)
-        child=subprocess.Popen(['yazi',str(ROOT/'showcase/scenarios/replicas.svg')],stdin=slave,stdout=slave,stderr=slave,env=env,preexec_fn=session)
+        fixture = 'analysis.ipynb' if args.notebook else 'replicas.svg'
+        child=subprocess.Popen(['yazi',str(ROOT/'showcase/scenarios'/fixture)],stdin=slave,stdout=slave,stderr=slave,env=env,preexec_fn=session)
         peer=Peer(master)
         def pump(seconds):
             deadline=time.monotonic()+seconds
@@ -98,11 +100,24 @@ def main():
                     peer.feed(data)
         try:
             pump(2)
-            for _ in range(20):
-                os.write(master,b'J');pump(.025)
-                os.write(master,b'\x1b[B');pump(.025)
-                os.write(master,b'\x1b[A');pump(.025)
-                os.write(master,b'K');pump(.025)
+            if args.notebook:
+                assert b'NOTEBOOK-00' in peer.visible, 'notebook preview was not displayed'
+                initial_packets = peer.graphics
+                assert initial_packets > 0, 'initial notebook frame did not upload its formulas'
+                reused = 0
+                for key in [b'J'] * 16 + [b'K'] * 16:
+                    before, packets = len(peer.visible), peer.graphics
+                    os.write(master,key);pump(.13)
+                    if len(peer.visible)>before and peer.graphics == packets:
+                        reused += 1
+                assert b'NOTEBOOK-05' in peer.visible, 'notebook did not advance'
+                assert reused > 0, 'every scroll retransmitted graphics'
+            else:
+                for _ in range(20):
+                    os.write(master,b'J');pump(.025)
+                    os.write(master,b'\x1b[B');pump(.025)
+                    os.write(master,b'\x1b[A');pump(.025)
+                    os.write(master,b'K');pump(.025)
             pump(1)
             raw=termios.tcgetattr(slave)
             assert raw[3] & (termios.ECHO|termios.ICANON) == 0, 'preview changed TUI input mode'
@@ -116,7 +131,8 @@ def main():
             assert not re.search(r'[A-Za-z0-9+/]{100,}',text), 'Base64 escaped into visible text'
             assert 'ii:' not in text and 'stack traceback' not in text, text[-1000:]
             assert not re.search(r'A{4,}|D{4,}|B{4,}',text), 'arrow key bytes became visible'
-            result=dict(graphic_packets=peer.graphics,unquiet_commands=peer.unquiet,interleaved_packets=peer.broken,exit=child.returncode,arrow_keys=40,scroll_keys=40)
+            result=dict(graphic_packets=peer.graphics,unquiet_commands=peer.unquiet,interleaved_packets=peer.broken,exit=child.returncode,arrow_keys=0 if args.notebook else 40,scroll_keys=32 if args.notebook else 40)
+            if args.notebook: result.update(initial_packets=initial_packets, redraws_without_upload=reused)
             print(json.dumps(result,indent=2))
             if args.report: args.report.write_text(json.dumps(result,indent=2)+'\n')
         finally:

@@ -99,31 +99,63 @@ pub fn render(
     pid: u32,
     apc_out: &mut Vec<u8>,
 ) -> Result<(u16, u16, u16, u16, u32), Error> {
+    render_if(
+        kind,
+        payload,
+        ctx,
+        l2_dir,
+        scratch,
+        shm_seq,
+        pid,
+        apc_out,
+        |_| true,
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "shares caller-owned staging buffers with render"
+)]
+pub(crate) fn render_if(
+    kind: Kind,
+    payload: &[u8],
+    ctx: Context<'_>,
+    l2_dir: Option<BorrowedFd<'_>>,
+    scratch: &mut Scratch,
+    shm_seq: &mut u32,
+    pid: u32,
+    apc_out: &mut Vec<u8>,
+    needs_upload: impl FnOnce(u32) -> bool,
+) -> Result<(u16, u16, u16, u16, u32), Error> {
     let key = ctx.cache_key(kind, payload);
 
     let mut raw_tag = [0; 8];
     raw_tag.copy_from_slice(&key[..8]);
     let tag = vram::Tag::new(u64::from_le_bytes(raw_tag) | 1).ok_or(Error::CacheCorrupt)?;
     let image_id = tag.image_id().get();
+    let upload = |w, h, cols, rows, rgba: &[u8], b64: &mut Vec<u8>| {
+        if needs_upload(image_id) {
+            let params = StageParams {
+                image_id,
+                w,
+                h,
+                cols,
+                rows,
+                is_tmux: ctx.is_tmux,
+            };
+            stage(rgba, params, ctx.is_remote, shm_seq, pid, apc_out, b64);
+        }
+        (w, h, cols, rows, image_id)
+    };
     if let Some(hit) = scratch.cache.lookup(tag) {
-        let params = StageParams {
-            image_id,
-            w: hit.w,
-            h: hit.h,
-            cols: hit.cols,
-            rows: hit.rows,
-            is_tmux: ctx.is_tmux,
-        };
-        stage(
+        return Ok(upload(
+            hit.w,
+            hit.h,
+            hit.cols,
+            hit.rows,
             &hit.rgba,
-            params,
-            ctx.is_remote,
-            shm_seq,
-            pid,
-            apc_out,
             &mut scratch.b64,
-        );
-        return Ok((hit.w, hit.h, hit.cols, hit.rows, image_id));
+        ));
     }
 
     let cached = if let Some(dir) = l2_dir {
@@ -199,26 +231,14 @@ pub fn render(
         .cache
         .insert(tag, cols, rows, w, h, &scratch.render.rgba_buf);
 
-    let params = StageParams {
-        image_id,
+    Ok(upload(
         w,
         h,
         cols,
         rows,
-        is_tmux: ctx.is_tmux,
-    };
-
-    stage(
         &scratch.render.rgba_buf,
-        params,
-        ctx.is_remote,
-        shm_seq,
-        pid,
-        apc_out,
         &mut scratch.b64,
-    );
-
-    Ok((w, h, cols, rows, image_id))
+    ))
 }
 
 fn stage(

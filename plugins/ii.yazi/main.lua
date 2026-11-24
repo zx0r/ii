@@ -7,17 +7,40 @@ local emit = ya.mgr_emit or ya.emit or ya.manager_emit
 
 -- Commit graphics on Yazi's main loop, after rejecting superseded jobs. Writing
 -- from the CLI races Yazi's own terminal writer during rapid navigation.
-local publish_graphics = ya.sync(function(_, url, skip, apc)
+local publish_graphics = ya.sync(function(state, url, skip, geometry, packets, bytes)
   local tab = cx.tab or cx.active
   local hovered = tab.current.hovered
   if not hovered or tostring(hovered.url) ~= url or tab.preview.skip ~= skip then return false end
-  if #apc > 0 then
-    local tty = io.open("/dev/tty", "wb")
-    if not tty then return false end
-    tty:write(apc); tty:flush(); tty:close()
+  local page = state.page
+  local reuse = state.next_skip == skip and page and page.url == url
+    and page.tab == tab.id and page.geometry == geometry
+  state.page, state.next_skip = nil, nil
+  local sent, tty = {}, nil
+  for _, packet in ipairs(packets) do
+    if not (reuse and page.sent[packet]) then
+      tty = tty or io.open("/dev/tty", "wb")
+      if not tty then return false end
+      if not tty:write(packet) then tty:close(); return false end
+    end
+    if bytes <= 1024 * 1024 then sent[packet] = true end
   end
+  if tty and not tty:close() then return false end
+  state.page = { url = url, tab = tab.id, skip = skip, geometry = geometry, sent = sent }
   return true
 end)
+
+-- Each replayable upload includes all continuations and its virtual placement.
+-- Split in the worker. Keep tmux DCS envelopes intact.
+local function uploads(apc)
+  local prefix = apc:sub(1,2) == "\27P" and "\27Ptmux;\27\27_Ga=t," or "\27_Ga=t,"
+  local parts, pos = {}, 1
+  while pos <= #apc do
+    local next_pos = apc:find(prefix, pos+1, true) or (#apc+1)
+    parts[#parts+1] = apc:sub(pos, next_pos-1)
+    pos = next_pos
+  end
+  return parts
+end
 
 local function path_of(job)
   return (tostring(job.file.path or job.file.url):gsub("^file://", ""))
@@ -62,7 +85,8 @@ function M:peek(job)
   local a,b,c,d = raw:byte(1,4)
   local n = a+b*256+c*65536+d*16777216
   if n > #raw-4 then return end
-  if not publish_graphics(tostring(job.file.url), job.skip or 0, raw:sub(5,4+n)) then return end
+  local geometry = table.concat({w, h, cell_size_arg, theme_arg}, "/")
+  if not publish_graphics(tostring(job.file.url), job.skip or 0, geometry, uploads(raw:sub(5,4+n)), n) then return end
   local text = raw:sub(5+n)
   if text == "" and (job.skip or 0) > 0 then
     emit("peek", { math.max(0, job.skip - h), only_if = job.file.url, upper_bound = true })
@@ -75,9 +99,12 @@ function M:seek(job)
   local tab = cx.tab or cx.active
   local hovered = tab.current.hovered
   if not hovered or hovered.url ~= job.file.url then return end
-  local step = math.floor(job.units * job.area.h / 10)
-  if step == 0 then step = job.units > 0 and 1 or (job.units < 0 and -1 or 0) end
-  emit("peek", { math.max(0, tab.preview.skip + step), only_if = job.file.url, scope = job.scope })
+  local from = tab.preview.skip
+  local target = math.max(0, from + job.units)
+  if target == from then return end
+  self.next_skip = self.page and self.page.skip == from and math.abs(target-from) < job.area.h
+    and target or nil
+  emit("peek", { target, only_if = job.file.url, scope = job.scope })
 end
 
 function M:preload(_) return true end

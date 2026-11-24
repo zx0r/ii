@@ -10,7 +10,7 @@ use rustix::{
     fd::{AsFd, BorrowedFd, OwnedFd},
     fs::{
         AtFlags, CWD, FileType, FlockOperation, Mode, OFlags, chmodat, fchmod, fcntl_getfl,
-        fcntl_setfl, flock, fstat, mkdirat, openat, unlinkat,
+        fcntl_setfl, flock, fstat, mkdirat, openat, statat, unlinkat,
     },
     io::{Errno, FdFlags, fcntl_setfd, read, write},
     net::{AddressFamily, SocketAddrUnix, SocketType, accept, bind, listen, socket, sockopt},
@@ -124,8 +124,10 @@ impl DaemonState {
     fn reset_request(&mut self) {
         self.compose_scratch.reset();
         self.compose_out.clear();
+        // Keep the bounded response capacity between scroll requests. Shrinking
+        // here forced a fresh allocation for every notebook page and amplified
+        // diagram latency during rapid Yazi seeks.
         self.text_buf.clear();
-        self.text_buf.shrink_to(256 * 1024);
     }
 }
 
@@ -271,7 +273,16 @@ fn bind_listener(sock_override: Option<&Path>) -> Result<(OwnedFd, DaemonGuard),
 }
 
 fn read_bounded_file(path: &Path, out: &mut Vec<u8>) -> Result<(), Errno> {
-    let fd = openat(CWD, path, OFlags::RDONLY | OFlags::CLOEXEC, Mode::empty())?;
+    let metadata = statat(CWD, path, AtFlags::SYMLINK_NOFOLLOW)?;
+    if FileType::from_raw_mode(metadata.st_mode) != FileType::RegularFile {
+        return Err(Errno::INVAL);
+    }
+    let fd = openat(
+        CWD,
+        path,
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        Mode::empty(),
+    )?;
     let st = fstat(&fd)?;
     if FileType::from_raw_mode(st.st_mode) != FileType::RegularFile {
         return Err(Errno::INVAL);
@@ -471,23 +482,35 @@ fn render_response(
                 row += memchr::memchr_iter(b'\n', &src[a..b]).count();
                 cursor = b;
             }
-        } else {
-            blocks.push((
-                0,
-                memchr::memchr_iter(b'\n', src).count() + 1,
-                out.ansi.clone(),
-            ));
         }
         state.text_buf.clear();
-        for (a, b, text) in blocks {
-            let mut wrapped = Vec::new();
-            crate::viewport::append(&text, ctx.cols, 0, 0, &mut wrapped);
-            for n in [a, b, wrapped.len()] {
-                state
-                    .text_buf
-                    .extend_from_slice(&u32::try_from(n).unwrap_or(u32::MAX).to_le_bytes());
+        if matches!(kind, Kind::Md | Kind::Mdx | Kind::Ipynb) {
+            for (a, b, text) in blocks {
+                let wrapped_start = state.text_buf.len();
+                state.text_buf.extend_from_slice(&[0; 12]);
+                let content_start = state.text_buf.len();
+                crate::viewport::append(&text, ctx.cols, 0, 0, &mut state.text_buf);
+                let content_len = state.text_buf.len() - content_start;
+                let values = [a, b, content_len];
+                for (index, value) in values.into_iter().enumerate() {
+                    state.text_buf[wrapped_start + index * 4..wrapped_start + index * 4 + 4]
+                        .copy_from_slice(&u32::try_from(value).unwrap_or(u32::MAX).to_le_bytes());
+                }
             }
-            state.text_buf.extend_from_slice(&wrapped);
+        } else {
+            let first = 0u32.to_le_bytes();
+            let last = u32::try_from(memchr::memchr_iter(b'\n', src).count() + 1)
+                .unwrap_or(u32::MAX)
+                .to_le_bytes();
+            state.text_buf.extend_from_slice(&first);
+            state.text_buf.extend_from_slice(&last);
+            let size_at = state.text_buf.len();
+            state.text_buf.extend_from_slice(&[0; 4]);
+            let content_start = state.text_buf.len();
+            crate::viewport::append(&out.ansi, ctx.cols, 0, 0, &mut state.text_buf);
+            let content_len =
+                u32::try_from(state.text_buf.len() - content_start).unwrap_or(u32::MAX);
+            state.text_buf[size_at..size_at + 4].copy_from_slice(&content_len.to_le_bytes());
         }
         encode_dual_response(cmd, &out.apc, &state.text_buf, &mut slot.buf);
     } else if cmd == Cmd::ComposeExtmarks {

@@ -4,7 +4,7 @@ use std::{ffi::OsString, os::unix::ffi::OsStrExt, path::Path};
 
 use rustix::{
     fd::{AsFd, BorrowedFd},
-    fs::{CWD, FileType, Mode, OFlags, fstat, openat},
+    fs::{AtFlags, CWD, FileType, Mode, OFlags, fstat, openat, statat},
     io::{Errno, read, write},
     process::getpid,
     termios::isatty,
@@ -274,7 +274,16 @@ fn read_stdin_bounded() -> Result<Vec<u8>, Error> {
 }
 
 fn read_file_bounded(path: &Path) -> Result<Vec<u8>, Error> {
-    let fd = openat(CWD, path, OFlags::RDONLY | OFlags::CLOEXEC, Mode::empty())?;
+    let metadata = statat(CWD, path, AtFlags::SYMLINK_NOFOLLOW)?;
+    if FileType::from_raw_mode(metadata.st_mode) != FileType::RegularFile {
+        return Err(Error::Io(Errno::INVAL));
+    }
+    let fd = openat(
+        CWD,
+        path,
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        Mode::empty(),
+    )?;
     let st = fstat(&fd)?;
     if FileType::from_raw_mode(st.st_mode) != FileType::RegularFile {
         return Err(Error::Io(Errno::INVAL));

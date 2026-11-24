@@ -369,7 +369,9 @@ function M.render(bufnr, win, force)
         local magic = unpack_u32_le(full_prefix, 1)
         local version = unpack_u16_le(full_prefix, 5)
         local command = unpack_u16_le(full_prefix, 7)
-        if unpack_u32_le(full_prefix, 9) ~= bufnr or unpack_u32_le(full_prefix, 13) ~= tick or magic ~= 0x49585043 or version ~= 1 or command ~= 0x8000 + (binary and 4 or 8) or resp_payload_len > 67108864 or apc_len > resp_payload_len then
+        local base_command = command % 0x4000
+        local expected_command = binary and 4 or 8
+        if unpack_u32_le(full_prefix, 9) ~= bufnr or unpack_u32_le(full_prefix, 13) ~= tick or magic ~= 0x49585043 or version ~= 1 or base_command ~= expected_command or resp_payload_len > 67108864 or apc_len > resp_payload_len then
           failed("invalid render response"); return
         end
         expected_len = 32 + resp_payload_len
@@ -382,6 +384,11 @@ function M.render(bufnr, win, force)
 
         requests[win] = nil
         local full_buf = table.concat(rx_chunks)
+        if command >= 0xC000 then
+          local message = full_buf:sub(33, 32 + resp_payload_len):gsub("%s+$", "")
+          failed(message ~= "" and message or "render request failed")
+          return
+        end
         vim.schedule(function()
           if deadlines[win] == deadline then deadline:stop(); deadline:close(); deadlines[win] = nil end
           if not vim.api.nvim_buf_is_valid(bufnr) then return end
@@ -490,7 +497,7 @@ function M.setup(opts)
       local ft = vim.bo[bufnr].filetype
       local ext = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(bufnr),":e"):lower()
       if not ({markdown=true,md=true,mdx=true,quarto=true,qmd=true,rmd=true})[ft]
-        and not ({md=true,markdown=true,mdx=true,qmd=true,rmd=true,html=true,htm=true,ipynb=true,plotly=true,vl=true,["vega-lite"]=true,json=true,csv=true,tsv=true,tex=true,latex=true,chem=true,mhchem=true,mmd=true,mermaid=true,dot=true,gv=true,svg=true,typ=true,typst=true,zip=true,tar=true,jar=true,whl=true,tgz=true,tbz2=true,txz=true,tzst=true,png=true})[ext] then return end
+        and not ({md=true,markdown=true,mdx=true,qmd=true,rmd=true,html=true,htm=true,ipynb=true,plotly=true,vl=true,vega=true,["vega-lite"]=true,json=true,csv=true,tsv=true,tex=true,latex=true,chem=true,mhchem=true,mmd=true,mermaid=true,dot=true,gv=true,svg=true,typ=true,typst=true,zip=true,tar=true,jar=true,whl=true,tgz=true,tbz2=true,txz=true,tzst=true,png=true})[ext] then return end
       if frames[vim.api.nvim_get_current_win()] and frames[vim.api.nvim_get_current_win()].tick~=vim.api.nvim_buf_get_changedtick(bufnr) then decorate(vim.api.nvim_get_current_win()) end
       if vim.fn.mode():match("^[iR]") then return end
       if buffer_enabled[bufnr] == false then return end

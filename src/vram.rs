@@ -229,18 +229,6 @@ impl Cache {
         if rgba.len() > BUDGET {
             return;
         }
-        let retained: usize = self
-            .ways
-            .iter()
-            .flatten()
-            .map(|entry| entry.rgba.capacity())
-            .sum();
-        if retained.saturating_add(rgba.len()) > BUDGET {
-            self.invalidate();
-            for entry in self.ways.iter_mut().flatten() {
-                entry.rgba = Vec::new();
-            }
-        }
 
         let idx = usize::from((tag.get() >> 6).to_le_bytes()[0] & 15);
         let mut chosen = None;
@@ -254,9 +242,45 @@ impl Cache {
             }
         }
         let way = chosen.unwrap_or_else(|| plru_victim(self.plru[idx]));
+        let replacing = self.ways[idx][way].rgba.capacity();
+        let mut retained = self
+            .ways
+            .iter()
+            .flatten()
+            .map(|entry| entry.rgba.capacity())
+            .sum::<usize>()
+            .saturating_sub(replacing);
+
+        // Evict only enough cold slots to fit the new image. Clearing the whole
+        // table made every subsequent notebook page pay the rasterization cost again.
+        while retained.saturating_add(rgba.len()) > BUDGET {
+            let mut victim: Option<(usize, usize)> = None;
+            for set in 0..self.ways.len() {
+                for victim_way in 0..self.ways[set].len() {
+                    if set == idx && victim_way == way {
+                        continue;
+                    }
+                    let capacity = self.ways[set][victim_way].rgba.capacity();
+                    if capacity > 0
+                        && victim.is_none_or(|(best_set, best_way)| {
+                            capacity < self.ways[best_set][best_way].rgba.capacity()
+                        })
+                    {
+                        victim = Some((set, victim_way));
+                    }
+                }
+            }
+            let Some((victim_set, victim_way)) = victim else {
+                break;
+            };
+            retained = retained.saturating_sub(self.ways[victim_set][victim_way].rgba.capacity());
+            self.tags[victim_set][victim_way] = None;
+            self.ways[victim_set][victim_way].rgba.clear();
+            self.ways[victim_set][victim_way].rgba.shrink_to(0);
+        }
+
         self.tags[idx][way] = Some(tag);
         self.plru[idx] = plru_touch(self.plru[idx], way);
-
         let slot = &mut self.ways[idx][way];
         (slot.cols, slot.rows, slot.w, slot.h) = (cols, rows, w, h);
         slot.rgba.clear();

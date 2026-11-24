@@ -14,7 +14,7 @@ Add preview rules to your Yazi configuration:
 ```toml
 [plugin]
 prepend_previewers = [
-  { url = "*.{md,markdown,mdx,qmd,rmd,ipynb,tex,latex,chem,mhchem,mmd,mermaid,dot,gv,svg,png,csv,tsv,vl,vega-lite,plotly,zip,jar,whl,tar,tgz,tbz2,txz,tzst}", run = "ii" },
+  { url = "*.{md,markdown,mdx,qmd,rmd,html,htm,ipynb,tex,latex,chem,mhchem,mmd,mermaid,dot,gv,svg,png,csv,tsv,vl,vega,vega-lite,plotly,zip,jar,whl,tar,tgz,tbz2,txz,tzst}", run = "ii" },
 ]
 ```
 

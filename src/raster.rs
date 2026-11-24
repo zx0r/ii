@@ -460,15 +460,18 @@ fn draw_scene_path(
     }
 }
 
-fn draw_scene_svgs(scene: &Scene, scale: f32, pixmap: &mut tiny_skia::PixmapMut<'_>) {
+fn draw_scene_svgs(
+    scene: &Scene,
+    scale: f32,
+    pixmap: &mut tiny_skia::PixmapMut<'_>,
+) -> Result<(), Error> {
     if scene.svgs.is_empty() {
-        return;
+        return Ok(());
     }
     for emb in &scene.svgs {
         let raw = scene.svg_bytes(emb);
-        let Ok(tree) = resvg::usvg::Tree::from_data(raw, &svg_options(raw)) else {
-            continue;
-        };
+        let tree =
+            resvg::usvg::Tree::from_data(raw, &svg_options(raw)).map_err(|_| Error::SvgParse)?;
         let (tw, th) = (tree.size().width(), tree.size().height());
         let sx = if tw.is_finite() && tw > 0.0 && emb.w > 0.0 {
             (emb.w / tw) * scale
@@ -483,6 +486,7 @@ fn draw_scene_svgs(scene: &Scene, scale: f32, pixmap: &mut tiny_skia::PixmapMut<
         let ts = tiny_skia::Transform::from_row(sx, 0.0, 0.0, sy, emb.x * scale, emb.y * scale);
         resvg::render(&tree, ts, pixmap);
     }
+    Ok(())
 }
 
 /// Rasterize `svg` into cell-snapped unpremultiplied RGBA8. Returns `(w, h, cols, rows)`.
@@ -646,7 +650,7 @@ pub fn rasterize_scene_scaled(
     for p in &scene.paths {
         draw_scene_path(scene, p, palette, ts, &mut pixmap);
     }
-    draw_scene_svgs(scene, scale, &mut pixmap);
+    draw_scene_svgs(scene, scale, &mut pixmap)?;
 
     let canvas_w = f32::from(w);
     for glyph in &scene.glyphs {

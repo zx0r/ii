@@ -57,7 +57,7 @@ const EXT_MAP: &[(&[&str], Kind)] = &[
     (&["png"], Kind::Png),
     (&["csv"], Kind::Csv),
     (&["tsv"], Kind::Tsv),
-    (&["vl", "vega-lite", "plotly"], Kind::Chart),
+    (&["vl", "vega", "vega-lite", "plotly"], Kind::Chart),
     (
         &["zip", "jar", "whl", "tar", "tgz", "tbz2", "txz", "tzst"],
         Kind::Archive,

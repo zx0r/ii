@@ -5,6 +5,7 @@ local M = {}
 
 local emit = ya.mgr_emit or ya.emit or ya.manager_emit
 local last_page
+local REPLAY_BYTES = 8 * 1024 * 1024
 
 -- Commit graphics on Yazi's main loop, after rejecting superseded jobs. Writing
 -- from the CLI races Yazi's own terminal writer during rapid navigation.
@@ -26,7 +27,7 @@ local publish_graphics = ya.sync(function(state, url, skip, geometry, packets, b
       if not tty then return false end
       if not tty:write(packet) then tty:close(); return false end
     end
-    if bytes <= 1024 * 1024 then sent[packet] = true end
+    if bytes <= REPLAY_BYTES then sent[packet] = true end
   end
   if tty and not tty:close() then return false end
   state.page = { url = url, tab = tab.id, skip = skip, geometry = geometry, sent = sent }
@@ -103,16 +104,20 @@ end
 function M:seek(job)
   local tab = cx.tab or cx.active
   local hovered = tab.current.hovered
-  if not hovered or hovered.url ~= job.file.url then return end
-  local from = tab.preview.skip
-  local target = math.max(0, from + job.units)
+  local url = tostring(job.file.url)
+  if not hovered or tostring(hovered.url) ~= url then return end
+  local from = tonumber(tab.preview.skip) or 0
+  local units = tonumber(job.units) or 0
+  local target = math.max(0, from + units)
   if target == from then return end
   self.next_skip = last_page and last_page.skip == from
-    and last_page.url == tostring(job.file.url)
+    and last_page.url == url
     and last_page.tab == tab.id
-    and math.abs(target - from) < job.area.h
+    and math.abs(target - from) < (job.area and job.area.h or 0)
     and target or nil
-  emit("peek", { target, only_if = job.file.url, scope = job.scope })
+  -- Keep the operation scoped to the current preview. Passing job.scope here
+  -- lets a manager-level seek move the hovered file while the preview is busy.
+  emit("peek", { target, only_if = url })
 end
 
 function M:preload(_) return true end

@@ -490,7 +490,7 @@ function M.setup(opts)
       local ft = vim.bo[bufnr].filetype
       local ext = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(bufnr),":e"):lower()
       if not ({markdown=true,md=true,mdx=true,quarto=true,qmd=true,rmd=true})[ft]
-        and not ({md=true,markdown=true,mdx=true,qmd=true,rmd=true,ipynb=true,plotly=true,vl=true,["vega-lite"]=true,json=true,csv=true,tsv=true,tex=true,latex=true,chem=true,mhchem=true,mmd=true,mermaid=true,dot=true,gv=true,svg=true,typ=true,typst=true,zip=true,tar=true,jar=true,whl=true,tgz=true,tbz2=true,txz=true,tzst=true,png=true})[ext] then return end
+        and not ({md=true,markdown=true,mdx=true,qmd=true,rmd=true,html=true,htm=true,ipynb=true,plotly=true,vl=true,["vega-lite"]=true,json=true,csv=true,tsv=true,tex=true,latex=true,chem=true,mhchem=true,mmd=true,mermaid=true,dot=true,gv=true,svg=true,typ=true,typst=true,zip=true,tar=true,jar=true,whl=true,tgz=true,tbz2=true,txz=true,tzst=true,png=true})[ext] then return end
       if frames[vim.api.nvim_get_current_win()] and frames[vim.api.nvim_get_current_win()].tick~=vim.api.nvim_buf_get_changedtick(bufnr) then decorate(vim.api.nvim_get_current_win()) end
       if vim.fn.mode():match("^[iR]") then return end
       if buffer_enabled[bufnr] == false then return end

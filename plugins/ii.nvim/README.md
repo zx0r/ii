@@ -50,7 +50,7 @@ handle an unopened plugin). Use the same complete list:
 ```lua
 {
   name = 'ii.nvim', dir = '/path/to/ii/plugins/ii.nvim',
-  ft = {'markdown','mdx','quarto','rmd','ipynb','tex','latex','typst',
+  ft = {'markdown','mdx','quarto','rmd','html','ipynb','tex','latex','typst',
     'mermaid','mmd','dot','gv','svg','png','csv','tsv','plotly','vl','vegalite',
     'chem','mhchem','zip','jar','whl','tar','tgz','tbz2','txz','tzst'},
   opts = {executable = '/path/to/ii/target/release/ii'},

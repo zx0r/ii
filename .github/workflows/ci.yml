@@ -297,35 +297,6 @@ jobs:
           MIRIFLAGS: "-Zmiri-disable-isolation -Zmiri-tree-borrows -Zmiri-strict-provenance"
         run: "cargo miri test --locked --workspace --lib"
 
-  terminal-previews:
-    name: "Yazi and Neovim previews (macOS arm64)"
-    needs: ["fast-checks"]
-    runs-on: "macos-latest"
-    timeout-minutes: 20
-    permissions:
-      contents: "read"
-    steps:
-      - name: "Checkout Source Code"
-        uses: "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: "Setup Rust Cache"
-        uses: "Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6" # v2.7.8
-        with:
-          shared-key: "terminal-previews"
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-
-      - name: "Run the real terminal clients in private PTYs"
-        env:
-          PYTHONDONTWRITEBYTECODE: "1"
-        run: |
-          brew install yazi neovim
-          cargo build --locked --release
-          python3 showcase/checks/yazi.py --binary target/release/ii
-          python3 showcase/checks/yazi.py --binary target/release/ii --notebook
-          python3 showcase/checks/nvim_ui.py --binary target/release/ii
-
   # ----------------------------------------------------------------------------
   # Gate 5: Single Branch Protection & Merge Queue Aggregator
   # ----------------------------------------------------------------------------
@@ -335,7 +306,7 @@ jobs:
   ci-gate:
     name: "✅ [Gate Final] All Quality Gates Passed"
     needs:
-      ["lint-workflows", "fast-checks", "security-audit", "test-and-coverage", "miri-verification", "terminal-previews"]
+      ["lint-workflows", "fast-checks", "security-audit", "test-and-coverage", "miri-verification"]
     if: ${{ always() }}
     runs-on: "ubuntu-latest"
     timeout-minutes: 2

@@ -220,6 +220,9 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # Install pinned, reproducible test runners and instrumentation tooling
+      - name: "Install System Fonts & Test Runners"
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends fonts-dejavu-core fonts-freefont-ttf fonts-noto-core
+
       - name: "Install Pinned Nextest & LLVM Source Coverage"
         uses: "taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32" # v2.88.0
         with:

@@ -66,7 +66,7 @@ cat <target> | ii
 
 ### Integrations
 
-**Yazi** (`ii.yazi`)
+#### Yazi ([ii.yazi](https://github.com/zx0r/ii.yazi))
 
 ```sh
 # 1. Install
@@ -93,7 +93,7 @@ prepend_previewers = [
 ]
 ```
 
-**Neovim** (`ii.nvim`)
+#### Neovim ([ii.nvim](https://github.com/zx0r/ii.nvim))
 
 ```lua
 {

@@ -703,7 +703,7 @@ fn html_showcase_renders_two_svg_charts() -> Result<(), ii::err::Error> {
         fmt::{self, Kind},
     };
 
-    let src = include_bytes!("../showcase/data-science.html");
+    let src = include_bytes!("../showcase/32.html");
     assert_eq!(fmt::detect_kind(src, ""), Kind::Html);
     for cols in [40, 80] {
         let ctx = ComposeCtx {

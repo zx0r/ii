@@ -160,11 +160,29 @@ pub fn parse_into_scene_with_palette(
     palette: &Palette,
     scene: &mut Scene,
 ) -> Result<(), Error> {
-    if !src.windows(4).any(|w| w == b"<svg") {
+    const GZIP_MAGIC: [u8; 2] = [0x1F, 0x8B];
+    let decompressed: Vec<u8>;
+    let payload = if src.starts_with(&GZIP_MAGIC) {
+        use std::io::Read;
+        decompressed = {
+            let mut out = Vec::new();
+            let decoder = flate2::read::MultiGzDecoder::new(src);
+            decoder
+                .take(64 * 1024 * 1024)
+                .read_to_end(&mut out)
+                .map_err(|_| Error::SvgParse)?;
+            out
+        };
+        &decompressed[..]
+    } else {
+        src
+    };
+
+    if !payload.windows(4).any(|w| w == b"<svg") {
         return Err(Error::SvgParse);
     }
     let start = scene.text_pool.len();
-    rewrite_colors(src, palette, &mut scene.text_pool);
+    rewrite_colors(payload, palette, &mut scene.text_pool);
     let (svg_w, svg_h) = extract_svg_dimensions(&scene.text_pool[start..]);
     if !scene.commit_svg(0.0, scene.height, svg_w, svg_h, start) {
         scene.text_pool.truncate(start);

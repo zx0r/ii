@@ -61,7 +61,7 @@ const EXT_MAP: &[(&[&str], Kind)] = &[
     (&["chem", "mhchem"], Kind::Chem),
     (&["mmd", "mermaid"], Kind::Mermaid),
     (&["dot", "gv"], Kind::Dot),
-    (&["svg"], Kind::Svg),
+    (&["svg", "svgz"], Kind::Svg),
     (&["png"], Kind::Png),
     (&["csv"], Kind::Csv),
     (&["tsv"], Kind::Tsv),

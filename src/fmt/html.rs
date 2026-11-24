@@ -79,7 +79,8 @@ fn try_extract_svg(rest: &[u8], out: &mut Vec<u8>) -> Option<usize> {
         return None;
     }
     let after = &trimmed[b"<svg".len()..];
-    let is_delim = after.is_empty() || matches!(after[0], b' ' | b'\t' | b'\r' | b'\n' | b'>' | b'/');
+    let is_delim =
+        after.is_empty() || matches!(after[0], b' ' | b'\t' | b'\r' | b'\n' | b'>' | b'/');
     if !is_delim {
         return None;
     }
@@ -211,7 +212,9 @@ pub fn presentation_source(src: &[u8], out: &mut Vec<u8>) -> Result<(), Error> {
             }
 
             // Structural break tags
-            if is_break_tag(rest) && let Some(cb) = memchr::memchr(b'>', rest) {
+            if is_break_tag(rest)
+                && let Some(cb) = memchr::memchr(b'>', rest)
+            {
                 if line_content {
                     out.push(b'\n');
                     line_content = false;

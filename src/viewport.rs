@@ -296,7 +296,11 @@ mod tests {
         crate::kitty::emit_placeholder(42, 12, 7, &mut src);
         src.extend_from_slice(b"\x1b[0mend");
         let max_skip = if cfg!(miri) { 20 } else { 320 };
-        let widths = if cfg!(miri) { &[7][..] } else { &[3, 7, 13][..] };
+        let widths = if cfg!(miri) {
+            &[7][..]
+        } else {
+            &[3, 7, 13][..]
+        };
         for &cols in widths {
             let mut index = RowIndex::default();
             for skip in (0..max_skip).rev().chain(0..max_skip) {

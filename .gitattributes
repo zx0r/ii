@@ -2,7 +2,6 @@
 # This file tells GitHub how to categorize files and what to include in language statistics.
 
 # --- Documentation & Metadata ---
-# Mark all markdown and meta files as documentation to exclude them from code stats.
 *.md linguist-documentation
 LICENSE* linguist-documentation
 CONTRIBUTING.md linguist-documentation
@@ -11,19 +10,52 @@ docs/** linguist-documentation
 prompts/** linguist-documentation
 brain/** linguist-documentation
 
-# --- Assets & Media ---
-# Mark assets as vendored (binary/external) to keep them out of language breakdown.
+# --- Assets & Showcase (Vendored) ---
 assets/** linguist-vendored
 showcase/** linguist-vendored
 benches/** linguist-vendored
+tests/** -linguist-detectable
+
+# --- Supported Document, Math, Chart & Diagram Formats ---
+*.ipynb linguist-vendored
+*.tex linguist-vendored
+*.latex linguist-vendored
+*.typ linguist-vendored
+*.typst linguist-vendored
+*.html linguist-vendored
+*.htm linguist-vendored
+*.mdx linguist-vendored
+*.qmd linguist-vendored
+*.rmd linguist-vendored
+*.mmd linguist-vendored
+*.mermaid linguist-vendored
+*.dot linguist-vendored
+*.gv linguist-vendored
+*.svg linguist-vendored
+*.svgz linguist-vendored
+*.csv linguist-vendored
+*.tsv linguist-vendored
+*.vl linguist-vendored
+*.vega linguist-vendored
+*.plotly linguist-vendored
+*.chem linguist-vendored
+*.mhchem linguist-vendored
 *.gif linguist-vendored
 *.png linguist-vendored
 *.jpg linguist-vendored
-*.svg linguist-vendored
 *.mp4 linguist-vendored
+*.mov linguist-vendored
+*.webp linguist-vendored
+*.zip linguist-vendored
+*.tar linguist-vendored
+*.tgz linguist-vendored
+*.tbz2 linguist-vendored
+*.txz linguist-vendored
+*.tzst linguist-vendored
+*.jar linguist-vendored
+*.whl linguist-vendored
 
 # --- Configuration & Workspace Metadata ---
-# Exclude config files and metadata from detection to reduce noise.
 Justfile* -linguist-detectable
 *.toml -linguist-detectable
 *.lock -linguist-detectable
@@ -33,25 +65,19 @@ dist-workspace.toml -linguist-detectable
 .github/** -linguist-detectable
 
 # --- Tool-Specific Data ---
-# Exclude internal tool data for Gemini, Serena, etc.
 .gemini/** -linguist-detectable
 .serena/** -linguist-detectable
 
 # --- Scripts & Automation ---
-# Exclude shell and automation scripts from language stats to keep repository 100% Rust.
 scripts/** linguist-documentation
-build-demo.sh linguist-documentation
-benchmark.py linguist-documentation
+*.py linguist-vendored
+*.lua linguist-vendored
+*.sh linguist-documentation
 
 # --- Shell Completions ---
 assets/completions/** linguist-documentation
 
-# --- Tests ---
-# Exclude tests from language stats to focus on the project's core logic.
-tests/** -linguist-detectable
-
 # --- Generated & Backups ---
-# Mark build artifacts and backup files as generated.
 target/** linguist-generated
 **/*.BAK linguist-generated
 **/*.bak linguist-generated

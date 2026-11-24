@@ -392,10 +392,10 @@ fn sse2<const BULK: bool>(src: &[u8]) -> Option<usize> {
         _mm_cmpeq_epi8, _mm_loadu_si128, _mm_movemask_epi8, _mm_or_si128, _mm_set1_epi8,
     };
 
-    let backtick = _mm_set1_epi8(i8::from_ne_bytes([b'`']));
-    let dollar = _mm_set1_epi8(i8::from_ne_bytes([b'$']));
-    let slash = _mm_set1_epi8(i8::from_ne_bytes([b'\\']));
-    let tilde = _mm_set1_epi8(i8::from_ne_bytes([b'~']));
+    let backtick = _mm_set1_epi8(i8::from_ne_bytes(*b"`"));
+    let dollar = _mm_set1_epi8(i8::from_ne_bytes(*b"$"));
+    let slash = _mm_set1_epi8(i8::from_ne_bytes(*b"\\"));
+    let tilde = _mm_set1_epi8(i8::from_ne_bytes(*b"~"));
     let (blocks, tail) = src.as_chunks::<16>();
     for (i, block) in blocks.iter().enumerate() {
         // SAFETY: a fixed-size slice guarantees 16 readable bytes. The load

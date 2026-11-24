@@ -67,7 +67,10 @@ Install and configure with `lazy.nvim`:
     { "<leader>pp", "<cmd>IiPreview<cr>", desc = "ii: Instant preview" },
   },
   opts = {
-    debounce_ms = 20,
+    -- 10ms debounce tuned for Apple ProMotion 120Hz displays (8.33ms frame window)
+    debounce_ms = 10,
+    -- IPC deadline timeout for complex multi-node vector charts
+    timeout_ms = 3000,
   },
 }
 ```

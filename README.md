@@ -24,44 +24,50 @@ Graphics Protocol.
 
 #### Yazi (`ii.yazi`)
 
-Framed terminal file previewer:
+Install using the Yazi package manager:
 
 ```sh
-# Clone plugin into Yazi plugins directory
-git clone https://github.com/zx0r/ii.yazi.git ~/.config/yazi/plugins/ii.yazi
+ya pkg add zx0r/ii
 ```
 
-Add previewers to `~/.config/yazi/yazi.toml`:
+Configure `~/.config/yazi/yazi.toml`:
 
 ```toml
 [plugin]
+prepend_preloaders = [
+  { url = "*.{md,markdown,mdx,qmd,rmd,ipynb,mmd,mermaid,dot,gv,svg,tex,latex,typ,csv,tsv}", run = "ii" },
+]
 prepend_previewers = [
-  { name = "*.md",      run = "ii" },
-  { name = "*.ipynb",   run = "ii" },
-  { name = "*.tex",     run = "ii" },
-  { name = "*.typ",     run = "ii" },
-  { name = "*.mmd",     run = "ii" },
-  { name = "*.mermaid", run = "ii" },
-  { name = "*.dot",     run = "ii" },
-  { name = "*.svg",     run = "ii" },
-  { name = "*.csv",     run = "ii" },
+  { url = "*.{md,markdown,mdx,qmd,rmd}", run = "ii" },
+  { url = "*.ipynb",                     run = "ii" },
+  { url = "*.{mmd,mermaid,dot,gv,svg}",  run = "ii" },
+  { url = "*.{csv,tsv}",                 run = "ii" },
+  { url = "*.{tex,latex,typ}",           run = "ii" },
+  { mime = "application/{*zip,tar,bzip2,7z*,rar,xz,zstd}", run = "ii" },
 ]
 ```
 
 #### Neovim (`ii.nvim`)
 
-Inline rendering and floating window previews for Neovim (≥ 0.10):
+Install and configure with `lazy.nvim`:
 
 ```lua
--- lazy.nvim
 {
   "zx0r/ii.nvim",
-  ft = { "markdown", "quarto", "rmd", "tex", "typst" },
-  opts = {},
+  ft = {
+    "markdown", "markdown.mdx", "md", "mdx", "quarto", "qmd", "rmd", "ipynb",
+    "tex", "plaintex", "latex", "typst", "typ", "mermaid", "mmd", "dot", "gv",
+    "svg", "png", "csv", "tsv", "plotly", "vl", "vega", "chem", "mhchem",
+  },
+  cmd = { "Ii", "IiRender", "IiToggle", "IiClear", "IiPreview" },
   keys = {
-    { "<leader>ip", "<cmd>IiPreview<cr>", desc = "Toggle ii floating preview" },
-    { "<leader>ir", "<cmd>IiRender<cr>",  desc = "Render ii inline" },
-    { "<leader>ic", "<cmd>IiClear<cr>",   desc = "Clear ii graphics" },
+    { "<leader>pr", "<cmd>IiRender<cr>",  desc = "ii: Render buffer" },
+    { "<leader>pt", "<cmd>IiToggle<cr>",  desc = "ii: Toggle KGP rendering" },
+    { "<leader>pc", "<cmd>IiClear<cr>",   desc = "ii: Clear decorations" },
+    { "<leader>pp", "<cmd>IiPreview<cr>", desc = "ii: Instant preview" },
+  },
+  opts = {
+    debounce_ms = 20,
   },
 }
 ```

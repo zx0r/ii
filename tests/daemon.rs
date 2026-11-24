@@ -105,7 +105,22 @@ fn cli_help_and_version_smoke() -> Result<(), Box<dyn core::error::Error>> {
 
     let help = Command::new(bin).arg("--help").output()?;
     assert!(help.status.success());
-    assert!(help.stdout.windows(8).any(|w| w == b"--daemon"));
+    assert_eq!(help.stderr.as_slice(), b"");
+    let text = core::str::from_utf8(&help.stdout)?;
+    for line in [
+        "Usage: ii [OPTIONS] [FILE]",
+        "       ii doctor",
+        "Commands:",
+        "Arguments:",
+        "Options:",
+        "      --daemon            Start the render daemon",
+        "  -h, --help              Print help",
+    ] {
+        assert!(text.lines().any(|actual| actual == line), "{line}");
+    }
+    let short_help = Command::new(bin).arg("-h").output()?;
+    assert!(short_help.status.success());
+    assert_eq!(short_help.stdout, help.stdout);
     Ok(())
 }
 

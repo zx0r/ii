@@ -649,3 +649,92 @@ fn fenced_code_uses_its_language_and_preserves_multiline_tokens() {
     assert!(colored(SemanticRole::Accent, b"sElEcT"));
     assert!(colored(SemanticRole::TextMuted, b"-- note"));
 }
+
+#[test]
+fn narrow_table_keeps_its_borders_with_compact_columns_and_wide_glyphs() {
+    let source = "| A | B | C | D | E | F | G | H |\n|---|---|---|---|---|---|---|---|\n|界|b|c|d|e|f|g|h|\n";
+    for cols in [17, 28, 33] {
+        let mut out = Vec::new();
+        ii::style::emit_prose(
+            source.as_bytes(),
+            &ii::theme::DARK,
+            &mut ii::style::State::with_width(cols),
+            &mut out,
+        );
+        let mut page = Vec::new();
+        ii::viewport::append(&out, cols, 0, 0, &mut page);
+        assert_eq!(memchr::memchr_iter(b'\n', &page).count(), 5);
+        let rows: Vec<_> = page.split(|&b| b == b'\n').collect();
+        for (row, right) in rows.iter().zip(["┐", "│", "┤", "│", "┘"]) {
+            assert!(
+                row.strip_suffix(b"\x1b[0m")
+                    .unwrap_or(row)
+                    .ends_with(right.as_bytes())
+            );
+        }
+    }
+}
+
+#[test]
+fn lower_markdown_headings_share_one_color_in_both_themes() {
+    use ii::theme::{DARK, LIGHT, SemanticRole};
+
+    for palette in [&DARK, &LIGHT] {
+        let mut out = Vec::new();
+        ii::style::emit_prose(
+            b"### Third level\n#### Fourth level\n##### Fifth level\n",
+            palette,
+            &mut ii::style::State::with_width(80),
+            &mut out,
+        );
+        for line in out
+            .split(|&byte| byte == b'\n')
+            .filter(|line| !line.is_empty())
+        {
+            assert!(line.starts_with(palette.sgr_fg(SemanticRole::Warn)));
+        }
+    }
+}
+
+#[test]
+fn html_showcase_renders_two_svg_charts() -> Result<(), ii::err::Error> {
+    use ii::{
+        compose::{self, ComposeCtx, ComposeOut, ComposeScratch},
+        fmt::{self, Kind},
+    };
+
+    let src = include_bytes!("../showcase/data-science.html");
+    assert_eq!(fmt::detect_kind(src, ""), Kind::Html);
+    for cols in [40, 80] {
+        let ctx = ComposeCtx {
+            cell_w: 9,
+            cell_h: 18,
+            cols,
+            rows: 40,
+            max_w: cols * 9,
+            palette: &ii::theme::DARK,
+            is_tmux: false,
+            is_remote: true,
+            skip_lines: 0,
+            max_lines: 0,
+            explicit_graphics: true,
+        };
+        let mut out = ComposeOut::new();
+        compose::render_file(
+            src,
+            Kind::Html,
+            ctx,
+            None,
+            &mut ComposeScratch::new(),
+            &mut 0,
+            1,
+            &mut out,
+        )?;
+        assert_eq!(out.uploads.len(), 2);
+        assert!(memchr::memmem::find(&out.ansi, b"Validation accuracy").is_some());
+        for tag in [b"<a ".as_slice(), b"<svg", b"<p ", b"aria-label"] {
+            assert!(memchr::memmem::find(&out.ansi, tag).is_none());
+        }
+    }
+    Ok(())
+}

@@ -98,6 +98,15 @@ pub fn detect_kind(src: &[u8], ext: &str) -> Kind {
     if archive::looks_like_archive(src) {
         return Kind::Archive;
     }
+    if head
+        .get(..14)
+        .is_some_and(|start| start.eq_ignore_ascii_case(b"<!doctype html"))
+        || head
+            .get(..5)
+            .is_some_and(|start| start.eq_ignore_ascii_case(b"<html"))
+    {
+        return Kind::Html;
+    }
     if head.starts_with(b"<svg") || head.starts_with(b"<?xml") {
         return Kind::Svg;
     }

@@ -1,17 +1,13 @@
 # ii for fzf
 
-An optional Ctrl-T preview for fzf's shell integration. It uses ii for
-Markdown, MDX, Quarto and R Markdown. Other files use bat when available.
+Preview Markdown from fzf. Install [ii](https://github.com/zx0r/ii#installation) and make sure it is on PATH.
 
-From this directory, install the preview command somewhere on PATH:
+From this directory:
 
 ```sh
 mkdir -p "$HOME/.local/bin"
 install -m 755 ii-fzf-preview "$HOME/.local/bin/ii-fzf-preview"
-```
-
-Source fzf.sh after loading fzf's shell integration. For a single invocation:
-
-```sh
 fzf --preview 'ii-fzf-preview {}'
 ```
+
+For Ctrl-T, source `fzf.sh` after fzf's shell integration.

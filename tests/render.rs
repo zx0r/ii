@@ -73,32 +73,42 @@ fn showcase_math_spans_compile_without_literal_fallback() -> Result<(), Box<dyn 
 }
 
 #[test]
-fn notebook_plotly_outputs_render_actual_bars_and_heatmap() -> Result<(), Error> {
+fn notebook_charts_keep_neon_colors_and_transparent_canvases() -> Result<(), Error> {
     let mut normalized = Vec::new();
     fmt::ipynb::to_markdown(include_bytes!("../showcase/03.ipynb"), &mut normalized)?;
     let mut spans = Vec::new();
     fmt::md::scan(&normalized, &mut spans);
-    let mut plotly = 0;
+    let mut graphics = 0;
     for span in spans {
-        let payload = &normalized[span.inner_start as usize..span.inner_end() as usize];
-        if span.kind() != fmt::Kind::Chart || !payload.windows(8).any(|w| w == b"\"layout\"") {
+        let kind = span.kind();
+        if !matches!(kind, fmt::Kind::Svg | fmt::Kind::Chart) {
             continue;
         }
+        let payload = &normalized[span.inner_start as usize..span.inner_end() as usize];
         for palette in [&DARK, &ii::theme::LIGHT] {
             let mut scene = Scene::with_capacity(8, 4096);
-            fmt::dispatch_with_palette(span.kind(), payload, palette, &mut scene)?;
+            fmt::dispatch_with_palette(kind, payload, palette, &mut scene)?;
             assert_eq!(scene.svgs.len(), 1);
             let svg = core::str::from_utf8(scene.svg_bytes(&scene.svgs[0])).unwrap();
-            assert!(svg.contains("fill=\"none\""));
-            if payload.windows(7).any(|w| w == b"heatmap") {
+            if svg.contains("class=\"heatmap-cell\"") {
                 assert_eq!(svg.matches("class=\"heatmap-cell\"").count(), 36);
-                assert!(svg.contains("0.82"));
-                assert!(svg.contains("The"));
+                assert!(svg.contains("0.82") && svg.contains("The"));
+                assert!(svg.contains("#ff4ecd"));
+            } else {
+                assert!(svg.contains("#00e5ff") || svg.contains("#ff4ecd"));
             }
+            if svg.contains("Training Loss") || svg.contains("Gradient Norm") {
+                assert!(svg.contains("#39ff88"), "secondary Vega layer was dropped");
+            }
+            let mut rgba = Vec::new();
+            raster::rasterize_scene(&scene, palette, 9, 18, 720, &mut rgba)?;
+            assert_eq!(rgba.get(3), Some(&0));
+            assert_eq!(rgba.last(), Some(&0));
+            assert!(rgba.as_chunks::<4>().0.iter().any(|p| p[3] > 0));
         }
-        plotly += 1;
+        graphics += 1;
     }
-    assert_eq!(plotly, 2);
+    assert_eq!(graphics, 6);
     Ok(())
 }
 

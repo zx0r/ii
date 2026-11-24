@@ -44,7 +44,7 @@ impl Context<'_> {
         let mut identity = blake3::Hasher::new();
         identity.update(&key);
         identity.update(&self.palette.theme_hash.to_le_bytes());
-        identity.update(b"ii-image-19-grid-fit");
+        identity.update(b"ii-image-20-chart-colors");
         identity.update(&[u8::from(self.fit_viewport)]);
         if self.fit_viewport {
             identity.update(&self.rows.to_le_bytes());

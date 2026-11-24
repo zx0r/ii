@@ -11,7 +11,24 @@ pub fn presentation_source(src: &[u8], out: &mut Vec<u8>) -> Result<(), Error> {
     let mut in_tag = false;
     let mut in_script = false;
     let mut line_start = true;
-    for line in text.lines() {
+    let mut remaining = text;
+    while !remaining.is_empty() {
+        let candidate = remaining.trim_start_matches([' ', '\t']);
+        if !in_script
+            && !in_tag
+            && candidate.starts_with("<svg ")
+            && let Some(end) = candidate.find("</svg>")
+        {
+            let end = end + "</svg>".len();
+            out.extend_from_slice(b"\n~~~svg\n");
+            out.extend_from_slice(&candidate.as_bytes()[..end]);
+            out.extend_from_slice(b"\n~~~\n");
+            remaining = &candidate[end..];
+            continue;
+        }
+        let (line, tail) = remaining.split_once('\n').unwrap_or((remaining, ""));
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        remaining = tail;
         let trimmed = line.trim();
         let lower = trimmed.to_ascii_lowercase();
         if lower.starts_with("<script") {

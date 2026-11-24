@@ -35,6 +35,12 @@ fn str_of(raw: Option<&[u8]>) -> &str {
         .and_then(|s| core::str::from_utf8(s).ok())
         .unwrap_or("")
 }
+fn hex_color(raw: Option<&[u8]>) -> Option<&str> {
+    let value = str_of(raw);
+    let digits = value.strip_prefix('#')?;
+    (digits.len() == 6 && digits.bytes().all(|b| b.is_ascii_hexdigit())).then_some(value)
+}
+
 fn push_xml_escaped(out: &mut String, text: &str) {
     for ch in text.chars() {
         match ch {
@@ -88,6 +94,7 @@ struct Chart<'a> {
     ys: [Vec<f64>; MAX_SERIES],
     n_series: usize,
     names: [&'a str; MAX_SERIES],
+    colors: [Option<&'a str>; MAX_SERIES],
 }
 
 impl<'a> Chart<'a> {
@@ -104,6 +111,7 @@ impl<'a> Chart<'a> {
             ys: [const { Vec::new() }; MAX_SERIES],
             n_series: 1,
             names: [""; MAX_SERIES],
+            colors: [None; MAX_SERIES],
         }
     }
 
@@ -175,6 +183,7 @@ fn parse_vega(spec: &[u8]) -> (&str, Option<Chart<'_>>) {
     }
     let mut chart = Chart::new(mark);
     chart.title = title;
+    chart.colors[0] = get(node, "mark").and_then(|mark| hex_color(get(mark, "color")));
     chart.x_name = xf;
     chart.y_name = yf;
     let values = get(spec, "data")
@@ -216,6 +225,32 @@ fn parse_vega(spec: &[u8]) -> (&str, Option<Chart<'_>>) {
         }
     }
     let quantitative = str_of(channel("x").and_then(|c| get(c, "type"))) == "quantitative";
+    if layer0.is_some() && group_field.is_empty() && quantitative {
+        for layer in items(get(spec, "layer")).skip(1).take(MAX_SERIES - 1) {
+            let mark = get(layer, "mark");
+            let Some(layer_mark @ (Mark::Line | Mark::Area | Mark::Point)) = vega_mark(mark) else {
+                continue;
+            };
+            let enc = get(layer, "encoding").or(enc);
+            let field = |axis| str_of(enc.and_then(|e| get(e, axis)).and_then(|a| get(a, "field")));
+            let x_field = field("x");
+            let y_field = field("y");
+            let layer_values = get(layer, "data").and_then(|d| get(d, "values")).or(values);
+            let series = chart.n_series;
+            for row in items(layer_values) {
+                if let (Some(x), Some(y)) = (get(row, x_field), get(row, y_field).and_then(num_of))
+                    && num_of(x).is_some()
+                {
+                    chart.push(series, x, y);
+                }
+            }
+            if !chart.ys[series].is_empty() {
+                chart.marks[series] = layer_mark;
+                chart.colors[series] = mark.and_then(|m| hex_color(get(m, "color")));
+                chart.n_series += 1;
+            }
+        }
+    }
     chart.finish(quantitative);
     (title, (!chart.labels.is_empty()).then_some(chart))
 }
@@ -259,6 +294,9 @@ fn parse_plotly(spec: &[u8]) -> (&str, Option<Chart<'_>>) {
         } else {
             mark
         };
+        let color = ["line", "marker"]
+            .into_iter()
+            .find_map(|style| get(trace, style).and_then(|o| hex_color(get(o, "color"))));
         let ys = items(get(trace, "y"));
         if let Some(c) = chart.as_mut() {
             // Additional series appended to the first plottable chart.
@@ -276,6 +314,7 @@ fn parse_plotly(spec: &[u8]) -> (&str, Option<Chart<'_>>) {
                 }
                 c.marks[s] = mark;
                 c.names[s] = name;
+                c.colors[s] = color;
                 c.n_series += 1;
             }
             continue;
@@ -293,6 +332,7 @@ fn parse_plotly(spec: &[u8]) -> (&str, Option<Chart<'_>>) {
         c.x_name = axis("xaxis");
         c.y_name = axis("yaxis");
         c.names[0] = name;
+        c.colors[0] = color;
         c.finish(true);
         if !c.labels.is_empty() {
             chart = Some(c);
@@ -397,6 +437,20 @@ fn render_pie(c: &Chart<'_>, theme: &Palette, fg: &str, out: &mut String) {
     }
 }
 
+fn gradient_color(stops: &[(f64, [u8; 3])], t: f64) -> [u8; 3] {
+    let i = stops.partition_point(|(at, _)| *at <= t);
+    let (start, low) = stops[i.saturating_sub(1)];
+    let (end, high) = stops[i.min(stops.len() - 1)];
+    let mix = if end > start {
+        (t - start) / (end - start)
+    } else {
+        0.0
+    };
+    core::array::from_fn(|i| {
+        (f64::from(low[i]) * (1.0 - mix) + f64::from(high[i]) * mix).round() as u8
+    })
+}
+
 fn render_heatmap(spec: &[u8], trace: &[u8], palette: &Palette) -> Result<String, Error> {
     // Bound both dimensions before retaining matrix values; never silently crop data.
     const LIMIT: usize = 64;
@@ -445,8 +499,30 @@ fn render_heatmap(spec: &[u8], trace: &[u8], palette: &Palette) -> Result<String
     ) == "top";
     let cell_w = (W - ML - MR - 24.0) / cols as f64;
     let cell_h = (H - MT - MB) / matrix.len() as f64;
+    let mut stops: Vec<_> = items(get(trace, "colorscale"))
+        .take(33)
+        .filter_map(|stop| {
+            let mut fields = items(Some(stop));
+            let at = fields
+                .next()
+                .and_then(num_of)
+                .filter(|v| (0.0..=1.0).contains(v))?;
+            let rgb = u32::from_str_radix(&hex_color(fields.next())?[1..], 16)
+                .ok()?
+                .to_be_bytes();
+            Some((at, [rgb[1], rgb[2], rgb[3]]))
+        })
+        .collect();
     let low = palette.role_color(SemanticRole::TextMuted).to_array();
     let high = palette.role_color(SemanticRole::Accent).to_array();
+    if !(2..=32).contains(&stops.len()) {
+        stops.clear();
+        stops.extend([
+            (0.0, [low[0], low[1], low[2]]),
+            (1.0, [high[0], high[1], high[2]]),
+        ]);
+    }
+    stops.sort_by(|a, b| a.0.total_cmp(&b.0));
     for (row, values) in matrix.iter().enumerate() {
         let y = MT
             + (if reversed {
@@ -462,9 +538,7 @@ fn render_heatmap(spec: &[u8], trace: &[u8], palette: &Palette) -> Result<String
             } else {
                 0.5
             };
-            let rgb: [u8; 3] = core::array::from_fn(|i| {
-                (f64::from(low[i]) * (1.0 - t) + f64::from(high[i]) * t).round() as u8
-            });
+            let rgb = gradient_color(&stops, t);
             let x = ML + col as f64 * cell_w;
             let _ = write!(
                 svg,
@@ -511,13 +585,11 @@ fn render_heatmap(spec: &[u8], trace: &[u8], palette: &Palette) -> Result<String
             &label,
         );
     }
-    // Color key uses the same theme gradient as the cells, never a plot background.
+    // Color key uses the same gradient as the cells, never a plot background.
     if get(trace, "showscale") != Some(b"false") {
         for step in 0..32 {
             let t = f64::from(step) / 31.0;
-            let rgb: [u8; 3] = core::array::from_fn(|i| {
-                (f64::from(low[i]) * (1.0 - t) + f64::from(high[i]) * t).round() as u8
-            });
+            let rgb = gradient_color(&stops, t);
             let y = MT + (1.0 - t) * (H - MT - MB - 4.0);
             let _ = write!(
                 svg,
@@ -623,7 +695,7 @@ fn render_cartesian(c: &Chart<'_>, theme: &Palette, fg: &str, out: &mut String) 
     text(out, ML, MT - 8.0, "start", fg, c.y_name);
 
     for s in 0..c.n_series {
-        let color = theme.series_hex_str(s);
+        let color = c.colors[s].unwrap_or_else(|| theme.series_hex_str(s));
         let ys = &c.ys[s];
         match c.marks[s] {
             Mark::Bar => {

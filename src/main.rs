@@ -23,29 +23,34 @@ const VERSION_LINE: &[u8] = concat!("ii ", env!("CARGO_PKG_VERSION"), "\n").as_b
 const USAGE: &[u8] = concat!(
     "ii ",
     env!("CARGO_PKG_VERSION"),
-    " - Terminal graphical coprocessor\n\
-Usage: ii [OPTIONS] [FILE]\n\
-       ii doctor\n\
-\n\
-Geometry:\n\
-  -s, --size <WxH>        Viewport bounds in cells (cols x rows)\n\
-      --cell-size <WxH>   Physical cell size in pixels (cell_w x cell_h)\n\
-      --skip <N>          Vertical line offset for paging\n\
-      --machine           Framed graphics and text output for adapters\n\
-      --ansi              Styled text on piped stdout\n\
-\n\
-Theme:\n\
-  -t, --theme <THEME>     Palette polarity: [dark | light]\n\
-\n\
-Daemon & Socket:\n\
-      --daemon            Run background IXPC v1 coprocessor daemon\n\
-      --socket <PATH>     UNIX socket path (default: $XDG_RUNTIME_DIR/ii/ii.sock)\n\
-      --ping              Ping running daemon\n\
-      --shutdown          Gracefully shut down running daemon\n\
-\n\
-Info:\n\
-  -h, --help              Show this help message\n\
-  -V, --version           Show version\n"
+    r"
+
+Render documents and graphics in the terminal
+
+Usage: ii [OPTIONS] [FILE]
+       ii doctor
+       ii (--daemon | --ping | --shutdown) [--socket <PATH>]
+
+Commands:
+  doctor  Check terminal, cache, and daemon status
+
+Arguments:
+  [FILE]  File to render. Omit to read redirected stdin.
+
+Options:
+  -s, --size <COLSxROWS>  Set the viewport size in terminal cells
+      --cell-size <WxH>   Set the cell size in pixels
+      --skip <N>          Skip N rendered rows
+  -t, --theme <THEME>     Set the theme [possible values: dark, light]
+      --ansi              Style text on redirected stdout
+      --machine           Write a framed graphics and text response
+      --daemon            Start the render daemon
+      --ping              Check whether the daemon responds
+      --shutdown          Stop the daemon
+      --socket <PATH>     Use the specified Unix socket
+  -h, --help              Print help
+  -V, --version           Print version
+"
 )
 .as_bytes();
 
@@ -439,7 +444,7 @@ fn run_cli() -> Result<(), Error> {
     }
 
     if let Some(file_path) = args.file_path {
-        if args.machine || is_interactive {
+        if args.machine || is_interactive && (args.size.is_some() || args.skip > 0) {
             return render_preview(file_path, &args, is_interactive);
         }
         let ext = file_path.extension().and_then(|s| s.to_str()).unwrap_or("");

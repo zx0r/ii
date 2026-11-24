@@ -395,20 +395,19 @@ pub(crate) fn width(src: &[u8]) -> usize {
 fn border(
     indent: &[u8],
     widths: &[usize],
-    left: &[u8],
-    mid: &[u8],
-    right: &[u8],
+    padding: usize,
+    [left, mid, right]: [&str; 3],
     palette: &Palette,
     out: &mut Vec<u8>,
 ) {
     out.extend_from_slice(indent);
     role(out, palette, SemanticRole::Border);
-    out.extend_from_slice(left);
+    out.extend_from_slice(left.as_bytes());
     for (idx, width) in widths.iter().enumerate() {
-        for _ in 0..width.saturating_add(2) {
+        for _ in 0..width.saturating_add(2 * padding) {
             out.extend_from_slice("─".as_bytes());
         }
-        out.extend_from_slice(if idx + 1 == widths.len() { right } else { mid });
+        out.extend_from_slice(if idx + 1 == widths.len() { right } else { mid }.as_bytes());
     }
     out.extend_from_slice(SGR_RESET);
     out.push(b'\n');
@@ -423,6 +422,7 @@ fn table_row(
     cells: &[&[u8]],
     widths: &[usize],
     aligns: &[Align],
+    padding: usize,
     header: bool,
     references: &References,
     palette: &Palette,
@@ -456,7 +456,15 @@ fn table_row(
         if clipped.last() == Some(&b'\n') {
             clipped.pop();
         }
-        let pad = widths[idx].saturating_sub(width(&clipped));
+        let mut cells_used = width(&clipped);
+        // The viewport keeps an isolated wide character intact, even if it
+        // exceeds the first row. A table cell must obey its column width.
+        if cells_used > widths[idx] {
+            clipped.clear();
+            clipped.extend_from_slice("…".as_bytes());
+            cells_used = 1;
+        }
+        let pad = widths[idx] - cells_used;
         let (before, after) = match aligns[idx] {
             Align::Left => (0, pad),
             Align::Center => (pad / 2, pad - pad / 2),
@@ -472,10 +480,7 @@ fn table_row(
         {
             return Err(Error::ResourceLimit);
         }
-        out.push(b' ');
-        for _ in 0..before {
-            out.push(b' ');
-        }
+        out.resize(out.len() + padding + before, b' ');
         if header {
             bold(out, palette, SemanticRole::Info);
         } else {
@@ -484,10 +489,7 @@ fn table_row(
         out.extend_from_slice(&clipped);
         out.extend_from_slice(SGR_RESET);
         role(out, palette, SemanticRole::Border);
-        for _ in 0..after {
-            out.push(b' ');
-        }
-        out.push(b' ');
+        out.resize(out.len() + after + padding, b' ');
         out.extend_from_slice("│".as_bytes());
     }
     out.extend_from_slice(SGR_RESET);
@@ -495,13 +497,7 @@ fn table_row(
     Ok(())
 }
 
-fn fit_widths(widths: &mut [usize], cols_limit: u16, indent: usize) {
-    if cols_limit == 0 || widths.is_empty() {
-        return;
-    }
-    let budget = usize::from(cols_limit)
-        .saturating_sub(indent + widths.len() * 3 + 1)
-        .max(widths.len());
+fn fit_widths(widths: &mut [usize], budget: usize) {
     for width in widths.iter_mut() {
         *width = (*width).max(1);
     }
@@ -602,20 +598,28 @@ fn emit_table(
             break;
         }
     }
-    fit_widths(&mut widths[..cols], cols_limit, width(indent_));
-    if full_width && cols_limit > 0 {
-        let budget = usize::from(cols_limit).saturating_sub(width(indent_) + cols * 3 + 1);
-        let spare = budget.saturating_sub(widths[..cols].iter().sum::<usize>());
-        for (index, width) in widths[..cols].iter_mut().enumerate() {
-            *width += spare / cols + usize::from(index < spare % cols);
+    let available = usize::from(cols_limit).saturating_sub(width(indent_));
+    let padding = usize::from(cols_limit == 0 || available > cols * 4);
+    if cols_limit > 0 {
+        // One border per column plus the outer edge. Use compact cells when
+        // padding would make the table wider than the panel.
+        if available <= cols * 2 {
+            return Ok(false);
+        }
+        let budget = available - 1 - cols * (1 + 2 * padding);
+        fit_widths(&mut widths[..cols], budget);
+        if full_width {
+            let spare = budget.saturating_sub(widths[..cols].iter().sum::<usize>());
+            for (index, width) in widths[..cols].iter_mut().enumerate() {
+                *width += spare / cols + usize::from(index < spare % cols);
+            }
         }
     }
     border(
         indent_,
         &widths[..cols],
-        "┌".as_bytes(),
-        "┬".as_bytes(),
-        "┐".as_bytes(),
+        padding,
+        ["┌", "┬", "┐"],
         palette,
         out,
     );
@@ -624,6 +628,7 @@ fn emit_table(
         &header[..cols],
         &widths[..cols],
         &aligns[..cols],
+        padding,
         true,
         references,
         palette,
@@ -634,9 +639,8 @@ fn emit_table(
     border(
         indent_,
         &widths[..cols],
-        "├".as_bytes(),
-        "┼".as_bytes(),
-        "┤".as_bytes(),
+        padding,
+        ["├", "┼", "┤"],
         palette,
         out,
     );
@@ -655,6 +659,7 @@ fn emit_table(
             &cells[..cols],
             &widths[..cols],
             &aligns[..cols],
+            padding,
             false,
             references,
             palette,
@@ -667,9 +672,8 @@ fn emit_table(
     border(
         indent_,
         &widths[..cols],
-        "└".as_bytes(),
-        "┴".as_bytes(),
-        "┘".as_bytes(),
+        padding,
+        ["└", "┴", "┘"],
         palette,
         out,
     );
@@ -714,8 +718,7 @@ fn emit_heading(
     let token = match level {
         1 => crate::theme::ColorToken::INFO,
         2 => crate::theme::ColorToken::SUCCESS,
-        3 => crate::theme::ColorToken::WARN,
-        4 => crate::theme::ColorToken::DANGER,
+        3..=5 => crate::theme::ColorToken::WARN,
         _ => crate::theme::ColorToken::TEXT_MUTED,
     };
     let seq = &palette.sgr[token.index()];

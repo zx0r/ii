@@ -4,6 +4,7 @@
 local M = {}
 
 local emit = ya.mgr_emit or ya.emit or ya.manager_emit
+local last_page
 
 -- Commit graphics on Yazi's main loop, after rejecting superseded jobs. Writing
 -- from the CLI races Yazi's own terminal writer during rapid navigation.
@@ -12,8 +13,11 @@ local publish_graphics = ya.sync(function(state, url, skip, geometry, packets, b
   local hovered = tab.current.hovered
   if not hovered or tostring(hovered.url) ~= url or tab.preview.skip ~= skip then return false end
   local page = state.page
-  local reuse = state.next_skip == skip and page and page.url == url
+  local _, page_height = geometry:match("^(%d+)/(%d+)")
+  local overlap = tonumber(page_height) or 0
+  local reuse = page and page.skip ~= skip and page.url == url
     and page.tab == tab.id and page.geometry == geometry
+    and math.abs(skip - page.skip) < overlap
   state.page, state.next_skip = nil, nil
   local sent, tty = {}, nil
   for _, packet in ipairs(packets) do
@@ -26,6 +30,7 @@ local publish_graphics = ya.sync(function(state, url, skip, geometry, packets, b
   end
   if tty and not tty:close() then return false end
   state.page = { url = url, tab = tab.id, skip = skip, geometry = geometry, sent = sent }
+  last_page = state.page
   return true
 end)
 
@@ -102,7 +107,10 @@ function M:seek(job)
   local from = tab.preview.skip
   local target = math.max(0, from + job.units)
   if target == from then return end
-  self.next_skip = self.page and self.page.skip == from and math.abs(target-from) < job.area.h
+  self.next_skip = last_page and last_page.skip == from
+    and last_page.url == tostring(job.file.url)
+    and last_page.tab == tab.id
+    and math.abs(target - from) < job.area.h
     and target or nil
   emit("peek", { target, only_if = job.file.url, scope = job.scope })
 end

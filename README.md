@@ -22,7 +22,7 @@ Graphics Protocol.
 
 ### Integrations
 
-#### Yazi (`ii.yazi`)
+###### Yazi (`ii.yazi`)
 
 Install using the Yazi package manager:
 
@@ -47,7 +47,7 @@ prepend_previewers = [
 ]
 ```
 
-#### Neovim (`ii.nvim`)
+###### Neovim (`ii.nvim`)
 
 Install and configure with `lazy.nvim`:
 
@@ -100,18 +100,10 @@ cd ii && just release
 ii README.md
 
 # Pipe from stdin
-cat diagram.mmd | ii
+cat <target> | ii
 
 # Render specific size / cells
-ii --size 80x24 document.ipynb
-
-# Diagnostics
-ii doctor
-
-# Background daemon management
-ii --daemon
-ii --ping
-ii --shutdown
+ii --size <size> <target>
 ```
 
 ---

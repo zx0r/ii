@@ -245,7 +245,7 @@ fn daemon_lifecycle_lock_ping_render_bad_magic_and_shutdown()
 fn assert_notebook_cell_anchors(sock: &Path) -> Result<(), Box<dyn core::error::Error>> {
     // Notebook cells keep independent source anchors, rather than one giant
     // virtual block attached to the first JSON row.
-    let notebook = include_bytes!("../showcase/scenarios/analysis.ipynb");
+    let notebook = include_bytes!("../showcase/03.ipynb");
     let mut payload = b"ipynb\0".to_vec();
     payload.extend_from_slice(notebook);
     let mut header = Header::new(Cmd::DecorateBuffer, u32::try_from(payload.len())?);
@@ -264,7 +264,7 @@ fn assert_notebook_cell_anchors(sock: &Path) -> Result<(), Box<dyn core::error::
         offset += 12 + len;
     }
     assert_eq!(offset, body.len());
-    assert_eq!(count, 32, "notebook cells collapsed into one cursor anchor");
+    assert_eq!(count, 19, "notebook cells collapsed into one cursor anchor");
 
     Ok(())
 }

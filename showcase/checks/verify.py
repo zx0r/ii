@@ -16,6 +16,8 @@ import time
 import zlib
 from pathlib import Path
 
+from build_stands import build
+
 ROOT = Path(__file__).resolve().parents[2]
 HEADER = struct.Struct("<IHHIIIIHHHH")
 ANSI = re.compile(rb"\x1b\[[0-?]*[ -/]*[@-~]")
@@ -90,6 +92,8 @@ def main():
     args = parser.parse_args()
     results = []
     with tempfile.TemporaryDirectory(prefix="ii-verify-") as tmp:
+        scenarios = Path(tmp) / "scenarios"
+        build(scenarios)
         address = str(Path(tmp) / "ii.sock")
         run_env=dict(os.environ,XDG_CACHE_HOME=str(Path(tmp)/'cache'))
         daemon = subprocess.Popen([str(args.binary.resolve()), "--daemon", "--socket", address], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=run_env)
@@ -98,8 +102,8 @@ def main():
                 if Path(address).exists(): break
                 if daemon.poll() is not None: raise AssertionError(daemon.stderr.read().decode())
                 time.sleep(.01)
-            extensions = {p.suffix for p in (ROOT / "showcase/scenarios").iterdir()}
-            inputs = sorted((ROOT / "showcase/scenarios").iterdir()) + [
+            extensions = {p.suffix for p in scenarios.iterdir()}
+            inputs = sorted(scenarios.iterdir()) + [
                 p for p in sorted((ROOT / "showcase").iterdir())
                 if p.name != "README.md" and p.is_file() and p.suffix in extensions]
             for path in inputs:
@@ -123,10 +127,10 @@ def main():
                 cli = subprocess.run([str(args.binary.resolve()), "--socket", address, "--machine", "--size", "80x12", "--cell-size", "9x18", "--theme", "dark", "--", str(path)], capture_output=True, check=True, env=run_env)
                 n = struct.unpack("<I", cli.stdout[:4])[0]
                 assert (cli.stdout[4:4+n], cli.stdout[4+n:]) == top, (path, "CLI/daemon mismatch")
-                results.append(dict(file=str(path.relative_to(ROOT / "showcase")), cold_ms=round(cold_ms,3), warm_median_ms=round(statistics.median(samples),3), apc_bytes=len(top[0]), text_bytes=len(top[1]), decoded_images=image_count))
+                results.append(dict(file=str(Path("scenarios") / path.name if path.parent == scenarios else path.name), cold_ms=round(cold_ms,3), warm_median_ms=round(statistics.median(samples),3), apc_bytes=len(top[0]), text_bytes=len(top[1]), decoded_images=image_count))
                 print(f"PASS {path.name}: {image_count} images, warm {statistics.median(samples):.3f} ms")
             # Assert the final dataset record is reachable through visual scrolling.
-            csv = ROOT / "showcase/scenarios/telemetry.csv"
+            csv = scenarios / "telemetry.csv"
             found = False
             for skip in range(0, 10000, 12):
                 _, text = exchange(address, csv, skip)

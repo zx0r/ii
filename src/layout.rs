@@ -1,7 +1,5 @@
 //! Pure zero-allocation layout math: axis scales and table column distribution.
 
-const MIN_COL_W: f32 = 32.0;
-const MIN_SCALED_COL_W: f32 = 24.0;
 const MAX_TICKS: usize = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -97,59 +95,6 @@ fn nice_num(range: f32, round: bool) -> f32 {
         10.0
     };
     nice * pow10
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-#[repr(C)]
-pub struct TableMetrics {
-    pub total_width: f32,
-    pub row_height: f32,
-}
-const _: () = assert!(size_of::<TableMetrics>() == 8);
-
-pub fn compute_table_widths(
-    cols: usize,
-    content_lengths: &[usize],
-    char_width: f32,
-    padding: f32,
-    max_total_w: f32,
-    out_widths: &mut Vec<f32>,
-) -> TableMetrics {
-    out_widths.clear();
-    if cols == 0 || !char_width.is_finite() || !padding.is_finite() || !max_total_w.is_finite() {
-        return TableMetrics::default();
-    }
-    let cw = char_width.max(1.0);
-    let pad2 = padding.max(0.0) * 2.0;
-    let max_w = max_total_w.max(MIN_COL_W);
-    let col_cap = (max_w * 0.6).max(MIN_COL_W);
-
-    out_widths.resize(cols, 0.0);
-    for (i, &len) in content_lengths.iter().enumerate() {
-        let len_f = f32::from(u16::try_from(len).unwrap_or(u16::MAX));
-        let slot = &mut out_widths[i % cols];
-        if len_f > *slot {
-            *slot = len_f;
-        }
-    }
-
-    let mut total = 0.0_f32;
-    for w in out_widths.iter_mut() {
-        *w = (*w).mul_add(cw, pad2).clamp(MIN_COL_W, col_cap);
-        total += *w;
-    }
-    if total > max_w {
-        let scale = max_w / total;
-        total = 0.0;
-        for w in out_widths.iter_mut() {
-            *w = (*w * scale).max(MIN_SCALED_COL_W);
-            total += *w;
-        }
-    }
-    TableMetrics {
-        total_width: total,
-        row_height: cw * 2.2,
-    }
 }
 
 pub const BASE_CELL_W: f32 = 9.0;

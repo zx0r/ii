@@ -54,6 +54,7 @@ struct Graph {
     edges: [Edge; MAX_EDGES],
     edge_len: usize,
     horizontal: bool,
+    truncated: bool,
 }
 
 impl Graph {
@@ -64,6 +65,7 @@ impl Graph {
             edges: [Edge { from: 0, to: 0 }; MAX_EDGES],
             edge_len: 0,
             horizontal: false,
+            truncated: false,
         }
     }
 
@@ -75,6 +77,7 @@ impl Graph {
             }
         }
         if self.node_len >= MAX_NODES {
+            self.truncated = true;
             return None;
         }
         let (Ok(start), Ok(end)) = (u32::try_from(span.0), u32::try_from(span.1)) else {
@@ -99,6 +102,8 @@ impl Graph {
         if self.edge_len < MAX_EDGES {
             self.edges[self.edge_len] = Edge { from, to };
             self.edge_len += 1;
+        } else {
+            self.truncated = true;
         }
     }
 }
@@ -308,12 +313,13 @@ pub fn render(src: &[u8], palette: &Palette, _width: u16, out: &mut Vec<u8>) {
         } else {
             0.0
         };
-    let h = body_h
+    let content_h = body_h
         + if has_return && graph.horizontal {
             64.0
         } else {
             0.0
         };
+    let h = content_h + if graph.truncated { 24.0 } else { 0.0 };
     let accent = palette.series_hex_str(0);
     let line = palette.series_hex_str(1);
     let fg = palette.hex_str(SemanticRole::TextPrimary);
@@ -321,6 +327,13 @@ pub fn render(src: &[u8], palette: &Palette, _width: u16, out: &mut Vec<u8>) {
     let mut svg = format!(
         "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {w} {h}\"><defs><marker id=\"arrow\" viewBox=\"0 0 10 10\" refX=\"9\" refY=\"5\" markerWidth=\"6\" markerHeight=\"6\" orient=\"auto-start-reverse\"><path d=\"M0 1L10 5L0 9z\" fill=\"{line}\"/></marker></defs>"
     );
+    if graph.truncated {
+        let _ = write!(
+            svg,
+            "<text x=\"20\" y=\"{}\" font-size=\"12\" fill=\"{fg}\">Graph truncated ({MAX_NODES} nodes, {MAX_EDGES} edges max)</text>",
+            h - 8.0
+        );
+    }
     let horizontal = graph.horizontal;
     for edge in &graph.edges[..graph.edge_len] {
         let a = graph.nodes[usize::from(edge.from)];

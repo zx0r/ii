@@ -9,13 +9,16 @@ local cached_cell_w, cached_cell_h = is_mac and 18 or 9, is_mac and 36 or 18
 local frames = {}
 local saved = {}
 local deadlines = {}
+local errors = {}
 local options = { executable = "ii", timeout_ms = 5000 }
 local buffer_enabled = {}
 local generations = {}
+local next_generation = 0
 local requests = {}
 local timers = {}
 local suspended_highlights = {}
 local placeholder = "\244\142\187\174"
+local max_payload = 64 * 1024 * 1024
 
 -- Little-endian packing helpers (LuaJIT / Lua 5.1 compatible, zero external dependencies)
 local function pack_u16_le(val)
@@ -84,11 +87,13 @@ update_cell_metrics()
 vim.api.nvim_create_autocmd("VimResized", { callback = update_cell_metrics })
 
 -- Connect to daemon with transparent autospawn on failure
-local function connect_daemon(sock_path, cb, retries)
+local function connect_daemon(sock_path, cb, active, retries)
+  if not active() then return end
   retries = retries or 0
   local pipe = vim.uv.new_pipe(false)
 
   pipe:connect(sock_path, function(err)
+    if not active() then pipe:close(); return end
     if not err then
       cb(nil, pipe)
       return
@@ -97,14 +102,16 @@ local function connect_daemon(sock_path, cb, retries)
     pipe:close()
     if (err:match("ENOENT") or err:match("ECONNREFUSED")) and retries < 5 then
       if retries == 0 then vim.schedule(function()
-        vim.system({ options.executable, "--daemon", "--socket", sock_path }, { detach = true }, function(_) end)
+        if not active() then return end
+        local ok, spawn_err = pcall(vim.system, { options.executable, "--daemon", "--socket", sock_path }, { detach = true }, function(_) end)
+        if not ok then cb(tostring(spawn_err), nil) end
       end) end
 
       local timer = vim.uv.new_timer()
       timer:start(40 * (retries + 1), 0, function()
         timer:stop()
         timer:close()
-        connect_daemon(sock_path, cb, retries + 1)
+        connect_daemon(sock_path, cb, active, retries + 1)
       end)
     else
       cb(err, nil)
@@ -209,6 +216,25 @@ local function sync_source_highlights(buf)
   if lang and not active then vim.treesitter.start(buf, lang) end
 end
 
+local function discard(win)
+  local frame = frames[win]
+  if frame and frame.ns and vim.api.nvim_buf_is_valid(frame.bufnr) then
+    vim.api.nvim_buf_clear_namespace(frame.bufnr, frame.ns, 0, -1)
+  end
+  frames[win] = nil
+  view_mode(win, false)
+  saved[win] = nil
+  if frame then sync_source_highlights(frame.bufnr) end
+end
+
+local function fail(win, bufnr, tick, message)
+  if not vim.api.nvim_win_is_valid(win) or vim.api.nvim_win_get_buf(win) ~= bufnr then return end
+  if vim.api.nvim_buf_get_changedtick(bufnr) ~= tick then return end
+  discard(win)
+  errors[win] = { source = bufnr, message = message }
+  vim.notify("ii: " .. message, vim.log.levels.WARN)
+end
+
 local function decorate(win)
   local frame=frames[win]
   if not frame or not vim.api.nvim_buf_is_valid(frame.bufnr) then return end
@@ -262,14 +288,11 @@ end
 function M.render(bufnr, win, force)
   if vim.fn.mode():match("^[iR]") then return end
   win = win or vim.api.nvim_get_current_win()
+  if not vim.api.nvim_win_is_valid(win) then return end
   bufnr = bufnr or vim.api.nvim_win_get_buf(win)
-
-  if not vim.api.nvim_buf_is_valid(bufnr) or not vim.api.nvim_win_is_valid(win) or buffer_enabled[bufnr] == false then return end
-  view_mode(win,true)
-  -- Rendered view has no gutters; getwininfo().textoff may still describe
-  -- the previous layout immediately after a split or option change.
-  local textoff = 0
-  local cols = math.max(1, vim.api.nvim_win_get_width(win) - textoff)
+  if not vim.api.nvim_buf_is_valid(bufnr) or vim.api.nvim_win_get_buf(win) ~= bufnr or buffer_enabled[bufnr] == false then return end
+  -- Rendered width excludes gutters. Apply window options only on commit.
+  local cols = vim.api.nvim_win_get_width(win)
   local rows = math.max(1, vim.api.nvim_win_get_height(win))
   local background=vim.o.background
   local cell_w,cell_h=cached_cell_w,cached_cell_h
@@ -280,8 +303,10 @@ function M.render(bufnr, win, force)
     sync_source_highlights(bufnr)
     return
   end
-  generations[win] = (generations[win] or 0) + 1
-  local generation = generations[win]
+  local tick = vim.api.nvim_buf_get_changedtick(bufnr)
+  next_generation = next_generation + 1
+  local generation = next_generation
+  generations[win] = generation
   if requests[win] and not requests[win]:is_closing() then requests[win]:close() end
   requests[win] = nil
   if deadlines[win] then deadlines[win]:stop(); deadlines[win]:close(); deadlines[win] = nil end
@@ -289,17 +314,12 @@ function M.render(bufnr, win, force)
   deadlines[win] = deadline
   deadline:start(options.timeout_ms, 0, vim.schedule_wrap(function()
     if generations[win] ~= generation then return end
-    generations[win] = generation + 1
+    generations[win] = nil
     if requests[win] and not requests[win]:is_closing() then requests[win]:close() end
     requests[win] = nil
-    local frame=frames[win]
-    if frame and frame.ns and vim.api.nvim_buf_is_valid(frame.bufnr) then vim.api.nvim_buf_clear_namespace(frame.bufnr,frame.ns,0,-1) end
-    frames[win] = nil
-    if frame then sync_source_highlights(frame.bufnr) end
     deadline:stop(); deadline:close(); deadlines[win] = nil
-    vim.notify("ii: render request timed out", vim.log.levels.WARN)
+    fail(win, bufnr, tick, "render request timed out")
   end))
-  local tick = vim.api.nvim_buf_get_changedtick(bufnr)
 
   local sock_path = get_socket_path()
 
@@ -308,15 +328,25 @@ function M.render(bufnr, win, force)
   if background == "light" then flags = flags + 1 end            -- FLAG_THEME_LIGHT
   if vim.env.TMUX then flags = flags + 2 end                           -- FLAG_TMUX
 
-  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-  local ext = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(bufnr), ":e"):lower()
+  local name = vim.api.nvim_buf_get_name(bufnr)
+  local ext = vim.fn.fnamemodify(name, ":e"):lower()
   local binary=({zip=true,tar=true,jar=true,whl=true,tgz=true,tbz2=true,txz=true,tzst=true,png=true})[ext]
   local command=binary and 4 or 8
-  local payload = binary and vim.api.nvim_buf_get_name(bufnr) or (ext .. "\0" .. table.concat(lines, "\n"))
-  local payload_len = #payload
-  if payload_len > 67108864 then
+  local prefix = binary and "" or ext .. "\0"
+  local payload
+  if binary then
+    payload = name
+  else
+    local count = vim.api.nvim_buf_line_count(bufnr)
+    -- The editor's total includes at most one final EOL that IXPC omits.
+    if vim.api.nvim_buf_get_offset(bufnr, count) - 1 <= max_payload - #prefix then
+      payload = table.concat(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), "\n")
+    end
+  end
+  local payload_len = payload and #prefix + #payload
+  if not payload_len or payload_len > max_payload then
     deadline:stop(); deadline:close(); deadlines[win] = nil
-    vim.notify("ii: buffer exceeds request limit", vim.log.levels.WARN)
+    fail(win, bufnr, tick, "buffer exceeds request limit")
     return
   end
 
@@ -335,7 +365,10 @@ function M.render(bufnr, win, force)
   connect_daemon(sock_path, function(err, pipe)
     if err or not pipe then
       if deadlines[win] == deadline then deadline:stop(); deadline:close(); deadlines[win] = nil end
-      vim.schedule(function() vim.notify("ii: cannot connect to daemon: " .. tostring(err), vim.log.levels.WARN) end)
+      vim.schedule(function()
+        if generations[win] ~= generation then return end
+        fail(win, bufnr, tick, "cannot connect to daemon: " .. tostring(err))
+      end)
       return
     end
     if generations[win] ~= generation then pipe:close(); return end
@@ -344,15 +377,20 @@ function M.render(bufnr, win, force)
     local total_read = 0
     local expected_len = nil
     local apc_len = nil
+    local rejected = false
 
     local function failed(message)
       if not pipe:is_closing() then pipe:close() end
       if generations[win] ~= generation then return end
       requests[win] = nil
       if deadlines[win] == deadline then deadline:stop(); deadline:close(); deadlines[win] = nil end
-      vim.schedule(function() vim.notify("ii: " .. message, vim.log.levels.WARN) end)
+      vim.schedule(function()
+        if generations[win] ~= generation then return end
+        fail(win, bufnr, tick, message)
+      end)
     end
     pipe:read_start(function(read_err, chunk)
+      if generations[win] ~= generation then return end
       if read_err or not chunk then
         failed(tostring(read_err or "incomplete response"))
         return
@@ -360,7 +398,7 @@ function M.render(bufnr, win, force)
 
       table.insert(rx_chunks, chunk)
       total_read = total_read + #chunk
-      if total_read > 67108896 then failed("response exceeds limit"); return end
+      if total_read > max_payload + 32 then failed("response exceeds limit"); return end
 
       if not expected_len and total_read >= 32 then
         local full_prefix = table.concat(rx_chunks)
@@ -368,10 +406,9 @@ function M.render(bufnr, win, force)
         apc_len = unpack_u32_le(full_prefix, 17)
         local magic = unpack_u32_le(full_prefix, 1)
         local version = unpack_u16_le(full_prefix, 5)
-        local command = unpack_u16_le(full_prefix, 7)
-        local base_command = command % 0x4000
-        local expected_command = binary and 4 or 8
-        if unpack_u32_le(full_prefix, 9) ~= bufnr or unpack_u32_le(full_prefix, 13) ~= tick or magic ~= 0x49585043 or version ~= 1 or base_command ~= expected_command or resp_payload_len > 67108864 or apc_len > resp_payload_len then
+        local reply_command = unpack_u16_le(full_prefix, 7)
+        rejected = reply_command == 0xC000 + command
+        if unpack_u32_le(full_prefix, 9) ~= bufnr or unpack_u32_le(full_prefix, 13) ~= tick or magic ~= 0x49585043 or version ~= 1 or (reply_command ~= 0x8000 + command and not rejected) or resp_payload_len > max_payload or apc_len > resp_payload_len or (rejected and (apc_len ~= 0 or resp_payload_len > 1024)) then
           failed("invalid render response"); return
         end
         expected_len = 32 + resp_payload_len
@@ -384,8 +421,8 @@ function M.render(bufnr, win, force)
 
         requests[win] = nil
         local full_buf = table.concat(rx_chunks)
-        if command >= 0xC000 then
-          local message = full_buf:sub(33, 32 + resp_payload_len):gsub("%s+$", "")
+        if rejected then
+          local message = full_buf:sub(33, 1056):gsub("%s+$", "")
           failed(message ~= "" and message or "render request failed")
           return
         end
@@ -394,15 +431,9 @@ function M.render(bufnr, win, force)
           if not vim.api.nvim_buf_is_valid(bufnr) then return end
           if vim.api.nvim_buf_get_changedtick(bufnr) ~= tick or generations[win] ~= generation or buffer_enabled[bufnr] == false then return end
           if not vim.api.nvim_win_is_valid(win) or vim.api.nvim_win_get_buf(win) ~= bufnr then return end
-          if math.max(1, vim.api.nvim_win_get_width(win) - textoff) ~= cols or vim.api.nvim_win_get_height(win) ~= rows then return end
+          if vim.api.nvim_win_get_width(win) ~= cols or vim.api.nvim_win_get_height(win) ~= rows then return end
 
           if vim.o.background~=background or cached_cell_w~=cell_w or cached_cell_h~=cell_h then return end
-
-          -- 1. Deliver KGP APC commands through terminal UI stream
-          local apc_bytes = full_buf:sub(33, 32 + apc_len)
-          if #apc_bytes > 0 and #vim.api.nvim_list_uis() > 0 then
-            vim.api.nvim_ui_send(apc_bytes)
-          end
 
           local blocks={};local groups={count=0};local pos=33+apc_len
           local line_count=vim.api.nvim_buf_line_count(bufnr)
@@ -411,16 +442,20 @@ function M.render(bufnr, win, force)
             pos=#full_buf+1
           end
           while pos<=#full_buf do
-            if pos+11>#full_buf then return end
+            if pos+11>#full_buf then failed("truncated decoration header"); return end
             local first=unpack_u32_le(full_buf,pos)
             local last=unpack_u32_le(full_buf,pos+4)
             local size=unpack_u32_le(full_buf,pos+8);pos=pos+12
-            if size>#full_buf-pos+1 or first>=line_count or last<=first then return end
+            if size>#full_buf-pos+1 or first>=line_count or last<=first then failed("invalid decoration block"); return end
             blocks[#blocks+1]={first=first,last=math.min(last,line_count),lines=virtual_lines(full_buf:sub(pos,pos+size-1),groups,win)}
             pos=pos+size
           end
+          if apc_len > 0 and #vim.api.nvim_list_uis() > 0 then
+            vim.api.nvim_ui_send(full_buf:sub(33, 32 + apc_len))
+          end
           view_mode(win,not vim.fn.mode():match("^[iR]"))
           if frames[win] and frames[win].ns and vim.api.nvim_buf_is_valid(frames[win].bufnr) then vim.api.nvim_buf_clear_namespace(frames[win].bufnr,frames[win].ns,0,-1) end
+          errors[win] = nil
           frames[win]={bufnr=bufnr,tick=tick,cols=cols,blocks=blocks,graphics_bytes=apc_len,rows=rows,background=background,cell_w=cell_w,cell_h=cell_h}
           decorate(win)
           vim.api.nvim__redraw({win=win,valid=false})
@@ -428,34 +463,35 @@ function M.render(bufnr, win, force)
       end
     end)
 
-    pipe:write(header .. payload, function(write_err) if write_err then failed(tostring(write_err)) end end)
-  end)
+    local writing, write_err = pipe:write({ header, prefix, payload }, function(err)
+      if err then failed(tostring(err)) end
+    end)
+    if not writing then failed(tostring(write_err)) end
+  end, function() return generations[win] == generation and deadlines[win] == deadline end)
 end
 
 function M.clear(bufnr)
   local current = frames[vim.api.nvim_get_current_win()]
   bufnr = bufnr or (current and current.bufnr) or vim.api.nvim_get_current_buf()
+  for win, err in pairs(errors) do
+    if err.source == bufnr then errors[win] = nil end
+  end
   for win, frame in pairs(frames) do
     if frame.bufnr == bufnr then
-      if frame.ns and vim.api.nvim_buf_is_valid(bufnr) then vim.api.nvim_buf_clear_namespace(bufnr,frame.ns,0,-1) end
-      frames[win]=nil
-      if saved[win] and vim.api.nvim_win_is_valid(win) then
-        view_mode(win,false)
-      end
-      saved[win]=nil
+      discard(win)
     end
   end
   sync_source_highlights(bufnr)
   for win, pipe in pairs(requests) do
     if not vim.api.nvim_win_is_valid(win) or vim.api.nvim_win_get_buf(win) == bufnr then
-      generations[win] = (generations[win] or 0) + 1
+      generations[win] = nil
       if not pipe:is_closing() then pipe:close() end
       requests[win] = nil
     end
   end
   for win, deadline in pairs(deadlines) do
     if not vim.api.nvim_win_is_valid(win) or vim.api.nvim_win_get_buf(win) == bufnr then
-      generations[win] = (generations[win] or 0) + 1
+      generations[win] = nil
       deadline:stop(); deadline:close(); deadlines[win] = nil
     end
   end
@@ -529,10 +565,11 @@ function M.setup(opts)
     group = augroup,
     callback = function(ev)
       local win = tonumber(ev.match)
-      generations[win] = (generations[win] or 0) + 1
+      generations[win] = nil
       local frame=frames[win]
       if frame and frame.ns and vim.api.nvim_buf_is_valid(frame.bufnr) then vim.api.nvim_buf_clear_namespace(frame.bufnr,frame.ns,0,-1) end
       frames[win] = nil
+      errors[win] = nil
       if frame then sync_source_highlights(frame.bufnr) end
       saved[win]=nil
       if requests[win] and not requests[win]:is_closing() then requests[win]:close() end
@@ -557,8 +594,10 @@ vim.api.nvim_create_user_command("PixxClear", function() M.clear() end, { desc =
 function M.status(win)
   win = win or vim.api.nvim_get_current_win()
   local frame = frames[win]
+  local err = errors[win]
   return { pending = deadlines[win] ~= nil, blocks = frame and #frame.blocks or 0, graphics_bytes = frame and frame.graphics_bytes or 0, source = frame and frame.bufnr or nil,
-    source_tick = frame and frame.tick or nil, cols = frame and frame.cols or nil }
+    source_tick = frame and frame.tick or nil, cols = frame and frame.cols or nil,
+    last_error = err and vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win) == err.source and err.message or nil }
 end
 
 return M

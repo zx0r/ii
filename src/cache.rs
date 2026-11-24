@@ -7,7 +7,10 @@ use core::{
 
 use rustix::{
     fd::{BorrowedFd, OwnedFd},
-    fs::{AtFlags, CWD, Mode, OFlags, fstat, mkdirat, openat, renameat, unlinkat},
+    fs::{
+        AtFlags, CWD, Dir, FileType, FlockOperation, Mode, OFlags, flock, fstat, mkdirat, openat,
+        renameat, statat, unlinkat,
+    },
     io::{Errno, read, write},
     process::getpid,
 };
@@ -16,9 +19,12 @@ use crate::err::Error;
 
 pub const MAGIC: [u8; 4] = *b"PX03";
 pub const HEADER_LEN: usize = 12;
-pub const MAX_DECODE_SIZE: usize = 67_108_864;
+pub const MAX_DECODE_SIZE: usize = crate::raster::MAX_RASTER_BYTES;
 
+const DISK_BUDGET: u64 = 256 * 1024 * 1024;
+const SWEEP_INTERVAL: u32 = 16 * 1024 * 1024;
 static TMP_SEQ: AtomicU32 = AtomicU32::new(0);
+static WRITTEN: AtomicU32 = AtomicU32::new(0);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(C)]
@@ -152,7 +158,7 @@ pub fn read_blob(
     let fd = match openat(
         dir_fd,
         name,
-        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
         Mode::empty(),
     ) {
         Ok(fd) => fd,
@@ -160,7 +166,11 @@ pub fn read_blob(
         Err(e) => return Err(Error::Io(e)),
     };
 
-    let file_len = usize::try_from(fstat(&fd)?.st_size).map_err(|_| Error::CacheCorrupt)?;
+    let meta = fstat(&fd)?;
+    if FileType::from_raw_mode(meta.st_mode) != FileType::RegularFile {
+        return Err(Error::CacheCorrupt);
+    }
+    let file_len = usize::try_from(meta.st_size).map_err(|_| Error::CacheCorrupt)?;
     let max_len = HEADER_LEN + lz4_flex::block::get_maximum_output_size(MAX_DECODE_SIZE);
     if file_len < HEADER_LEN || file_len > max_len {
         return Err(Error::CacheCorrupt);
@@ -267,6 +277,55 @@ pub fn write_blob(
         let _ = unlinkat(dir_fd, tmp_name, AtFlags::empty());
         return Err(Error::Io(e));
     }
+    let len = u32::try_from(lz4.len()).unwrap_or(SWEEP_INTERVAL);
+    if WRITTEN
+        .fetch_add(len, Ordering::Relaxed)
+        .saturating_add(len)
+        >= SWEEP_INTERVAL
+    {
+        WRITTEN.store(0, Ordering::Relaxed);
+        let _ = prune(dir_fd, DISK_BUDGET);
+    }
+    Ok(())
+}
+
+fn prune(dir_fd: BorrowedFd<'_>, budget: u64) -> Result<(), Errno> {
+    let lock = openat(
+        dir_fd,
+        c".prune.lock",
+        OFlags::CREATE | OFlags::RDWR | OFlags::NONBLOCK | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        Mode::RUSR | Mode::WUSR,
+    )?;
+    flock(&lock, FlockOperation::NonBlockingLockExclusive)?;
+
+    let mut total = 0u64;
+    let mut blobs = Vec::new();
+    for entry in Dir::read_from(dir_fd)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if name.to_bytes().len() != 64 || !name.to_bytes().iter().all(u8::is_ascii_hexdigit) {
+            continue;
+        }
+        let Ok(meta) = statat(dir_fd, name, AtFlags::SYMLINK_NOFOLLOW) else {
+            continue;
+        };
+        if FileType::from_raw_mode(meta.st_mode) == FileType::RegularFile {
+            let size = u64::try_from(meta.st_size).unwrap_or(0);
+            total = total.saturating_add(size);
+            blobs.push((meta.st_mtime, meta.st_mtime_nsec, size, entry));
+        }
+    }
+    if total > budget {
+        blobs.sort_unstable_by_key(|(sec, ns, _, _)| (*sec, *ns));
+        for (_, _, size, entry) in blobs {
+            if unlinkat(dir_fd, entry.file_name(), AtFlags::empty()).is_ok() {
+                total -= size;
+            }
+            if total <= budget {
+                break;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -305,5 +364,6 @@ pub fn ensure_dirs() -> Result<OwnedFd, Error> {
     if fstat(&dir_fd)?.st_uid != uid.as_raw() {
         return Err(Error::Io(Errno::ACCESS));
     }
+    let _ = prune(std::os::fd::AsFd::as_fd(&dir_fd), DISK_BUDGET);
     Ok(dir_fd)
 }

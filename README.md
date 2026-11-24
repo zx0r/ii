@@ -1,440 +1,406 @@
-# ii
+<p align="center">
+  <strong><code>ii</code></strong><br>
+  <sub>Terminal graphical coprocessor — math, diagrams, charts, and archives over the Kitty Graphics Protocol.</sub>
+</p>
 
-Терминальный просмотр технических документов, формул, диаграмм, таблиц и сохранённых результатов
-вычислений. Обычный текст остаётся текстом; математические и графические блоки выводятся через Kitty
-Graphics Protocol. Есть интеграции с Yazi, Neovim и fzf.
+<p align="center">
+  <a href="https://github.com/zx0r/ii/actions/workflows/ci.yml"><img src="https://github.com/zx0r/ii/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+  <a href="https://codecov.io/gh/zx0r/ii"><img src="https://codecov.io/gh/zx0r/ii/branch/main/graph/badge.svg" alt="Coverage"></a>
+  <a href="https://crates.io/crates/ii"><img src="https://img.shields.io/crates/v/ii.svg" alt="Crates.io"></a>
+  <a href="#license"><img src="https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg" alt="License"></a>
+</p>
 
-Состояние документа: 23 ноября 2026 года. Версия пакета: `0.1.0`. Лицензия: MIT OR Apache-2.0.
+---
 
-## Манифест
+**ii** renders Markdown, LaTeX, Mermaid, Graphviz, Vega‑Lite/Plotly charts, Jupyter notebooks, SVG, CSV, HTML, Typst, MDX, and compressed archives as pixel‑perfect Kitty graphics directly inside any KGP‑capable terminal — Kitty, WezTerm, Ghostty — with native tmux passthrough.
 
-Просмотр должен сохранять содержание и оставаться отзывчивым при скролле, смене файла, темы и
-размера окна. Красивый кадр не оправдывает пропавшую формулу, повреждённый ввод или неограниченное
-потребление памяти.
+It ships as a single statically‑linked binary with **zero runtime dependencies**, a background IXPC daemon for sub‑millisecond repeat renders, and first‑class plugins for **Yazi** (file‑manager previews) and **Neovim** (in‑buffer decoration and floating previews).
 
-- **Нативный текст и настоящая графика.** Не растеризовать документ целиком ради удобства
-  реализации. Не имитировать глифы прямоугольниками.
-- **Один владелец каждой ответственности.** Форматы интерпретируют данные, композиция сохраняет
-  порядок, хост управляет вводом и публикацией кадра.
-- **Прозрачность.** Служебные подложки не перекрывают фон терминала. Палитра и маркеры соответствуют
-  Catppuccin Mocha/Latte исторического `ii_old`.
-- **Скорость с доказательствами.** Сравнивать одинаковое полезное поведение, публиковать единицы,
-  корпус, количество блоков и ограничения измерения.
-- **Минимальная достаточная сложность.** Абстракции и зависимости должны решать существующую задачу.
-  Число модулей и паттернов не является показателем качества.
-- **Честные границы.** Поддержка расширения не означает исполнение полного языка. Ниже перечислены
-  ограничения, включая неустранённые архитектурные издержки.
+## Highlights
 
-## Быстрый запуск
+- **16 format adapters** — single‑pass `O(N)` scanner, closed‑enum `Kind` dispatch, zero‑copy where possible.
+- **Hourglass Scene IR** — flat SoA primitives (`GlyphRun` 20 B, `Rect` 20 B, `Path` 20 B, `CellSpan` 12 B, `SvgEmbed` 24 B`) with interned text pool.
+- **4‑way set‑associative VRAM cache** — Tree‑PLRU eviction, `Tag` identity via `wymix`, 32 MiB soft budget.
+- **L2 disk cache** — `PX03` envelope, BLAKE3 keying, raw LZ4 block, 256 MiB prune with race‑free `openat`/`renameat`.
+- **IXPC v1 daemon** — non‑blocking `poll()` reactor, 32 clients, bounded render worker, viewport paging.
+- **KGP dual transport** — POSIX SHM fast‑path (`t=s`, explicit `S=<bytes>` for macOS page rounding), Base64 fallback, 297 combining‑class‑230 diacritics for `U+10EEEE` placeholder grid.
+- **Zero‑allocation hot paths** — no `String`/`Vec` realloc in inner loops; `const fn` palette LUTs, branchless SGR/hex formatting.
+- **OSC 10/11 theme probing** — Rec. 709 luminance auto‑detection, Catppuccin Mocha (dark) / Latte (light).
 
-Нужны Rust **1.100+**, Cargo и Unix-платформа. Проверенная среда — macOS arm64; Linux является
-целевой Unix-средой, но этот документ не объявляет все Linux- и SSH/tmux-комбинации проверенными.
-Windows не поддерживается текущим Unix transport. Наличие Windows target в toolchain-конфигурации не
-меняет это ограничение.
+## Quick Start
 
-Для графики нужен терминал с поддержкой Kitty Unicode placeholders. Для исторических иконок нужен
-Nerd Font; отсутствие такого шрифта может дать квадраты вместо маркеров. Обычная текстовая выдача
-работает без графического терминала.
+### Install from Source (Recommended)
 
 ```sh
-cargo +stable build --locked --release
-./target/release/ii --help
-./target/release/ii doctor
-./target/release/ii --size 100x30 -- showcase/01.md
-./target/release/ii --size 100x30 --skip 30 -- showcase/01.md
+# Requires Rust ≥ 1.100 (stable)
+cargo install --locked --git https://github.com/zx0r/ii.git
 ```
 
-Чтобы использовать бинарник без копирования в системные каталоги:
+### Homebrew (macOS / Linux)
 
 ```sh
-export PATH="$PWD/target/release:$PATH"
+brew install zx0r/tap/ii
 ```
 
-При перенаправленном stdout по умолчанию выдаётся безопасный текст исходника. `--ansi` включает
-оформление текста. Для графического кадра адаптера предназначен `--machine`, а не обычное
-перенаправление stdout.
+### Shell Installer
 
 ```sh
-printf '# Example\nText with **emphasis**.\n' | ii --ansi
-# Двоичная рамка адаптера: её нельзя выводить через cat в терминал.
-ii --machine --size 80x24 --cell-size 9x18 -- showcase/01.md > /tmp/ii-frame.bin
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/zx0r/ii/releases/latest/download/ii-installer.sh | sh
 ```
 
-`ii` не редактирует просматриваемые файлы и не исполняет код документа.
+### Prebuilt Binaries
 
-## Форматы и границы поддержки
+Download platform archives from [GitHub Releases](https://github.com/zx0r/ii/releases):
 
-Полный документ обрабатывает `compose::render_file`; диспетчер Scene обслуживает графическую часть.
-Эта разница существенна для текста, notebook и CSV.
+| Target | Archive |
+| --- | --- |
+| `aarch64-apple-darwin` | `ii-aarch64-apple-darwin.tar.gz` |
+| `x86_64-apple-darwin` | `ii-x86_64-apple-darwin.tar.gz` |
+| `x86_64-unknown-linux-gnu` | `ii-x86_64-unknown-linux-gnu.tar.gz` |
+| `x86_64-unknown-linux-musl` | `ii-x86_64-unknown-linux-musl.tar.gz` |
+| `aarch64-unknown-linux-gnu` | `ii-aarch64-unknown-linux-gnu.tar.gz` |
+| `aarch64-unknown-linux-musl` | `ii-aarch64-unknown-linux-musl.tar.gz` |
 
-| Вход                             | Реализованное поведение                                                                            | Граница                                                               |
-| -------------------------------- | -------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| `.md`, `.markdown`               | Нативный текст, заголовки, задачи, callouts, таблицы, code fences; графические spans               | Поддерживаемый Markdown-поднабор, не браузер                          |
-| `.mdx`, `.qmd`, `.rmd`           | Текстовый путь и распознаваемые графические/математические блоки                                   | JavaScript, R, Quarto/Pandoc-процессинг не исполняются                |
-| `.typ`, `.typst`                 | Заголовки, таблицы и математическая нотация Typst через общий TeX-компилятор                       | Не полноценный компилятор Typst                                       |
-| `.tex`, `.latex`                 | Математика ratex; нормализация preamble, section headings и math delimiters                        | Не TeX distribution: нет полного article/layout/packages/bibliography |
-| `.chem`, `.mhchem`               | Химические выражения через mhchem в ratex                                                          | В пределах реализации библиотеки                                      |
-| `.mmd`, `.mermaid`               | Mermaid → SVG → RGBA с прозрачной темой                                                            | В пределах mermaid-svg, не произвольный Mermaid JS runtime            |
-| `.dot`, `.gv`                    | Встроенный разбор и раскладка графа                                                                | Поднабор DOT; системный Graphviz не вызывается                        |
-| `.svg`                           | SVG через resvg, настоящие текстовые глифы и тематизация                                           | В пределах resvg; ресурсные ограничения действуют                     |
-| `.png`                           | Декодирование, масштабирование и прозрачное дополнение до ячеек                                    | Собственные непрозрачные пиксели изображения сохраняются              |
-| `.csv`, `.tsv`                   | Нативные полноширинные таблицы; экранирование, пустые поля, quoted newline                         | Векторный parser имеет собственный ограниченный Scene-путь            |
-| `.vl`, `.vega-lite`, `.plotly`   | Bar, line, area, scatter, pie из inline JSON; Plotly heatmap до 64×64; заголовки, оси и до 4 рядов | Частичные спецификации; не полный Vega/Plotly runtime                 |
-| `.ipynb`                         | Markdown, код, stream/error, сохранённые MIME SVG/PNG/LaTeX/Markdown/графики                       | Kernel не запускается; поддерживаются выбранные MIME alternatives     |
-| `.zip`, `.jar`, `.whl`, `.tar`   | Нативное дерево каталогов и файлов                                                                 | Просмотр без извлечения; ограниченный список записей                  |
-| `.tgz`, `.tbz2`, `.txz`, `.tzst` | Декодирование и дерево вложенного TAR/ZIP                                                          | До 64 MiB распакованных данных; без shell и извлечения                |
+## Usage
 
-Kind определяется расширением и ограниченным sniffing содержимого. `.json` не является
-самостоятельным обещанием поддержки любого JSON-документа. Шрифты TTF/OTF, SVGZ, PDF, 7z/RAR/ISO и
-произвольные офисные форматы не заявлены. Не направляйте их в ii только из-за наличия такого правила
-в старой личной конфигурации.
+```
+ii [OPTIONS] [FILE]
+ii doctor
+```
 
-## CLI и фоновой процесс
-
-| Параметр                    | Назначение                                            |
-| --------------------------- | ----------------------------------------------------- |
-| `--size WxH`, `-s WxH`      | Размер viewport в ячейках                             |
-| `--cell-size WxH`           | Физический размер ячейки в пикселях                   |
-| `--skip N`                  | Смещение в визуальных строках после переносов         |
-| `--theme dark\|light`, `-t` | Палитра                                               |
-| `--ansi`                    | Оформленный текст для pipe                            |
-| `--machine`                 | Двоичная рамка `[u32 apc_len LE][graphics][text]`     |
-| `--daemon`                  | Запустить IXPC-процесс                                |
-| `--socket PATH`             | Использовать отдельный Unix socket                    |
-| `--ping`, `--shutdown`      | Проверка и штатное завершение процесса                |
-| `doctor`                    | Диагностика метрик, темы, кэша и доступности процесса |
-| `--`                        | Конец параметров перед именем файла                   |
-
-Файловое графическое превью обращается к постоянному процессу. На холодном запуске CLI пытается его
-запустить; скролл повторно использует подготовленный документ. Сокет по умолчанию:
-`$XDG_RUNTIME_DIR/ii/ii.sock`, иначе `/tmp/ii-<uid>/ii.sock`. Каталог сокета проверяется и
-ограничивается правами владельца. Изолированный запуск:
+### Direct Rendering
 
 ```sh
-mkdir -p /tmp/ii-demo-private
-chmod 700 /tmp/ii-demo-private
-ii --daemon --socket /tmp/ii-demo-private/ii.sock
-# В другом терминале:
-ii --ping --socket /tmp/ii-demo-private/ii.sock
-ii --shutdown --socket /tmp/ii-demo-private/ii.sock
+# Render Markdown with graphical blocks
+ii README.md
+
+# Render LaTeX equation
+echo '\int_0^\infty e^{-x^2} dx = \frac{\sqrt{\pi}}{2}' | ii --size 80x24
+
+# Render Mermaid diagram
+ii diagram.mmd
+
+# Render Jupyter notebook
+ii analysis.ipynb
+
+# Render from stdin (auto-detects format)
+cat data.csv | ii
+
+# Styled ANSI output on piped stdout
+ii --ansi document.md | less -R
 ```
 
-Фоновый процесс завершает ожидание после периода простоя; это не системный сервис. `ii init` и
-`ii --mode daemon` не являются командами текущего CLI.
+### Daemon Mode
 
-## Интеграции
-
-### Yazi
+The daemon caches rendered output and provides sub‑millisecond response for preview clients:
 
 ```sh
-mkdir -p ~/.config/yazi/plugins/ii.yazi
-cp plugins/ii.yazi/main.lua ~/.config/yazi/plugins/ii.yazi/main.lua
+# Start background daemon (auto-starts on first preview request)
+ii --daemon
+
+# Diagnostic status
+ii doctor
+
+# Ping running daemon
+ii --ping
+
+# Shut down daemon
+ii --shutdown
 ```
 
-Добавьте правила из `plugins/yazi/yazi.toml` в существующий `[plugin]`, не создавая второй
-одноимённый TOML-раздел. `ii` должен быть на PATH. После обновления Lua-файла перезапустите Yazi.
-[Контракт адаптера](plugins/ii.yazi/README.md).
-
-Yazi получает framed output CLI. Графика публикуется в основном цикле через `ya.sync` только после
-проверки актуальности файла и смещения. Вывод в TTY из дочернего процесса удалён: он воспроизведённо
-пересекался с перерисовкой интерфейса. Каждый KGP continuation содержит `q=2`, чтобы ответы
-терминала не попадали во ввод. Preload не рисует: фоновый запрос не должен портить чужое активное
-превью.
-
-### Neovim
-
-Нужен **Neovim 0.12+**: публикация использует упорядоченный `nvim_ui_send`.
-
-```lua
-vim.opt.runtimepath:append('/absolute/path/to/ii/plugins/ii.nvim')
-require('ii').setup({
-  executable = '/absolute/path/to/ii/target/release/ii',
-  debounce_ms = 20,
-  timeout_ms = 5000,
-})
-```
-
-Команды: `IiRender`, `IiToggle`, `IiClear`. Normal показывает подготовленные декорации поверх
-исходного буфера. Плагин не перехватывает клавиши и не переключает режимы: Insert/Replace открывают
-исходник, InsertLeave обновляет декорации. Скролл и движение мыши используют готовые блоки.
-Plotly/Vega-Lite, CSV/TSV и notebook направляются в свои обработчики по формату несохранённого
-буфера. Окна имеют отдельные кадры и ширину. [Подробности](plugins/ii.nvim/README.md).
-
-### fzf и Kitty
-
-`source plugins/fzf/fzf.sh` задаёт текстовое ANSI-превью fzf. Это не графическая публикация через
-Yazi/Neovim. `plugins/kitty/kitty.conf` — необязательная подсказка, не обязательное включение remote
-control или изменение задержек терминала.
-
-## Действующая архитектура
-
-Архитектурный стиль — компактный модульный процесс: данные и функции на явных границах, закрытый
-enum форматов, отдельные адаптеры хостов. Универсальный plugin framework, второй wire-протокол и
-абстрактный service layer не требуются.
-
-```mermaid
-flowchart TD
-    CLI[CLI / файл / stdin] --> CLIENT[IXPC client]
-    Y[Yazi adapter] --> CLI
-    N[Neovim adapter / buffer] --> CLIENT
-    CLIENT --> D[Daemon / ownership / limits]
-    D --> C[Composition]
-    CLI -->|stdin или текстовый pipe| CLOCAL[Локальный текстовый путь]
-    C --> F[Format normalization and scanning]
-    C --> S[Native text style]
-    F --> I[Image compilation and caches]
-    I --> SC[Scene / SVG / raster]
-    I --> K[KGP staging]
-    C --> V[Visual pagination]
-    D --> RESP[Graphics + text or extmarks]
-    RESP --> Y
-    RESP --> N
-    Y -->|main loop| T[Terminal]
-    N -->|TUI channel| T
-```
-
-Схема показывает основные исполняемые пути; локальная графическая обработка stdin также использует
-композицию. Она не изображает каждую вспомогательную зависимость.
-
-### Границы и зависимости
-
-1. **Вход.** CLI разбирает параметры и выбирает безопасный текст либо графическую операцию. Daemon
-   читает ограниченный обычный файл; Neovim передаёт снимок буфера.
-2. **Нормализация.** CSV/TSV и notebook преобразуются к общему пути композиции. Markdown scanner
-   возвращает компактные 16-байтные spans.
-3. **Композиция.** Prose оформляется нативно; графические spans компилируются отдельно. Source
-   anchors не зависят от высоты полученной картинки.
-4. **Графика.** Формат создаёт Scene или SVG. resvg/tiny-skia дают RGBA; изображение вписывается с
-   сохранением пропорций и привязкой к ячейкам.
-5. **Страница.** Переносы и смещение относятся к визуальным строкам. Ответ включает видимую страницу
-   и загрузки изображений, упомянутых в placeholders.
-6. **Публикация.** Хост проверяет актуальность результата и владеет своим потоком UI.
-
-`fmt`, `layout`, `scene`, `theme`, `style`, `viewport` не должны управлять сокетами и клавиатурой.
-`image` соединяет компиляцию с кэшем и staging; `daemon` владеет ресурсами запросов. `kitty`
-содержит и кодирование, и необходимую SHM-границу — поэтому утверждение «весь kitty является
-Sans-I/O» было бы неверным.
-
-### Владение, время жизни и согласованность
-
-- Пользователь и редактор владеют исходником; приложение хранит прочитанные байты и производные
-  данные, не записывая исходник обратно.
-- Daemon обрабатывает рендер синхронно внутри poll-reactor. Non-blocking сокеты не превращают
-  тяжёлую компиляцию в неблокирующее вычисление.
-- Один подготовленный документ хранится до 32 MiB. В ключ входят содержимое, Kind, параметры
-  геометрии и темы; файл перечитывается и хешируется при запросе.
-- Растровый cache ограничен 32 MiB; дисковый cache хранит производные LZ4-данные с проверкой
-  заголовка и размера. Подробности путей — в `src/cache.rs`.
-- Отмена и смена поколения не дают старому ответу заменить новый кадр Neovim. Yazi проверяет URL и
-  текущий scroll offset перед публикацией.
-- Replay подготовленного кадра использует Base64/PNG, не одноразовые SHM-имена. SHM остаётся для
-  подходящего прямого локального транспорта.
-
-### Протокол и бюджет
-
-IXPC v1 использует 32-байтный little-endian header. `flags` ответа задаёт длину графической части;
-остаток — ANSI либо packed extmarks. Запрос и ответ коррелируются по идентификатору; проверяются
-magic, version, command и длины.
-
-| Command             | Payload / результат                                                                            |
-| ------------------- | ---------------------------------------------------------------------------------------------- |
-| `1 Ping`            | Проверка доступности                                                                           |
-| `2 ComposeAnsi`     | Markdown bytes → графика и ANSI                                                                |
-| `3 ComposeExtmarks` | Markdown bytes → графика и 16-байтные source records                                           |
-| `4 RenderFile`      | Путь → полный результат файла                                                                  |
-| `5 PreviewFile`     | `u32 skip LE` + байты Unix-пути → viewport                                                     |
-| `6 Shutdown`        | Штатное завершение                                                                             |
-| `7 RenderBuffer`    | `extension + NUL + unsaved bytes` → графика и ANSI                                             |
-| `8 DecorateBuffer`  | Тот же запрос → графика, затем блоки `[u32 first_row, u32 last_exclusive, u32 ansi_len, ANSI]` |
-
-Текущие ограничения: 64 MiB входного файла/IXPC payload, 32 socket clients, 5 секунд send/receive
-timeout клиента, отдельный timeout редакторского запроса. Scanner пакует offsets в 28 бит. Растры
-ограничены 4096 пикселями по оси; KGP placeholders — 297 строками. Эти границы не являются полным
-общим RSS-бюджетом: есть временные RGBA, PNG, нормализация, шрифты и отдельные буферы клиентов.
-
-### Решения и отклонённые варианты
-
-| Решение                                | Основание и компромисс                                                           |
-| -------------------------------------- | -------------------------------------------------------------------------------- |
-| Нативная проза + отдельные изображения | Сохраняет терминальное поведение; требует согласования координат                 |
-| Общий compositor                       | Убирает расхождение CLI/daemon; нельзя обходить его для полного документа        |
-| Постоянный процесс                     | Убирает повторную инициализацию; требует lifecycle сокета и ограничений          |
-| Один подготовленный документ           | Простое владение и ограничение памяти; переключение файлов вытесняет кэш         |
-| Закрытый Kind                          | Явный исчерпывающий dispatch; новый формат требует изменения router              |
-| Scene плюс специализированные SVG      | Не дублирует математическую/диаграммную раскладку; не является универсальным AST |
-| PNG/Base64 при replay                  | Нет зависимости от потреблённых SHM-имён; кодирование стоит CPU на подготовке    |
-| Нет OSC-проверок на скролле            | Нет конкуренции за клавиатурный канал; палитра выбирается явно/из окружения      |
-| Нет worker pool сейчас                 | Простая согласованность; холодная компиляция блокирует обработку других запросов |
-| Нет копии всей архитектуры ii_old      | Переносятся доказанные контракты; удобство миграции не определяет дизайн         |
-
-### Антипаттерны и правила расширения
-
-Не возвращать: растеризацию всего документа, renderer на каждый scroll tick, невидимые uploads,
-неограниченный cache/highlight registry, повторную загрузку system fonts, разные compositor в CLI и
-daemon, прямую запись KGP из worker, `q=2` только в первом пакете, фиктивный zero-allocation и
-молчаливую потерю содержания.
-
-Полный перечень и порядок работы — в [AGENTS.md](AGENTS.md). Новому формату нужны: router,
-самостоятельный и вложенный вход, обе темы, ошибочный вход, viewport и проверка полезного
-результата. Одной ветки `match` или успешного exit code недостаточно.
-
-## Проверки и измерения
+### Adapter for Yazi / Neovim
 
 ```sh
-cargo +stable fmt --all -- --check
-cargo +stable clippy --locked --all-targets --all-features -- -D warnings
-cargo +stable test --locked
-cargo +stable build --locked --release
-python3 showcase/checks/verify.py --binary target/release/ii --report /tmp/ii-render.json
-python3 showcase/checks/yazi.py --binary target/release/ii --report /tmp/ii-yazi.json
+# Machine-framed output for adapter plugins
+ii --machine --size 80x24 --cell-size 8x16 document.md
 ```
 
-Последние сохранённые результаты: [55 файлов](showcase/checks/latest.json),
-[реальный Yazi в PTY](showcase/checks/yazi-latest.json),
-[сравнение сканеров](showcase/checks/scan-comparison.csv). Это локальные результаты, не гарантия
-одинакового времени на другом CPU.
+## Supported Formats
 
-Проверка Neovim с отдельным процессом, без изменения личной конфигурации:
+| Format | Extensions | Engine |
+| --- | --- | --- |
+| Markdown | `.md`, `.markdown`, `.qmd`, `.rmd` | `pulldown-cmark` → Scene IR |
+| MDX | `.mdx` | JSX strip → Markdown pipeline |
+| HTML | `.html`, `.htm` | Tag strip → Markdown pipeline |
+| Typst | `.typ`, `.typst` | Normalize → Markdown pipeline |
+| Jupyter | `.ipynb` | Cell extraction, embedded LaTeX/Mermaid |
+| LaTeX | `.tex`, `.latex` | `ratex` (native Rust TeX engine) |
+| Chemistry | `.chem`, `.mhchem` | `mhchem` → LaTeX transpiler |
+| Mermaid | `.mmd`, `.mermaid` | `mermaid-svg` → resvg raster |
+| Graphviz | `.dot`, `.gv` | Sugiyama layout → Scene IR |
+| SVG | `.svg` | `resvg` raster, cell‑snapped |
+| PNG | `.png` | Direct KGP passthrough |
+| CSV / TSV | `.csv`, `.tsv` | Table grid with column auto‑width |
+| Vega‑Lite | `.vl`, `.vega`, `.vega-lite` | JSON → SVG chart pipeline |
+| Plotly | `.plotly` | JSON → SVG chart pipeline |
+| Archives | `.zip`, `.tar`, `.tgz`, `.tbz2`, `.txz`, `.tzst`, `.jar`, `.whl` | Streamed TOC listing |
+
+## Architecture
+
+```
+ ┌──────────────────────────────────────────────────────────────────────────┐
+ │  CLI / stdin                 Yazi plugin              Neovim plugin     │
+ │   ┌──────┐                 ┌──────────┐             ┌───────────┐      │
+ │   │ main │                 │ ii.yazi  │             │  ii.nvim  │      │
+ │   └──┬───┘                 └────┬─────┘             └─────┬─────┘      │
+ │      │                         │                          │            │
+ │      │    ┌────────────────────┴──────────────────────────┘            │
+ │      ▼    ▼                                                            │
+ │  ┌──────────┐   IXPC v1    ┌────────────┐                             │
+ │  │  compose  │◄────────────►│   daemon   │  poll() reactor             │
+ │  └────┬─────┘    UDS       └──────┬─────┘  32 clients                 │
+ │       │                           │                                    │
+ │       ▼                           ▼                                    │
+ │  ┌────────┐  Kind dispatch  ┌───────────┐                              │
+ │  │  fmt   │────────────────►│  Scene IR │  SoA: glyphs, rects, paths  │
+ │  │ 16 fmt │  zero-copy      │  (flat)   │  text_pool, cells, svgs     │
+ │  └────────┘                 └─────┬─────┘                              │
+ │                                   │                                    │
+ │       ┌──────────────┬────────────┼─────────────────┐                  │
+ │       ▼              ▼            ▼                  ▼                  │
+ │  ┌────────┐   ┌──────────┐  ┌─────────┐    ┌────────────┐             │
+ │  │ layout │   │  raster  │  │  style  │    │  viewport  │             │
+ │  │ engine │   │  resvg   │  │  ANSI   │    │  paging    │             │
+ │  └────┬───┘   │  tiny-skia│  └────┬────┘    └──────┬─────┘             │
+ │       │       └────┬─────┘       │                 │                   │
+ │       ▼            ▼             ▼                 ▼                   │
+ │  ┌──────────────────────────────────────────────────────────┐          │
+ │  │                   kitty (KGP encoder)                    │          │
+ │  │   SHM fast-path  ·  Base64 chunks  ·  U+10EEEE grid    │          │
+ │  └────────────────────────┬─────────────────────────────────┘          │
+ │                           │                                            │
+ │       ┌───────────────────┼───────────────────┐                        │
+ │       ▼                   ▼                   ▼                        │
+ │  ┌─────────┐       ┌───────────┐       ┌───────────┐                  │
+ │  │  vram   │       │  cache L2 │       │   ipc     │                  │
+ │  │ 4-way   │       │  PX03/LZ4 │       │  IXPC v1  │                  │
+ │  │ PLRU    │       │  BLAKE3   │       │  codec    │                  │
+ │  └─────────┘       └───────────┘       └───────────┘                  │
+ └──────────────────────────────────────────────────────────────────────────┘
+```
+
+### Module Map
+
+| Module | Lines | Responsibility |
+| --- | --- | --- |
+| `main` | 464 | CLI parser, local pipeline, daemon control |
+| `daemon` | 1172 | Non-blocking reactor, render worker, preview paging |
+| `compose` | 644 | Ordered prose + graphic presentation, source anchors |
+| `style` | 1179 | ANSI prose styler, semantic SGR emitter |
+| `raster` | 894 | Cell-snapped resvg rasterizer, Q24 unpremultiply LUT |
+| `kitty` | 806 | KGP SHM/Base64 encoder, 297 diacritics, placeholder grid |
+| `scene` | 400 | Hourglass Scene IR, SoA primitives, text pool |
+| `fmt/*` | 4306 | 16 format adapters (md, tex, ipynb, dot, chart, …) |
+| `ipc` | 413 | IXPC v1 wire codec, header/command validation |
+| `cache` | 369 | BLAKE3 L2 disk cache, PX03 + LZ4, atomic publish |
+| `vram` | 179 | 4-way Tree-PLRU RGBA L0 cache |
+| `theme` | 407 | Static palette tables, 1-byte `ColorToken`, SGR/hex LUTs |
+| `tty` | 197 | `TIOCGWINSZ`, OSC 11 probe, Rec. 709 luminance |
+| `viewport` | 325 | Row-index paging, skip/limit, bounded append |
+| `layout` | 192 | Quantized grid layout, `StyleMetrics`, `BASE_STROKE` |
+| `image` | 259 | Image context, dimension calculation |
+| `err` | 75 | Flat ≤ 12 B error enum, zero heap payloads |
+| `file` | 45 | Bounded file read |
+| **Total** | **~12 700** | |
+
+## Plugins
+
+### Yazi — File Manager Preview
+
+See [`plugins/ii.yazi/`](plugins/ii.yazi/) for the Lua plugin that integrates `ii` as a Yazi previewer.
+
+### Neovim — Buffer Decoration & Floating Preview
+
+See [`plugins/ii.nvim/`](plugins/ii.nvim/) for the Neovim plugin providing in-buffer graphical decoration and floating preview windows via extmarks.
+
+### Additional Integrations
+
+| Integration | Location | Description |
+| --- | --- | --- |
+| Kitty config snippet | [`plugins/kitty/`](plugins/kitty/) | Terminal configuration |
+| fzf preview binding | [`plugins/fzf/`](plugins/fzf/) | `fzf --preview` integration |
+| Yazi TOML config | [`plugins/yazi/`](plugins/yazi/) | Yazi previewer registration |
+
+## Development
+
+### Prerequisites
 
 ```sh
-# В первом терминале, в заранее созданном приватном каталоге:
-ii --daemon --socket /tmp/ii-demo-private/ii.sock
-# Во втором, из корня репозитория:
-II_ROOT="$PWD" II_SOCKET=/tmp/ii-demo-private/ii.sock \
-  nvim --headless -u NONE -l showcase/checks/nvim.lua
+# Install complete developer toolchain
+just setup-tools
 ```
+
+This installs: `bacon`, `sccache`, `cargo-deny`, `cargo-llvm-cov`, `cargo-nextest`, `cargo-dist`, `cargo-mutants`, `cargo-binstall`, `lefthook`, `cocogitto`, `actionlint`, `zizmor`, `gitleaks`, `cargo-machete`, `cargo-semver-checks`, and the nightly Miri toolchain.
+
+### Build & Test
 
 ```sh
-cargo +stable bench --locked --bench bench -- scan_throughput
-python3 showcase/checks/compare_scan.py --history ../ii_old --report /tmp/ii-scan.csv
+# Full quality gate (fmt-check + pedantic/nursery clippy)
+just qa
+
+# Run all tests via nextest
+just test
+
+# Fast developer pass (fail-fast, no doctests)
+just test-fast
+
+# IXPC daemon end-to-end tests
+just e2e
 ```
 
-Обычная сборка не зависит от `ii_old`; он нужен только сравнительному скрипту. В сохранённом
-сравнении плотный корпус: **2383 MiB/s** против 1674 MiB/s старого сканера; 1024 блока в обеих
-версиях. Технический корпус: 7431 против 8046 MiB/s, 192 блока в обеих версиях. Это примерно 8%
-оставшегося отставания, которое не следует скрывать результатом другого корпуса. Чистый текст —
-около 28 GiB/s. Скорость сканера не равна скорости рендера или терминального транспорта.
+### Benchmarks
 
-47 Rust-тестов проверяют контракт, форматы, кодеки, кэш, SHM и растры; Python-стенд проверяет
-настоящий IPC и декодирует RGBA/PNG; PTY-стенд посылает стрелки и скролл настоящему Yazi. Headless
-Neovim проверяет lifecycle и окна. Эти проверки дополняют, но не заменяют визуальную проверку
-конкретного терминала, шрифта и tmux.
+```sh
+# Render pipeline micro-benchmarks (native vectorization)
+just bench
 
-## Карта файлов
+# Daemon latency benchmark (fork/exec vs zero-fork UDS)
+just bench-daemon
 
-### Исполняемая библиотека
+# Quick regression smoke pass (sample-size 10)
+just bench-quick
 
-| Файл              | Ответственность                                                 |
-| ----------------- | --------------------------------------------------------------- |
-| `src/lib.rs`      | Экспорт публичных модулей                                       |
-| `src/main.rs`     | CLI, stdin, безопасный pipe, клиент и autospawn                 |
-| `src/daemon.rs`   | Poll-reactor, socket lifecycle, запросы и подготовленное превью |
-| `src/ipc.rs`      | IXPC header, extmarks, framing и клиентский обмен               |
-| `src/compose.rs`  | Нормализация полного документа, порядок и source anchors        |
-| `src/image.rs`    | Image key, компиляция, raster cache и staging                   |
-| `src/scene.rs`    | Компактные данные Scene и scratch-буферы                        |
-| `src/layout.rs`   | Раскладка, ограничения ширины и числовые масштабы               |
-| `src/raster.rs`   | SVG/Scene → RGBA, PNG decode, масштабирование и font database   |
-| `src/style.rs`    | Нативные текстовые стили и обезвреживание control bytes         |
-| `src/theme.rs`    | Цветовые роли, исторические палитры, SGR/hex                    |
-| `src/viewport.rs` | Ширина ячеек, переносы, выбор визуальной страницы               |
-| `src/kitty.rs`    | KGP, placeholders, continuation, PNG/Base64 и SHM               |
-| `src/cache.rs`    | Проверяемый дисковый LZ4 cache                                  |
-| `src/vram.rs`     | Компактные tag tables и ограниченный CPU raster cache           |
-| `src/tty.rs`      | Геометрия терминала и выбор палитры                             |
-| `src/err.rs`      | Компактный тип ошибок                                           |
+# Save/compare Criterion baselines
+just bench-save baseline-name
+just bench-compare baseline-name
+```
 
-### Форматы
+### Security & Supply Chain
 
-| Файл                 | Ответственность                                                                     |
-| -------------------- | ----------------------------------------------------------------------------------- |
-| `src/fmt/mod.rs`     | Kind, extensions, sniffing и общий dispatch                                         |
-| `src/fmt/mdx.rs`     | Неисполняемая MDX-презентация: скрытие ESM import/export с сохранением byte offsets |
-| `src/fmt/md.rs`      | Scanner графических spans и компиляция графической части Markdown                   |
-| `src/fmt/typst.rs`   | Нормализация Typst без исполнения: заголовки, таблицы, математика                   |
-| `src/fmt/tex.rs`     | ratex, mhchem, inline/display, глифы и ограниченный fallback                        |
-| `src/fmt/heal.rs`    | Ограниченное восстановление незавершённых формул                                    |
-| `src/fmt/mermaid.rs` | Прозрачная Mermaid theme и SVG adapter                                              |
-| `src/fmt/dot.rs`     | Встроенная модель и раскладка DOT-поднабора                                         |
-| `src/fmt/svg.rs`     | Размеры SVG и тематизация цветов                                                    |
-| `src/fmt/csv.rs`     | CSV/TSV, quoted fields, нормализация и Scene tables                                 |
-| `src/fmt/ipynb.rs`   | Cells, outputs, MIME alternatives и PNG/Base64                                      |
-| `src/fmt/chart.rs`   | Числовой Vega-Lite/Plotly-поднабор                                                  |
-| `src/fmt/archive.rs` | Безопасная ограниченная инспекция контейнеров                                       |
-| `src/fmt/json.rs`    | Навигация по JSON bytes и декодирование строк                                       |
-| `src/fmt/font.rs`    | Приблизительные метрики текста; не просмотрщик TTF/OTF                              |
+```sh
+# RustSec advisory + license + ban audit
+just audit
 
-### Адаптеры и проверки
+# Secret leak scan
+just audit-secrets
 
-| Файл или группа                              | Ответственность                                                      |
-| -------------------------------------------- | -------------------------------------------------------------------- |
-| `plugins/ii.yazi/main.lua`, `README.md`      | Основной цикл Yazi, stale checks, preview и seek                     |
-| `plugins/ii.nvim/lua/ii/init.lua`            | Запросы на окно, поколения, timers, оформление и публикация          |
-| `plugins/ii.nvim/plugin/ii.lua`, `README.md` | Загрузчик и контракт Neovim                                          |
-| `plugins/yazi/yazi.toml`                     | Пример правил только заявленных форматов                             |
-| `plugins/fzf/fzf.sh`                         | POSIX shell snippet текстового fzf preview                           |
-| `plugins/kitty/kitty.conf`                   | Необязательная подсказка для Kitty                                   |
-| `tests/contracts.rs`                         | Пагинация, source anchors, JSON, числовая математика, PNG MIME       |
-| `tests/core.rs`                              | Размеры типов, wire, palette, KGP и property tests                   |
-| `tests/daemon.rs`                            | Настоящие socket lifecycle и viewport requests                       |
-| `tests/fmt.rs`                               | Форматы и исторические нативные стили                                |
-| `tests/io.rs`                                | SHM, disk cache, PNG и RGBA round trip                               |
-| `tests/render.rs`                            | Реальные compilers, глифы, прозрачность и исходный корпус            |
-| `benches/bench.rs`                           | Scanner, compilers, cache и composition measurements                 |
-| `benches/daemon.rs`                          | Отдельный стенд задержек process/IPC; не гарантированный latency SLA |
+# Unused dependency scan
+just machete
 
-### Стенды и отчёты
+# Validate GitHub Actions workflows
+just lint-workflows
+```
 
-| Файл или группа                                | Назначение                                                   |
-| ---------------------------------------------- | ------------------------------------------------------------ |
-| `showcase/01.md` … `27.whl`                    | Исходный корпус; нумерация содержит пропуски                 |
-| `showcase/scenarios/*`                         | 30 воспроизводимых демонстрационных входов                   |
-| `showcase/build_stands.py`                     | Генерация синтетических incident/telemetry/notebook/archives |
-| `showcase/make_archives.py`, `make_science.py` | Исходные генераторы отдельных примеров                       |
-| `showcase/README.md`                           | Сценарии ручной и автоматической проверки                    |
-| `showcase/checks/verify.py`                    | CLI/IPC, обе темы, переносы, EOF и пиксели на 55 входах      |
-| `showcase/checks/yazi.py`                      | Настоящий Yazi в PTY: стрелки, APC и режим ввода             |
-| `showcase/checks/nvim.lua`                     | Настоящий Neovim: окна, редактирование, отмена и toggle      |
-| `showcase/checks/compare_scan.py`              | Исторический и текущий scanner в одном executable            |
-| `showcase/checks/latest.json`                  | Сохранённый запуск renderer verifier                         |
-| `showcase/checks/yazi-latest.json`             | Сохранённый PTY stress result                                |
-| `showcase/checks/scan-comparison.csv`          | Сохранённое сравнение скорости и количества spans            |
+### Advanced Verification
 
-### Манифест сборки, инфраструктура и документы
+```sh
+# Miri memory safety (Tree Borrows + strict provenance)
+just miri
 
-| Файл или группа                                      | Назначение                                                                |
-| ---------------------------------------------------- | ------------------------------------------------------------------------- |
-| `Cargo.toml`, `Cargo.lock`                           | Пакет, зависимости, профили и воспроизводимое разрешение версий           |
-| `rust-toolchain.toml`, `rustfmt.toml`, `clippy.toml` | Toolchain и правила Rust                                                  |
-| `.cargo/config.toml`, `.cargo/mutants.toml`          | Настройки сборки/aliases и mutation testing                               |
-| `.config/nextest.toml`                               | Опциональная process-isolated проверка                                    |
-| `Justfile`, `bacon.toml`                             | Локальные команды и интерактивный runner; часть требует внешних tools     |
-| `deny.toml`                                          | Политика зависимостей, лицензий и advisories                              |
-| `lefthook.yml`, `cog.toml`                           | Git hooks и Conventional Commits                                          |
-| `.github/workflows/ci.yml`, `release.yml`            | Проверки и release automation; не доказательство текущего CI success      |
-| `.github/renovate.json5`, `.github/.codecov.yml`     | Dependency updates и coverage configuration                               |
-| `.github/ISSUE_TEMPLATE/*`                           | Шаблоны сообщений об ошибках, идей и вопросов                             |
-| `dist-workspace.toml`                                | Release packaging configuration                                           |
-| `.gitignore`, `.gitattributes`                       | Исключения build/private файлов и Git attributes                          |
-| `AGENTS.md`, `CONTRIBUTING.md`                       | Рабочие правила и вход для contributors                                   |
-| `ARCHITECTURE.md`, `ARCHITECTURE_V2.md`, `ASTRA.md`  | Архитектурные исследования и исходные требования; не исполняемый контракт |
-| `RENDERING_IMPLEMENTATION.md`                        | Текущее техническое обоснование, история исправлений и ограничения        |
-| `LICENSE-MIT`, `LICENSE-APACHE`                      | Условия лицензирования                                                    |
+# SemVer API compatibility check
+just semver
 
-Build outputs `target/`, логи, секреты и личные `specs/` не являются файлами поставки.
-Исследовательский `ARCHITECTURE_STATE_RELAY_SCALING.md` удалён; существование альтернативного
-проекта не обосновывает второй протокол в текущем приложении.
+# Mutation testing
+just mutants
 
-## Зависимости и дальнейшая работа
+# LLVM source-based coverage
+just cov
 
-Назначение каждой runtime-зависимости и происхождение транзитивных serde/fontdb описаны в
-[RENDERING_IMPLEMENTATION.md](RENDERING_IMPLEMENTATION.md). Нельзя удалить транзитивную зависимость
-ручной правкой lock-файла или отключить глифы ради числа crates.
+# Full local CI gate
+just check-all
+```
 
-Известные области дальнейшей работы: холодная компиляция блокирует reactor; подготовка охватывает
-весь документ; один prepared cache вытесняется при смене файла; часть форматов ограничена
-поднабором; Unicode/emoji width зависит от принятой политики и хоста. Исправление требует
-воспроизведения и проверки полного пути. README не объявляет эти вопросы решёнными и не гарантирует
-отсутствие всех антипаттернов.
+### Release
 
-Правила изменений, проверки и критерии приёмки: [AGENTS.md](AGENTS.md).
+```sh
+# Build size-optimized binary (opt-level = "z")
+just release-small
+
+# Build full-throughput production binary (opt-level = 3, LTO fat)
+just release
+
+# Host-tuned build (NEON / AVX2)
+just release-native
+
+# Dry-run cargo-dist packaging
+just dist-plan
+```
+
+Releases are published via [`cargo-dist`](https://github.com/axodotdev/cargo-dist):
+- **GitHub Releases** — platform archives with SHA-256 digests, SLSA v1.1 Build Level 3 attestations, CycloneDX SBOM
+- **Homebrew** — automated formula to `zx0r/homebrew-tap`
+- **crates.io** — OIDC trusted publishing via GitHub Actions
+- **Self-updater** — companion `ii-update` binary bundled in every archive
+
+## CI Pipeline
+
+The CI workflow runs on every push and PR:
+
+| Gate | Checks |
+| --- | --- |
+| **Lint Workflows** | `actionlint`, `zizmor` offline audit |
+| **Fast Checks** | `cargo fmt --check`, `cargo clippy -D warnings`, `cargo deny check`, `gitleaks` |
+| **Security Audit** | `cargo deny --all-features check` (advisories, bans, licenses, sources) |
+| **Test & Coverage** | `cargo nextest` + doctests, LLVM coverage upload to Codecov |
+| **Miri Verification** | Tree Borrows + strict provenance on `--workspace --lib` |
+| **Terminal Previews** | Real Yazi + Neovim PTY integration tests on macOS arm64 |
+| **ci-gate** | Branch protection aggregator — single required status check |
+
+Dependency automation: [Renovate](https://github.com/renovatebot/renovate) with 72‑hour quarantine, SHA‑pinned Actions, and zero‑day security bypass.
+
+## Project Structure
+
+```
+ii/
+├── src/                    # ~12 700 lines of Rust
+│   ├── main.rs             # CLI, daemon control, local pipeline
+│   ├── lib.rs              # Public module re-exports
+│   ├── fmt/                # 16 format adapters (md, tex, dot, chart, …)
+│   ├── scene.rs            # Hourglass Scene IR (SoA primitives)
+│   ├── compose.rs          # Prose + graphic composition
+│   ├── style.rs            # ANSI prose styler
+│   ├── raster.rs           # Cell-snapped resvg rasterizer
+│   ├── kitty.rs            # KGP SHM/Base64 encoder
+│   ├── daemon.rs           # IXPC reactor & render worker
+│   ├── ipc.rs              # Wire codec
+│   ├── cache.rs            # BLAKE3 L2 disk cache
+│   ├── vram.rs             # 4-way Tree-PLRU RGBA cache
+│   ├── theme.rs            # Palette tables & ColorToken
+│   ├── tty.rs              # Terminal geometry & theme probing
+│   ├── layout.rs           # Grid layout engine
+│   ├── viewport.rs         # Row-index paging
+│   ├── image.rs            # Image dimension context
+│   ├── err.rs              # ≤12 B flat error enum
+│   └── file.rs             # Bounded file read
+├── tests/                  # Integration tests (core, daemon, fmt, io, render)
+├── benches/                # Criterion + Divan benchmarks
+├── plugins/
+│   ├── ii.yazi/            # Yazi file-manager preview plugin (Lua)
+│   ├── ii.nvim/            # Neovim buffer decoration plugin (Lua)
+│   ├── kitty/              # Terminal config snippet
+│   ├── fzf/                # fzf --preview binding
+│   └── yazi/               # Yazi TOML registration
+├── showcase/               # 32 sample documents + verification scripts
+├── specs/                  # Architecture specs & research
+├── .github/
+│   ├── workflows/ci.yml    # 6-gate CI pipeline
+│   ├── workflows/release.yml # cargo-dist release + SLSA attestation
+│   ├── ISSUE_TEMPLATE/     # Bug report, feature request, question
+│   └── renovate.json5      # Dependency automation
+├── Justfile                # 30+ development recipes
+├── Cargo.toml              # Edition 2024, resolver 3, Rust ≥ 1.100
+├── deny.toml               # License + advisory + ban policy
+├── cog.toml                # Conventional Commits config
+├── dist-workspace.toml     # cargo-dist release packaging
+├── lefthook.yml            # Git hook orchestrator
+└── CONTRIBUTING.md         # Contribution guidelines
+```
+
+## Requirements
+
+- **Rust** ≥ 1.100 (Edition 2024)
+- **Terminal** with Kitty Graphics Protocol support (Kitty, WezTerm, Ghostty)
+- **tmux** ≥ 3.3 for passthrough mode (optional)
+
+## License
+
+Licensed under either of:
+
+- [Apache License, Version 2.0](LICENSE-APACHE)
+- [MIT License](LICENSE-MIT)
+
+at your option.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development workflow, verification requirements, and commit conventions.

@@ -486,6 +486,39 @@ fn format_shm_name(pid: u32, seq: u32, buf: &mut [u8; SHM_NAME_LEN + 1]) -> &CSt
     CStr::from_bytes_with_nul(buf).unwrap_or(c"/ii-0")
 }
 
+/// Release file names created by staging a frame that will never be published.
+pub(crate) fn discard_shm(apc: &[u8]) {
+    const HEADER: &[u8] = b"_Ga=t,t=s,f=32,q=2,i=";
+    for start in memchr::memmem::find_iter(apc, HEADER) {
+        let tail = &apc[start + HEADER.len()..];
+        let Some(separator) = memchr::memchr(b';', &tail[..tail.len().min(96)]) else {
+            continue;
+        };
+        if let Some(bytes) = tail.get(separator + 1..separator + 29)
+            && let Some(name) = shm_name(bytes)
+            && let Ok(name) = CStr::from_bytes_with_nul(&name)
+        {
+            let _ = shm::unlink(name);
+        }
+    }
+}
+
+fn shm_name(bytes: &[u8]) -> Option<[u8; SHM_NAME_LEN + 1]> {
+    let mut name = [0; SHM_NAME_LEN + 1];
+    let digit = |byte| u32::try_from(B64.iter().position(|&b| b == byte)?).ok();
+    for (index, &[a, b, c, d]) in bytes.as_chunks::<4>().0.iter().enumerate() {
+        let value = (digit(a)? << 18) | (digit(b)? << 12) | (digit(c)? << 6) | digit(d)?;
+        name[index * 3..index * 3 + 3].copy_from_slice(&value.to_be_bytes()[1..]);
+    }
+    (name.starts_with(b"/ii-")
+        && name[12] == b'-'
+        && name[4..12]
+            .iter()
+            .chain(&name[13..SHM_NAME_LEN])
+            .all(u8::is_ascii_hexdigit))
+    .then_some(name)
+}
+
 /// Stage POSIX SHM KGP transmission (`t=s`, explicit `S=<bytes>` for macOS 16 `KiB` page rounding)
 /// plus virtual placement (`a=p,U=1`).
 ///
@@ -498,8 +531,22 @@ pub fn stage_shm(
     pid: u32,
     apc: &mut Vec<u8>,
 ) -> Result<(), Error> {
+    stage_shm_bounded(rgba, p, seq, pid, apc, crate::ipc::MAX_PAYLOAD as usize)
+}
+
+pub(crate) fn stage_shm_bounded(
+    rgba: &[u8],
+    p: StageParams,
+    seq: &mut u32,
+    pid: u32,
+    apc: &mut Vec<u8>,
+    limit: usize,
+) -> Result<(), Error> {
     if rgba.is_empty() {
         return Err(Error::ShmExhausted);
+    }
+    if apc.len().saturating_add(256) > limit {
+        return Err(Error::ResourceLimit);
     }
     let byte_len = u64::try_from(rgba.len()).map_err(|_| Error::ShmExhausted)?;
     let mut name_buf = [0u8; SHM_NAME_LEN + 1];
@@ -557,24 +604,56 @@ pub fn stage_shm(
 }
 
 /// Stage chunked Base64 KGP transmission (`t=d`, 3 072 B chunks) + virtual placement.
+/// Leaves `apc` unchanged when the upload exceeds the frame limit.
 pub fn stage_base64(rgba: &[u8], p: StageParams, apc: &mut Vec<u8>, b64: &mut Vec<u8>) {
-    stage_encoded(rgba, 32, p, apc, b64);
+    let _ = stage_raw(rgba, p, apc, b64, crate::ipc::MAX_PAYLOAD as usize);
+}
+
+pub(crate) fn stage_raw(
+    rgba: &[u8],
+    p: StageParams,
+    apc: &mut Vec<u8>,
+    b64: &mut Vec<u8>,
+    limit: usize,
+) -> Result<(), Error> {
+    stage_encoded(rgba, 32, p, apc, b64, limit)
 }
 
 /// Encode lossless PNG before Base64 transport, avoiding raw RGBA-sized replies.
 /// The caller can fall back to RGBA if PNG encoding fails.
 ///
 /// # Errors
-/// Returns `PngDecode` on an encoding failure.
+/// Returns `PngDecode` on an encoding failure or `ResourceLimit` above the frame budget.
 pub fn stage_png(
     rgba: &[u8],
     p: StageParams,
     apc: &mut Vec<u8>,
     b64: &mut Vec<u8>,
 ) -> Result<(), Error> {
-    let mut bytes = Vec::new();
+    stage_png_bounded(
+        rgba,
+        p,
+        apc,
+        b64,
+        &mut Vec::new(),
+        crate::ipc::MAX_PAYLOAD as usize,
+    )
+}
+
+pub(crate) fn stage_png_bounded(
+    rgba: &[u8],
+    p: StageParams,
+    apc: &mut Vec<u8>,
+    b64: &mut Vec<u8>,
+    png: &mut Vec<u8>,
+    limit: usize,
+) -> Result<(), Error> {
+    if apc.len().saturating_add(256) > limit {
+        return Err(Error::ResourceLimit);
+    }
+    png.clear();
     {
-        let mut encoder = png::Encoder::new(&mut bytes, u32::from(p.w), u32::from(p.h));
+        let mut encoder = png::Encoder::new(&mut *png, u32::from(p.w), u32::from(p.h));
         encoder.set_color(png::ColorType::Rgba);
         encoder.set_depth(png::BitDepth::Eight);
         encoder.set_compression(png::Compression::Fast);
@@ -585,29 +664,37 @@ pub fn stage_png(
             .map_err(|_| Error::PngDecode)?;
         writer.finish().map_err(|_| Error::PngDecode)?;
     }
-    if bytes.len() < rgba.len() {
-        stage_encoded(&bytes, 100, p, apc, b64);
+    if png.len() < rgba.len() {
+        stage_encoded(png, 100, p, apc, b64, limit)
     } else {
-        stage_encoded(rgba, 32, p, apc, b64);
+        stage_raw(rgba, p, apc, b64, limit)
     }
-    Ok(())
 }
 
-fn stage_encoded(rgba: &[u8], format: u32, p: StageParams, apc: &mut Vec<u8>, b64: &mut Vec<u8>) {
-    if rgba.is_empty() {
-        return;
+fn stage_encoded(
+    payload: &[u8],
+    format: u32,
+    p: StageParams,
+    apc: &mut Vec<u8>,
+    b64: &mut Vec<u8>,
+    limit: usize,
+) -> Result<(), Error> {
+    const RAW_CHUNK: usize = 2304;
+    let mut chunks = payload.chunks(RAW_CHUNK).enumerate().peekable();
+    let budget = payload
+        .len()
+        .div_ceil(3)
+        .saturating_mul(4)
+        .saturating_add(payload.len().div_ceil(RAW_CHUNK).saturating_mul(32))
+        .saturating_add(256);
+    if apc.len().saturating_add(budget) > limit {
+        return Err(Error::ResourceLimit);
     }
-    let out_len = rgba.len().div_ceil(3) * 4;
-    b64.clear();
-    b64.resize(out_len, 0);
-    let total = encode_base64_into(rgba, b64);
-
-    let mut off = 0usize;
-    let mut first = true;
-    while off < total || first {
-        let end = (off + 3072).min(total);
+    b64.resize(payload.len().min(RAW_CHUNK).div_ceil(3) * 4, 0);
+    while let Some((index, chunk)) = chunks.next() {
+        let len = encode_base64_into(chunk, b64);
         begin_apc(p.is_tmux, apc);
-        if first {
+        if index == 0 {
             apc.extend_from_slice(b"a=t,t=d,f=");
             crate::fmt::push_u32(apc, format);
             apc.extend_from_slice(b",q=2,i=");
@@ -620,23 +707,22 @@ fn stage_encoded(rgba: &[u8], format: u32, p: StageParams, apc: &mut Vec<u8>, b6
         } else {
             apc.extend_from_slice(b"q=2,m=");
         }
-        apc.push(b'0' + u8::from(end < total));
-        if end > off {
-            apc.push(b';');
-            apc.extend_from_slice(&b64[off..end]);
-        }
+        apc.push(b'0' + u8::from(chunks.peek().is_some()));
+        apc.push(b';');
+        apc.extend_from_slice(&b64[..len]);
         end_apc(p.is_tmux, apc);
-        off = end;
-        first = false;
     }
-    emit_virtual_placement(p, apc);
+    if !payload.is_empty() {
+        emit_virtual_placement(p, apc);
+    }
+    Ok(())
 }
 
 fn placeholder_row<const EXPLICIT: bool>(image_id: u32, cols: u16, row: u16, text: &mut Vec<u8>) {
     if cols == 0 {
         return;
     }
-    let [_, r, g, b] = image_id.to_be_bytes();
+    let [high, r, g, b] = image_id.to_be_bytes();
     let mut sgr = [0u8; 20];
     sgr[..7].copy_from_slice(b"\x1b[38;2;");
     let mut pos = 7;
@@ -651,7 +737,14 @@ fn placeholder_row<const EXPLICIT: bool>(image_id: u32, cols: u16, row: u16, tex
     let sgr_slice = &sgr[..=pos];
 
     let max_idx = DIACRITICS_UTF8.len() - 1;
-    text.reserve(sgr_slice.len() + usize::from(cols) * if EXPLICIT { 12 } else { 4 } + 14);
+    let high_diac = if high == 0 {
+        b""
+    } else {
+        DIACRITICS_UTF8[usize::from(high)]
+    };
+    text.reserve(
+        sgr_slice.len() + usize::from(cols) * if EXPLICIT { 12 + high_diac.len() } else { 4 } + 18,
+    );
     text.extend_from_slice(sgr_slice);
     let r_diac = DIACRITICS_UTF8[usize::from(row).min(max_idx)];
     if EXPLICIT {
@@ -661,17 +754,41 @@ fn placeholder_row<const EXPLICIT: bool>(image_id: u32, cols: u16, row: u16, tex
             if let Some(c_diac) = DIACRITICS_UTF8.get(col) {
                 text.extend_from_slice(r_diac);
                 text.extend_from_slice(c_diac);
+                text.extend_from_slice(high_diac);
             }
         }
     } else {
         text.extend_from_slice(&PLACEHOLDER_UTF8);
         text.extend_from_slice(r_diac);
         text.extend_from_slice(DIACRITICS_UTF8[0]);
+        text.extend_from_slice(high_diac);
         for _ in 1..cols {
             text.extend_from_slice(&PLACEHOLDER_UTF8);
         }
     }
     text.extend_from_slice(b"\x1b[39m\n");
+}
+
+/// Decode the first cell of a row with its associated truecolor foreground.
+pub(crate) fn placeholder_id(rgb: [u8; 3], row: &[u8]) -> Option<u32> {
+    let mut cell = row.strip_prefix(&PLACEHOLDER_UTF8)?;
+    let mut high = 0;
+    for index in 0..3 {
+        let Some(&lead) = cell.first() else { break };
+        let len = lead.leading_ones() as usize;
+        if !(2..=4).contains(&len) {
+            break;
+        }
+        let Some(mark) = cell.get(..len) else { break };
+        let Ok(value) = DIACRITICS_UTF8.binary_search(&mark) else {
+            break;
+        };
+        if index == 2 {
+            high = u8::try_from(value).ok()?;
+        }
+        cell = &cell[len..];
+    }
+    Some(u32::from_be_bytes([high, rgb[0], rgb[1], rgb[2]]))
 }
 
 /// Emit compact Kitty graphics rows. Columns continue from the first cell.

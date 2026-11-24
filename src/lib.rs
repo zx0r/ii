@@ -4,6 +4,7 @@ pub mod cache;
 pub mod compose;
 pub mod daemon;
 pub mod err;
+pub mod file;
 pub mod fmt;
 pub mod image;
 pub mod ipc;

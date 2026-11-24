@@ -16,6 +16,7 @@ import subprocess
 import tempfile
 import termios
 import time
+import unicodedata
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -72,7 +73,7 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', type=Path, default=ROOT/'target/debug/ii')
     parser.add_argument('--report', type=Path)
-    parser.add_argument('--notebook', action='store_true', help='scroll the real analysis notebook in both directions')
+    parser.add_argument('--notebook', action='store_true', help='scroll the notebook showcase in both directions')
     args=parser.parse_args()
     with tempfile.TemporaryDirectory(prefix='ii-yazi-check-') as tmp:
         cfg=Path(tmp)/'config';(cfg/'plugins').mkdir(parents=True)
@@ -83,12 +84,12 @@ def main():
         bindir=Path(tmp)/'bin';bindir.mkdir();(bindir/'ii').symlink_to(args.binary.resolve())
         master,slave=pty.openpty()
         fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',40,140,1260,720))
-        env=dict(os.environ,TERM='xterm-kitty',COLORTERM='truecolor',KITTY_WINDOW_ID='1',YAZI_CONFIG_HOME=str(cfg),YAZI_STATE_HOME=tmp+'/state',XDG_RUNTIME_DIR=tmp,PATH=str(bindir)+':'+os.environ['PATH'])
+        env=dict(os.environ,TERM='xterm-kitty',COLORTERM='truecolor',KITTY_WINDOW_ID='1',YAZI_CONFIG_HOME=str(cfg),XDG_STATE_HOME=tmp+'/state',XDG_CACHE_HOME=tmp+'/cache',XDG_RUNTIME_DIR=tmp,PATH=str(bindir)+':'+os.environ['PATH'])
         env.pop('TMUX',None)
         def session():
             os.setsid();fcntl.ioctl(slave,termios.TIOCSCTTY,0)
-        fixture = 'analysis.ipynb' if args.notebook else 'replicas.svg'
-        child=subprocess.Popen(['yazi',str(ROOT/'showcase/scenarios'/fixture)],stdin=slave,stdout=slave,stderr=slave,env=env,preexec_fn=session)
+        fixture = '03.ipynb' if args.notebook else '07.svg'
+        child=subprocess.Popen(['yazi',str(ROOT/'showcase'/fixture)],stdin=slave,stdout=slave,stderr=slave,env=env,preexec_fn=session)
         peer=Peer(master)
         def pump(seconds):
             deadline=time.monotonic()+seconds
@@ -101,16 +102,16 @@ def main():
         try:
             pump(2)
             if args.notebook:
-                assert b'NOTEBOOK-00' in peer.visible, 'notebook preview was not displayed'
+                assert b'Data Science Showcase' in peer.visible, peer.visible[-2500:].decode('utf-8', 'replace')
                 initial_packets = peer.graphics
                 assert initial_packets > 0, 'initial notebook frame did not upload its formulas'
                 reused = 0
                 for key in [b'J'] * 16 + [b'K'] * 16:
                     before, packets = len(peer.visible), peer.graphics
-                    os.write(master,key);pump(.13)
+                    os.write(master,key);pump(.6)
                     if len(peer.visible)>before and peer.graphics == packets:
                         reused += 1
-                assert b'NOTEBOOK-05' in peer.visible, 'notebook did not advance'
+                assert b'Confusion Matrix' in peer.visible, 'notebook did not advance past the first chart'
                 assert reused > 0, 'every scroll retransmitted graphics'
             else:
                 for _ in range(20):
@@ -128,6 +129,8 @@ def main():
             assert peer.graphics > 0, 'graphics path was not exercised'
             assert peer.unquiet == 0, f'{peer.unquiet} graphic commands could contaminate input'
             assert peer.broken == 0, str(peer.fragments[:3])
+            for cell in re.finditer('\U0010eeee(..)', text):
+                assert all(unicodedata.combining(ch) == 230 for ch in cell[1]), 'graphics cell lost its row or column'
             assert not re.search(r'[A-Za-z0-9+/]{100,}',text), 'Base64 escaped into visible text'
             assert 'ii:' not in text and 'stack traceback' not in text, text[-1000:]
             assert not re.search(r'A{4,}|D{4,}|B{4,}',text), 'arrow key bytes became visible'
@@ -138,7 +141,7 @@ def main():
         finally:
             if child.poll() is None:child.kill();child.wait(timeout=3)
             os.close(master);os.close(slave)
-            subprocess.run([str(args.binary.resolve()),'--socket',tmp+'/ii/ii.sock','--shutdown'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+            subprocess.run([str(args.binary.resolve()),'--socket',tmp+'/ii/ii.sock','--shutdown'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,env=env)
 
 
 if __name__=='__main__':main()

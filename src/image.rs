@@ -11,6 +11,8 @@ use crate::{
 };
 use rustix::fd::BorrowedFd;
 
+pub(crate) const SHM_FRAME_BYTES: usize = 32 * 1024 * 1024;
+
 #[derive(Clone, Copy, Debug)]
 pub struct Context<'a> {
     pub cell_w: u16,
@@ -42,7 +44,7 @@ impl Context<'_> {
         let mut identity = blake3::Hasher::new();
         identity.update(&key);
         identity.update(&self.palette.theme_hash.to_le_bytes());
-        identity.update(b"ii-image-16-math-cell-scale");
+        identity.update(b"ii-image-19-grid-fit");
         identity.update(&[u8::from(self.fit_viewport)]);
         if self.fit_viewport {
             identity.update(&self.rows.to_le_bytes());
@@ -64,6 +66,7 @@ pub struct Scratch {
     pub render: RenderScratch,
     pub lz4: Vec<u8>,
     pub b64: Vec<u8>,
+    png: Vec<u8>,
     cache: vram::Cache,
 }
 impl Scratch {
@@ -71,11 +74,12 @@ impl Scratch {
         self.render.reset();
         self.lz4.clear();
         self.b64.clear();
+        self.png.clear();
         if self.lz4.capacity() > 8 * 1024 * 1024 {
             self.lz4.shrink_to(256 * 1024);
         }
-        if self.b64.capacity() > 8 * 1024 * 1024 {
-            self.b64.shrink_to(256 * 1024);
+        if self.png.capacity() > 8 * 1024 * 1024 {
+            self.png.shrink_to(256 * 1024);
         }
     }
 }
@@ -99,6 +103,7 @@ pub fn render(
     pid: u32,
     apc_out: &mut Vec<u8>,
 ) -> Result<(u16, u16, u16, u16, u32), Error> {
+    let mut shm_room = SHM_FRAME_BYTES;
     render_if(
         kind,
         payload,
@@ -108,7 +113,8 @@ pub fn render(
         shm_seq,
         pid,
         apc_out,
-        |_| true,
+        &mut shm_room,
+        |_, _, _| Ok(Some(crate::ipc::MAX_PAYLOAD as usize)),
     )
 }
 
@@ -125,7 +131,8 @@ pub(crate) fn render_if(
     shm_seq: &mut u32,
     pid: u32,
     apc_out: &mut Vec<u8>,
-    needs_upload: impl FnOnce(u32) -> bool,
+    shm_room: &mut usize,
+    upload_limit: impl FnOnce(u32, u16, u16) -> Result<Option<usize>, Error>,
 ) -> Result<(u16, u16, u16, u16, u32), Error> {
     let key = ctx.cache_key(kind, payload);
 
@@ -133,8 +140,8 @@ pub(crate) fn render_if(
     raw_tag.copy_from_slice(&key[..8]);
     let tag = vram::Tag::new(u64::from_le_bytes(raw_tag) | 1).ok_or(Error::CacheCorrupt)?;
     let image_id = tag.image_id().get();
-    let upload = |w, h, cols, rows, rgba: &[u8], b64: &mut Vec<u8>| {
-        if needs_upload(image_id) {
+    let upload = |w, h, cols, rows, rgba: &[u8], b64: &mut Vec<u8>, png: &mut Vec<u8>| {
+        if let Some(limit) = upload_limit(image_id, cols, rows)? {
             let params = StageParams {
                 image_id,
                 w,
@@ -143,19 +150,30 @@ pub(crate) fn render_if(
                 rows,
                 is_tmux: ctx.is_tmux,
             };
-            stage(rgba, params, ctx.is_remote, shm_seq, pid, apc_out, b64);
+            if !ctx.is_remote
+                && rgba.len() <= *shm_room
+                && kitty::stage_shm_bounded(rgba, params, shm_seq, pid, apc_out, limit).is_ok()
+            {
+                *shm_room -= rgba.len();
+            } else {
+                match kitty::stage_png_bounded(rgba, params, apc_out, b64, png, limit) {
+                    Err(Error::PngDecode) => kitty::stage_raw(rgba, params, apc_out, b64, limit)?,
+                    result => result?,
+                }
+            }
         }
-        (w, h, cols, rows, image_id)
+        Ok((w, h, cols, rows, image_id))
     };
     if let Some(hit) = scratch.cache.lookup(tag) {
-        return Ok(upload(
+        return upload(
             hit.w,
             hit.h,
             hit.cols,
             hit.rows,
             &hit.rgba,
             &mut scratch.b64,
-        ));
+            &mut scratch.png,
+        );
     }
 
     let cached = if let Some(dir) = l2_dir {
@@ -190,23 +208,21 @@ pub(crate) fn render_if(
             )?
         } else {
             fmt::dispatch_with_palette(kind, payload, ctx.palette, &mut scratch.render.scene)?;
-            let mut preferred_scale = if ctx.fit_viewport {
+            let preferred_scale = if ctx.fit_viewport && kind != Kind::TexInline {
                 4.0
             } else {
                 ctx.vector_scale(kind)
             };
-            if ctx.fit_viewport && scratch.render.scene.height > 0.0 {
-                preferred_scale = preferred_scale.min(
-                    f32::from(ctx.rows.max(1)) * f32::from(ctx.cell_h.max(1))
-                        / scratch.render.scene.height,
-                );
-            }
-            let (w, h, _, _) = raster::rasterize_scene_scaled(
+            let max_h = if ctx.fit_viewport {
+                ctx.rows.max(1).saturating_mul(ctx.cell_h.max(1))
+            } else {
+                u16::MAX
+            };
+            let (w, h, _, _) = raster::rasterize_scene_fitted(
                 &scratch.render.scene,
                 ctx.palette,
-                ctx.cell_w,
-                ctx.cell_h,
-                ctx.max_w,
+                (ctx.cell_w, ctx.cell_h),
+                (ctx.max_w, max_h),
                 preferred_scale,
                 &mut scratch.render.rgba_buf,
             )?;
@@ -231,28 +247,13 @@ pub(crate) fn render_if(
         .cache
         .insert(tag, cols, rows, w, h, &scratch.render.rgba_buf);
 
-    Ok(upload(
+    upload(
         w,
         h,
         cols,
         rows,
         &scratch.render.rgba_buf,
         &mut scratch.b64,
-    ))
-}
-
-fn stage(
-    rgba: &[u8],
-    params: StageParams,
-    remote: bool,
-    seq: &mut u32,
-    pid: u32,
-    out: &mut Vec<u8>,
-    b64: &mut Vec<u8>,
-) {
-    if (remote || kitty::stage_shm(rgba, params, seq, pid, out).is_err())
-        && kitty::stage_png(rgba, params, out, b64).is_err()
-    {
-        kitty::stage_base64(rgba, params, out, b64);
-    }
+        &mut scratch.png,
+    )
 }

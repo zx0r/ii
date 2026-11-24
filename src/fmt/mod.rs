@@ -22,6 +22,8 @@ use crate::{
     theme::{self, Palette},
 };
 
+const MAX_DOCUMENT_BYTES: usize = 64 * 1024 * 1024;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Kind {
@@ -41,6 +43,12 @@ pub enum Kind {
     Typst = 13,
     Mdx = 14,
     Html = 15,
+}
+
+impl Kind {
+    pub(crate) const fn fits_viewport_height(self) -> bool {
+        matches!(self, Self::Mermaid | Self::Dot | Self::Svg | Self::Chart)
+    }
 }
 
 const EXT_MAP: &[(&[&str], Kind)] = &[

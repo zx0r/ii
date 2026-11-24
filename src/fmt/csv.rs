@@ -34,43 +34,68 @@ fn is_pipe_separator(line: &[u8]) -> bool {
             .all(|&byte| matches!(byte, b'|' | b'-' | b':' | b' ' | b'\t'))
 }
 
-#[inline]
-fn next_field<'a>(line: &'a [u8], delim: u8, cursor: &mut usize) -> Option<&'a [u8]> {
-    if *cursor > line.len() {
-        return None;
-    }
-    if *cursor == line.len() {
-        *cursor += 1;
-        return Some(&[]);
-    }
-    let rest = &line[*cursor..];
-    if delim != b'|' && rest.first() == Some(&b'"') {
-        let mut pos = *cursor + 1;
-        while pos < line.len() {
-            if line[pos] == b'"' {
-                if line.get(pos + 1) == Some(&b'"') {
-                    pos += 2;
-                    continue;
-                }
-                let inner = &line[*cursor + 1..pos];
-                *cursor = memchr::memchr(delim, &line[pos + 1..])
-                    .map_or(line.len() + 1, |off| pos + 2 + off);
-                return Some(inner);
-            }
-            pos += 1;
-        }
-        let inner = &line[*cursor + 1..];
-        *cursor = line.len() + 1;
-        return Some(inner);
-    }
+#[derive(Clone, Copy)]
+struct Field<'a> {
+    value: &'a [u8],
+    quoted: bool,
+    last: bool,
+}
 
-    if let Some(off) = memchr::memchr(delim, rest) {
-        *cursor += off + 1;
-        Some(&rest[..off])
-    } else {
-        *cursor = line.len() + 1;
-        Some(rest)
+impl<'a> Field<'a> {
+    fn bytes(self) -> impl Iterator<Item = u8> + use<'a> {
+        let mut src = self.value.iter().copied().peekable();
+        core::iter::from_fn(move || {
+            let byte = src.next()?;
+            if self.quoted && byte == b'"' && src.peek() == Some(&b'"') {
+                src.next();
+            }
+            Some(byte)
+        })
     }
+}
+
+fn fields(src: &[u8], delim: u8) -> impl Iterator<Item = Result<Field<'_>, Error>> {
+    let mut rest = (!src.is_empty()).then_some(src);
+    core::iter::from_fn(move || {
+        let src = rest.take()?;
+        let quoted = delim != b'|' && src.starts_with(b"\"");
+        let mut end_quote = 0;
+        let mut after_quote = 0;
+        if quoted {
+            let mut at = 1;
+            loop {
+                let Some(pos) = memchr::memchr(b'"', &src[at..]).map(|next| at + next) else {
+                    return Some(Err(Error::InvalidState));
+                };
+                if src.get(pos + 1) != Some(&b'"') {
+                    end_quote = pos;
+                    after_quote = pos + 1;
+                    break;
+                }
+                at = pos + 2;
+            }
+        }
+        let end = memchr::memchr2(delim, b'\n', &src[after_quote..])
+            .map_or(src.len(), |off| after_quote + off);
+        let last = src.get(end).is_none_or(|&byte| byte == b'\n');
+        if end < src.len() && (!last || end + 1 < src.len()) {
+            rest = Some(&src[end + 1..]);
+        }
+        let value = if quoted {
+            if !src[after_quote..end].trim_ascii().is_empty() {
+                rest = None;
+                return Some(Err(Error::InvalidState));
+            }
+            &src[1..end_quote]
+        } else {
+            &src[..end]
+        };
+        Some(Ok(Field {
+            value,
+            quoted,
+            last,
+        }))
+    })
 }
 
 fn push_table_grid(scene: &mut Scene, cell_start: u32, rows: u16, cols: usize, col_max: &[usize]) {
@@ -115,88 +140,115 @@ fn push_table_grid(scene: &mut Scene, cell_start: u32, rows: u16, cols: usize, c
     scene.height = grid_y + grid_h;
 }
 
-fn parse_delimited(src: &[u8], forced_delim: Option<u8>, scene: &mut Scene) {
-    let trimmed = trim_ascii(src);
-    if trimmed.is_empty() {
-        return;
+fn parse_delimited(src: &[u8], forced_delim: Option<u8>, scene: &mut Scene) -> Result<(), Error> {
+    let first_nl = memchr::memchr(b'\n', src).unwrap_or(src.len());
+    let delim = forced_delim.unwrap_or_else(|| detect_delim(&src[..first_nl]));
+    if delim == b'|' {
+        let fields = src
+            .split(|&b| b == b'\n')
+            .map(trim_ascii)
+            .filter(|line| !is_pipe_separator(line))
+            .flat_map(|line| {
+                let line = line.strip_prefix(b"|").unwrap_or(line);
+                fields(line.strip_suffix(b"|").unwrap_or(line), delim)
+            });
+        table(fields, scene)
+    } else {
+        table(fields(src, delim), scene)
     }
-    let first_nl = memchr::memchr(b'\n', trimmed).unwrap_or(trimmed.len());
-    let delim = forced_delim.unwrap_or_else(|| detect_delim(&trimmed[..first_nl]));
+}
 
+fn table<'a>(
+    fields: impl Iterator<Item = Result<Field<'a>, Error>>,
+    scene: &mut Scene,
+) -> Result<(), Error> {
     let Ok(cell_start) = u32::try_from(scene.cells.len()) else {
-        return;
+        return Err(Error::ResourceLimit);
     };
-    let mut col_max = [0usize; MAX_COLS];
-    let mut max_cols = 0usize;
-    let mut row_count = 0usize;
-    let mut line_start = 0usize;
+    let mut col_max = [0; MAX_COLS];
+    let mut ends = [0; MAX_ROWS];
+    let mut max_cols = 0;
+    let mut row = 0;
+    let mut col = 0;
+    let mut decoded = Vec::new();
 
-    while line_start < trimmed.len() && row_count < MAX_ROWS {
-        let nl = memchr::memchr(b'\n', &trimmed[line_start..])
-            .map_or(trimmed.len(), |off| line_start + off);
-        let mut line = trim_ascii(&trimmed[line_start..nl]);
-        line_start = nl + 1;
-        if line.is_empty() {
+    for field in fields {
+        let field = field?;
+        if col == 0 && field.last && !field.quoted && field.value.trim_ascii().is_empty() {
             continue;
         }
-        if delim == b'|' {
-            if is_pipe_separator(line) {
-                continue;
-            }
-            if let Some(stripped) = line.strip_prefix(b"|") {
-                line = stripped;
-            }
-            if let Some(stripped) = line.strip_suffix(b"|") {
-                line = stripped;
-            }
-        }
-
-        let is_header = row_count == 0;
-        let mut cursor = 0usize;
-        let mut col = 0usize;
-        while col < MAX_COLS {
-            let Some(raw) = next_field(line, delim, &mut cursor) else {
-                break;
+        if col < MAX_COLS {
+            let value = if field.quoted && memchr::memmem::find(field.value, b"\"\"").is_some() {
+                decoded.clear();
+                decoded.extend(field.bytes());
+                decoded.as_slice()
+            } else {
+                field.value
             };
-            let cell_bytes = trim_ascii(raw);
-            let text = core::str::from_utf8(cell_bytes).unwrap_or("");
-            let (text_off, text_len) = scene.intern_text(text).unwrap_or((0, 0));
+            let text = core::str::from_utf8(trim_ascii(value)).unwrap_or("");
+            let (off, len) = scene.intern_text(text).unwrap_or((0, 0));
             col_max[col] = col_max[col].max(text.chars().count());
             scene.cells.push(CellSpan {
-                text_off,
-                text_len,
+                text_off: off,
+                text_len: len,
                 col_span: 1,
                 row_span: 1,
-                color: if is_header {
+                color: if row == 0 {
                     ColorToken::ACCENT_ORANGE
                 } else {
                     ColorToken::FG_PRIMARY
                 },
-                bg: if is_header {
+                bg: if row == 0 {
                     ColorToken::BG_SURFACE
                 } else {
                     ColorToken::BG_PRIMARY
                 },
                 align: 0,
-                flags: u8::from(is_header),
+                flags: u8::from(row == 0),
             });
             col += 1;
         }
-        if col > 0 {
+        if field.last {
             max_cols = max_cols.max(col);
-            row_count += 1;
+            ends[row] = scene.cells.len();
+            row += 1;
+            col = 0;
+            if row == MAX_ROWS {
+                break;
+            }
         }
     }
 
-    if row_count > 0 && max_cols > 0 {
-        push_table_grid(
-            scene,
-            cell_start,
-            u16::try_from(row_count).unwrap_or(u16::MAX),
-            max_cols,
-            &col_max,
-        );
+    if row == 0 {
+        return Ok(());
     }
+    let base = cell_start as usize;
+    let empty = CellSpan {
+        text_off: 0,
+        text_len: 0,
+        col_span: 1,
+        row_span: 1,
+        color: ColorToken::FG_PRIMARY,
+        bg: ColorToken::BG_PRIMARY,
+        align: 0,
+        flags: 0,
+    };
+    let mut ranges = ends[..row].iter().enumerate().rev().peekable();
+    scene.cells.resize(base + row * max_cols, empty);
+    while let Some((index, &end)) = ranges.next() {
+        let start = ranges.peek().map_or(base, |(_, start)| **start);
+        let dst = base + index * max_cols;
+        scene.cells.copy_within(start..end, dst);
+        scene.cells[dst + end - start..dst + max_cols].fill(empty);
+    }
+    push_table_grid(
+        scene,
+        cell_start,
+        u16::try_from(row).unwrap_or(u16::MAX),
+        max_cols,
+        &col_max,
+    );
+    Ok(())
 }
 
 /// Parse CSV or Markdown pipe-table bytes into `Scene` (`TableGrid`).
@@ -204,8 +256,7 @@ fn parse_delimited(src: &[u8], forced_delim: Option<u8>, scene: &mut Scene) {
 /// # Errors
 /// Returns `Ok(())` on empty or valid delimited inputs.
 pub fn parse_into_scene(src: &[u8], scene: &mut Scene) -> Result<(), Error> {
-    parse_delimited(src, None, scene);
-    Ok(())
+    parse_delimited(src, None, scene)
 }
 
 /// Parse TSV bytes (`\t`-delimited) into `Scene` (`TableGrid`).
@@ -213,8 +264,7 @@ pub fn parse_into_scene(src: &[u8], scene: &mut Scene) -> Result<(), Error> {
 /// # Errors
 /// Returns `Ok(())` on empty or valid TSV inputs.
 pub fn parse_tsv_into_scene(src: &[u8], scene: &mut Scene) -> Result<(), Error> {
-    parse_delimited(src, Some(b'\t'), scene);
-    Ok(())
+    parse_delimited(src, Some(b'\t'), scene)
 }
 
 /// Present all delimited records as a native text table, including multiline fields.
@@ -222,65 +272,38 @@ pub fn parse_tsv_into_scene(src: &[u8], scene: &mut Scene) -> Result<(), Error> 
 /// # Errors
 /// Rejects an unterminated quoted field.
 pub fn to_markdown(src: &[u8], delim: u8, out: &mut Vec<u8>) -> Result<(), Error> {
-    if src.is_empty() {
-        return Ok(());
-    }
-    let mut pos = 0;
-    let mut row = 0;
     let mut cols = 0;
-    out.extend_from_slice(b"| ");
-    let mut at_start = true;
-    let mut quoted = false;
-    while pos < src.len() {
-        let byte = src[pos];
-        if byte == b'"' && (quoted || at_start) {
-            if quoted && src.get(pos + 1) == Some(&b'"') {
-                out.push(b'"');
-                pos += 2;
-                continue;
-            }
-            quoted = !quoted;
-        } else if !quoted && (byte == delim || byte == b'\n') {
-            out.extend_from_slice(b" | ");
-            cols += 1;
-            at_start = true;
-            if byte == b'\n' {
-                out.push(b'\n');
-                if row == 0 {
-                    out.push(b'|');
-                    for _ in 0..cols {
-                        out.extend_from_slice(b" --- |");
-                    }
-                    out.push(b'\n');
-                }
-                row += 1;
-                cols = 0;
-                if pos + 1 < src.len() {
-                    out.extend_from_slice(b"| ");
-                }
-            }
-        } else {
+    let mut header = true;
+    for field in fields(src, delim) {
+        let field = field?;
+        if cols == 0 {
+            out.extend_from_slice(b"| ");
+        }
+        let mut bytes = field.bytes().peekable();
+        while let Some(byte) = bytes.next() {
             match byte {
                 b'|' => out.extend_from_slice("│".as_bytes()),
                 b'\n' => out.extend_from_slice("↵".as_bytes()),
-                b'\r' if src.get(pos + 1) == Some(&b'\n') => {}
+                b'\r'
+                    if bytes.peek() == Some(&b'\n')
+                        || !field.quoted && field.last && bytes.peek().is_none() => {}
                 _ => out.push(byte),
             }
-            at_start = false;
         }
-        pos += 1;
-    }
-    if quoted {
-        return Err(Error::InvalidState);
-    }
-    if !src.ends_with(b"\n") {
-        out.extend_from_slice(b" |\n");
-        if row == 0 {
-            out.push(b'|');
-            for _ in 0..=cols {
-                out.extend_from_slice(b" --- |");
+        cols += 1;
+        if field.last {
+            out.extend_from_slice(b" |\n");
+            if header {
+                out.push(b'|');
+                for _ in 0..cols {
+                    out.extend_from_slice(b" --- |");
+                }
+                out.push(b'\n');
+                header = false;
             }
-            out.push(b'\n');
+            cols = 0;
+        } else {
+            out.extend_from_slice(b" | ");
         }
     }
     Ok(())

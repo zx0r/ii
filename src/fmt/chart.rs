@@ -81,58 +81,53 @@ struct Chart<'a> {
     title: &'a str,
     x_name: &'a str,
     y_name: &'a str,
-    n: usize,
     numeric_x: bool,
-    labels: Box<[&'a str]>,
-    xs: Box<[[f64; MAX_POINTS]]>,
-    counts: [usize; MAX_SERIES],
+    labels: Vec<&'a str>,
+    xs: [Vec<f64>; MAX_SERIES],
     marks: [Mark; MAX_SERIES],
-    ys: Box<[[f64; MAX_POINTS]]>,
+    ys: [Vec<f64>; MAX_SERIES],
     n_series: usize,
     names: [&'a str; MAX_SERIES],
 }
 
 impl<'a> Chart<'a> {
-    fn new(mark: Mark) -> Self {
+    const fn new(mark: Mark) -> Self {
         Self {
             mark,
             title: "",
             x_name: "",
             y_name: "",
-            n: 0,
             numeric_x: false,
-            labels: vec![""; MAX_POINTS].into_boxed_slice(),
-            xs: vec![[0.0; MAX_POINTS]; MAX_SERIES].into_boxed_slice(),
-            counts: [0; MAX_SERIES],
+            labels: Vec::new(),
+            xs: [const { Vec::new() }; MAX_SERIES],
             marks: [mark; MAX_SERIES],
-            ys: vec![[0.0; MAX_POINTS]; MAX_SERIES].into_boxed_slice(),
+            ys: [const { Vec::new() }; MAX_SERIES],
             n_series: 1,
             names: [""; MAX_SERIES],
         }
     }
 
     /// Appends an `(x token, y)` point; `x` is kept as a label and as a numeric hint.
-    fn push(&mut self, x: &'a [u8], y: f64) {
-        if self.n >= MAX_POINTS {
+    fn push(&mut self, series: usize, x: &'a [u8], y: f64) {
+        let index = self.xs[series].len();
+        if index == MAX_POINTS {
             return;
         }
-        let raw = core::str::from_utf8(x).unwrap_or("");
-        self.labels[self.n] = raw.trim_matches('"');
-        self.xs[0][self.n] = num_of(x).unwrap_or(self.n as f64);
-        self.ys[0][self.n] = y;
-        self.n += 1;
+        if series == 0 {
+            let raw = core::str::from_utf8(x).unwrap_or("");
+            self.labels.push(raw.trim_matches('"'));
+        }
+        self.xs[series].push(num_of(x).unwrap_or(index as f64));
+        self.ys[series].push(y);
     }
 
     /// Numeric-x scale is valid only for continuous marks whose every x parses as a number.
     fn finish(&mut self, x_is_quantitative: bool) {
-        self.counts[0] = self.n;
         self.numeric_x = x_is_quantitative
             && matches!(self.mark, Mark::Line | Mark::Area | Mark::Point)
-            && self.labels[..self.n]
-                .iter()
-                .all(|l| l.parse::<f64>().is_ok());
+            && self.labels.iter().all(|l| l.parse::<f64>().is_ok());
         if !self.numeric_x {
-            for (i, x) in self.xs[0][..self.n].iter_mut().enumerate() {
+            for (i, x) in self.xs[0].iter_mut().enumerate() {
                 *x = i as f64;
             }
         }
@@ -193,7 +188,7 @@ fn parse_vega(spec: &[u8]) -> (&str, Option<Chart<'_>>) {
     if group_field.is_empty() {
         for row in items(values) {
             if let (Some(x), Some(y)) = (get(row, xf), get(row, yf).and_then(num_of)) {
-                chart.push(x, y);
+                chart.push(0, x, y);
             }
         }
     } else {
@@ -217,22 +212,12 @@ fn parse_vega(spec: &[u8]) -> (&str, Option<Chart<'_>>) {
                 chart.n_series += 1;
                 index
             };
-            let index = chart.counts[series];
-            if index == MAX_POINTS {
-                continue;
-            }
-            chart.xs[series][index] = num_of(x).unwrap_or(index as f64);
-            chart.ys[series][index] = y;
-            chart.counts[series] += 1;
-            if series == 0 {
-                chart.labels[index] = core::str::from_utf8(x).unwrap_or("").trim_matches('"');
-                chart.n += 1;
-            }
+            chart.push(series, x, y);
         }
     }
     let quantitative = str_of(channel("x").and_then(|c| get(c, "type"))) == "quantitative";
     chart.finish(quantitative);
-    (title, (chart.n > 0).then_some(chart))
+    (title, (!chart.labels.is_empty()).then_some(chart))
 }
 
 fn parse_plotly(spec: &[u8]) -> (&str, Option<Chart<'_>>) {
@@ -253,12 +238,12 @@ fn parse_plotly(spec: &[u8]) -> (&str, Option<Chart<'_>>) {
             let mut c = Chart::new(Mark::Pie);
             for (l, v) in items(get(trace, "labels")).zip(items(get(trace, "values"))) {
                 if let Some(v) = num_of(v) {
-                    c.push(l, v);
+                    c.push(0, l, v);
                 }
             }
             c.title = title;
             c.finish(false);
-            return (title, (c.n > 0).then_some(c));
+            return (title, (!c.labels.is_empty()).then_some(c));
         }
         // Keep statistical and hierarchical traces unsupported rather than mislabeling them.
         let mark = match (kind, str_of(get(trace, "mode"))) {
@@ -279,19 +264,16 @@ fn parse_plotly(spec: &[u8]) -> (&str, Option<Chart<'_>>) {
             // Additional series appended to the first plottable chart.
             if c.n_series < MAX_SERIES {
                 let s = c.n_series;
-                let mut count = 0;
                 let mut xs = items(get(trace, "x"));
                 for raw in ys.take(MAX_POINTS) {
-                    let x = xs.next();
-                    let Some(y) = num_of(raw) else { continue };
-                    c.xs[s][count] = x.and_then(num_of).unwrap_or(count as f64);
-                    c.ys[s][count] = y;
-                    count += 1;
+                    let x = xs.next().unwrap_or_default();
+                    if let Some(y) = num_of(raw) {
+                        c.push(s, x, y);
+                    }
                 }
-                if count == 0 {
+                if c.ys[s].is_empty() {
                     continue;
                 }
-                c.counts[s] = count;
                 c.marks[s] = mark;
                 c.names[s] = name;
                 c.n_series += 1;
@@ -301,14 +283,10 @@ fn parse_plotly(spec: &[u8]) -> (&str, Option<Chart<'_>>) {
         // First plottable trace: build the primary chart.
         let mut c = Chart::new(mark);
         let mut xs = items(get(trace, "x"));
-        for (i, raw) in ys.enumerate().take(MAX_POINTS) {
-            let x = xs.next();
-            let Some(y) = num_of(raw) else { continue };
-            if let Some(x) = x {
-                c.push(x, y);
-            } else {
-                c.push(b"", y);
-                c.xs[0][c.n.saturating_sub(1)] = i as f64;
+        for raw in ys.take(MAX_POINTS) {
+            let x = xs.next().unwrap_or_default();
+            if let Some(y) = num_of(raw) {
+                c.push(0, x, y);
             }
         }
         c.title = title;
@@ -316,11 +294,11 @@ fn parse_plotly(spec: &[u8]) -> (&str, Option<Chart<'_>>) {
         c.y_name = axis("yaxis");
         c.names[0] = name;
         c.finish(true);
-        if c.n > 0 {
+        if !c.labels.is_empty() {
             chart = Some(c);
         }
     }
-    (title, chart.filter(|c| c.n > 0))
+    (title, chart.filter(|c| !c.labels.is_empty()))
 }
 
 // ── SVG emission ────────────────────────────────────────────────────────────
@@ -376,10 +354,10 @@ fn text(out: &mut String, x: f64, y: f64, anchor: &str, fg: &str, s: &str) {
 }
 
 fn render_pie(c: &Chart<'_>, theme: &Palette, fg: &str, out: &mut String) {
-    let total: f64 = c.ys[0][..c.n].iter().filter(|v| **v > 0.0).sum();
+    let total: f64 = c.ys[0].iter().filter(|v| **v > 0.0).sum();
     let (cx, cy, r) = (W * 0.36, H * 0.54, (H - MT - 24.0) * 0.5);
     let mut angle = -core::f64::consts::FRAC_PI_2;
-    for i in 0..c.n {
+    for i in 0..c.labels.len() {
         let v = c.ys[0][i];
         if v <= 0.0 || total <= 0.0 {
             continue;
@@ -575,13 +553,13 @@ fn render_cartesian(c: &Chart<'_>, theme: &Palette, fg: &str, out: &mut String) 
     let (pw, ph) = (W - ML - MR, H - MT - MB);
     let max_y = c.ys[..c.n_series]
         .iter()
-        .enumerate()
-        .flat_map(|(index, s)| s[..c.counts[index]].iter().copied())
+        .flatten()
+        .copied()
         .fold(0.0f64, f64::max);
     let min_y = c.ys[..c.n_series]
         .iter()
-        .enumerate()
-        .flat_map(|(index, s)| s[..c.counts[index]].iter().copied())
+        .flatten()
+        .copied()
         .fold(0.0f64, f64::min);
     let top = nice_ceil(max_y);
     let bottom = if min_y < 0.0 { -nice_ceil(-min_y) } else { 0.0 };
@@ -590,17 +568,16 @@ fn render_cartesian(c: &Chart<'_>, theme: &Palette, fg: &str, out: &mut String) 
 
     let (x_min, x_max) = c.xs[..c.n_series]
         .iter()
-        .enumerate()
-        .flat_map(|(index, xs)| xs[..c.counts[index]].iter())
+        .flatten()
         .fold((f64::MAX, f64::MIN), |(lo, hi), &x| (lo.min(x), hi.max(x)));
-    let band = pw / c.n as f64;
+    let band = pw / c.labels.len() as f64;
     let x_of = |x: f64| {
-        if c.mark == Mark::Bar || !c.numeric_x && c.n == 1 {
+        if c.mark == Mark::Bar || !c.numeric_x && c.labels.len() == 1 {
             ML + band * (x + 0.5)
         } else if c.numeric_x {
             ML + (x - x_min) / (x_max - x_min).max(f64::EPSILON) * pw
         } else {
-            ML + x / (c.n - 1) as f64 * pw
+            ML + x / (c.labels.len() - 1) as f64 * pw
         }
     };
 
@@ -625,8 +602,8 @@ fn render_cartesian(c: &Chart<'_>, theme: &Palette, fg: &str, out: &mut String) 
         x2 = ML + pw
     );
 
-    let step = c.n.div_ceil(12);
-    for i in (0..c.n).step_by(step) {
+    let step = c.labels.len().div_ceil(12);
+    for i in (0..c.labels.len()).step_by(step) {
         let mut label = String::new();
         if c.numeric_x {
             push_num(&mut label, c.xs[0][i]);
@@ -647,7 +624,7 @@ fn render_cartesian(c: &Chart<'_>, theme: &Palette, fg: &str, out: &mut String) 
 
     for s in 0..c.n_series {
         let color = theme.series_hex_str(s);
-        let ys = &c.ys[s][..c.counts[s]];
+        let ys = &c.ys[s];
         match c.marks[s] {
             Mark::Bar => {
                 let bw = band * 0.8 / c.n_series as f64;
@@ -677,9 +654,9 @@ fn render_cartesian(c: &Chart<'_>, theme: &Palette, fg: &str, out: &mut String) 
                         r#"  <polygon points="{:.1},{y0:.1} {pts}{:.1},{y0:.1}" fill="{color}" fill-opacity="0.25"/>"#,
                         x_of(if c.numeric_x { c.xs[s][0] } else { 0.0 }),
                         x_of(if c.numeric_x {
-                            c.xs[s][c.counts[s] - 1]
+                            c.xs[s][ys.len() - 1]
                         } else {
-                            (c.counts[s] - 1) as f64
+                            (ys.len() - 1) as f64
                         }),
                         y0 = y_of(0.0f64.max(bottom))
                     );

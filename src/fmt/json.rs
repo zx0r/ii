@@ -92,32 +92,47 @@ pub fn skip_value(src: &[u8], start: usize, depth: u8) -> Option<usize> {
 /// Lookup raw byte slice of field `key` in a JSON object without allocating.
 #[must_use]
 pub fn get_field<'a>(obj: &'a [u8], key: &[u8]) -> Option<&'a [u8]> {
+    fields(obj).find_map(|(name, value)| (name == key).then_some(value))
+}
+
+pub(crate) fn get_fields<'a, const N: usize>(
+    obj: &'a [u8],
+    keys: [&[u8]; N],
+) -> [Option<&'a [u8]>; N] {
+    let mut values = [None; N];
+    let mut missing = N;
+    for (name, value) in fields(obj) {
+        if let Some(index) = keys.iter().position(|&key| key == name)
+            && values[index].is_none()
+        {
+            values[index] = Some(value);
+            missing -= 1;
+            if missing == 0 {
+                break;
+            }
+        }
+    }
+    values
+}
+
+fn fields(obj: &[u8]) -> impl Iterator<Item = (&[u8], &[u8])> {
     let pos = skip_ws(obj, 0);
-    if obj.get(pos) != Some(&b'{') {
-        return None;
-    }
-    let mut cur = skip_ws(obj, pos + 1);
-    if obj.get(cur) == Some(&b'}') {
-        return None;
-    }
-    loop {
-        let key_end = skip_string(obj, cur)?;
-        let raw_key = &obj[cur + 1..key_end - 1];
-        cur = skip_ws(obj, key_end);
-        if obj.get(cur) != Some(&b':') {
+    let mut next = (obj.get(pos) == Some(&b'{')).then(|| skip_ws(obj, pos + 1));
+    core::iter::from_fn(move || {
+        let start = next.take()?;
+        let key_end = skip_string(obj, start)?;
+        let colon = skip_ws(obj, key_end);
+        if obj.get(colon) != Some(&b':') {
             return None;
         }
-        let val_start = skip_ws(obj, cur + 1);
+        let val_start = skip_ws(obj, colon + 1);
         let val_end = skip_value(obj, val_start, 1)?;
-        if raw_key == key {
-            return Some(&obj[val_start..val_end]);
+        let sep = skip_ws(obj, val_end);
+        if obj.get(sep) == Some(&b',') {
+            next = Some(skip_ws(obj, sep + 1));
         }
-        cur = skip_ws(obj, val_end);
-        match *obj.get(cur)? {
-            b',' => cur = skip_ws(obj, cur + 1),
-            _ => return None,
-        }
-    }
+        Some((&obj[start + 1..key_end - 1], &obj[val_start..val_end]))
+    })
 }
 
 /// Zero-copy iterator over raw element slices of a JSON array.

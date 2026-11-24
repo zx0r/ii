@@ -1,18 +1,16 @@
-# Участие в разработке ii
+# Contributing to ii
 
-Начните с [README.md](README.md): назначение, форматы, архитектура и ограничения.
-Правила изменения кода, владение ресурсами, запрещённые антипаттерны и условия
-приёмки собраны в [AGENTS.md](AGENTS.md), без дублирования в этом файле.
+Start with [README.md](README.md) for scope, formats, architecture, and constraints.
 
-## Изменение поведения
+## Changing Behavior
 
-1. Приведите вход и условия, на которых видна проблема.
-2. Найдите владельца поведения; исправляйте общий путь, а не копию для одного хоста.
-3. Добавьте проверку потери содержания, неправильной страницы, пикселей или протокола.
-4. Удалите заменённую логику и обновите контракт в документации.
-5. Выполните применимые проверки и укажите, что не удалось проверить.
+1. Reproduce the issue with concrete input and conditions.
+2. Locate the owner of the behavior; fix the shared path, not a one-host copy.
+3. Add verification for content loss, wrong page, pixel corruption, or protocol violation.
+4. Remove superseded logic and update the contract in documentation.
+5. Run applicable checks and state what could not be verified.
 
-## Базовые проверки
+## Verification
 
 ```sh
 cargo +stable fmt --all -- --check
@@ -20,21 +18,19 @@ cargo +stable clippy --locked --all-targets --all-features -- -D warnings
 cargo +stable test --locked
 ```
 
-Для рендера и адаптеров используйте реальные стенды из `showcase/checks/`.
-Для производительности сравнивайте одинаковый корпус и полезный результат.
-Порядок и условия описаны в README и AGENTS.
+For render and adapter correctness, use real stands from `showcase/checks/`.
+For performance, compare identical corpus and useful output.
 
-`Justfile` содержит дополнительные команды с внешними cargo/tools-зависимостями.
-Необязательно устанавливать весь набор для документационной или локальной правки.
-Наличие рецепта, Git hook или CI workflow не означает, что проверка уже выполнена.
+The `Justfile` provides additional recipes requiring external cargo/tool dependencies.
+Installing the full set is not required for documentation or local-only edits.
+Presence of a recipe, Git hook, or CI workflow does not mean the check has been executed.
 
-## Коммиты
+## Commits
 
-Используйте Conventional Commits с точным описанием фактического изменения.
-Соблюдайте существующие hooks и signing, не обходите их. Не добавляйте сборки,
-секреты, локальные логи и пользовательские конфигурации. Коммит не является
-разрешением на push или публикацию релиза.
+Use [Conventional Commits](https://www.conventionalcommits.org/) with precise description of the actual change.
+Respect existing hooks and signing — do not bypass them.
+Do not commit build artifacts, secrets, local logs, or user-specific configuration.
+A commit is not authorization to push or publish a release.
 
-В описании изменения приведите результат, причину, проверку и существенные
-ограничения. Новая зависимость требует технического обоснования и анализа её
-транзитивного графа.
+In the commit body, state the result, reason, verification, and material constraints.
+A new dependency requires technical justification and analysis of its transitive graph.

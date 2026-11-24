@@ -12,7 +12,7 @@ use ii::{
     kitty,
     scene::Scene,
     theme::DARK,
-    vram::{Payload, Table, compute_tag},
+    vram::{Cache, Tag},
 };
 
 /// Synthetic dense markup chunk (65% formulas and diagrams, 10–20B delimiter distance).
@@ -118,36 +118,28 @@ fn bench_stream_frontends(c: &mut Criterion) {
 }
 
 fn bench_cache_hit_zero_alloc(c: &mut Criterion) {
-    let payload = b"\\sum_{k=1}^{n} k^2 = \\frac{n(n+1)(2n+1)}{6}";
-    let tag = compute_tag(8, 16, 640, 0, [255, 255, 255], payload);
-
-    let mut tbl = Table::new();
-    tbl.insert(
-        tag,
-        Payload {
-            image_id: 42,
-            cols: 12,
-            rows: 2,
-        },
-    );
+    let Some(tag) = Tag::new(42) else { return };
+    let mut cache = Cache::new();
+    let rgba = vec![0xff; 96 * 32 * 4];
+    cache.insert(tag, 12, 2, 96, 32, &rgba);
 
     let mut arena = Vec::with_capacity(4096);
 
     let mut group = c.benchmark_group("cache");
     group.throughput(Throughput::Elements(1));
-    group.bench_function("vram_l0_lookup_and_placeholder", |b| {
+    group.bench_function("vram_l1_lookup_and_placeholder", |b| {
         b.iter(|| {
-            let hit = tbl.lookup(black_box(tag));
+            let hit = cache.lookup(black_box(tag));
             arena.clear();
             if let Some(p) = hit {
                 kitty::emit_placeholder(
-                    p.image_id,
+                    tag.image_id().get(),
                     black_box(p.cols),
                     black_box(p.rows),
                     &mut arena,
                 );
             }
-            black_box((hit, arena.len()))
+            black_box((hit.map(|p| p.rgba.len()), arena.len()))
         });
     });
     group.finish();

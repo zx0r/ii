@@ -15,12 +15,11 @@ use ii::{
         encode_dual_response, encode_error, encode_extmarks,
     },
     kitty::{self, StageParams},
-    layout::{LinearScale, TableMetrics, compute_table_widths},
     raster::unpremultiply,
     scene::{GlyphRun, Rect, RenderScratch, Scene, Verb},
     theme::{self, ColorToken, DARK, LIGHT, Rgba, SemanticRole},
-    tty::{Metrics, Term, luminance, parse_osc_rgb, render_ansi},
-    vram::{Cache, Payload, Table, Tag, compute_tag},
+    tty::{Metrics, Term, luminance, parse_osc_rgb},
+    vram::{Cache, Tag},
 };
 
 fn runner() -> TestRunner {
@@ -119,48 +118,24 @@ fn scene_utf8_clamp_series_and_scratch_rss_cap() {
 }
 
 #[test]
-fn vram_l0_plru_eviction_and_l1_capacity_bounds() {
+fn vram_cache_eviction_and_capacity_bounds() {
     let make_tag =
-        |val: u64| Tag::new(val).unwrap_or_else(|| compute_tag(8, 16, 80, 0, [0; 3], &[]));
+        |val| Tag::new(val).unwrap_or_else(|| unreachable!("test supplies nonzero tags"));
 
-    let mut tbl = Table::new();
-    for idx in 0..4u32 {
-        let evicted = tbl.insert(
-            make_tag(7 + u64::from(idx) * 64),
-            Payload {
-                image_id: 10 + idx,
-                cols: 2,
-                rows: 1,
-            },
-        );
-        assert_eq!(evicted, None);
+    let mut ways = Cache::new();
+    for value in 0..4 {
+        ways.insert(make_tag(7 + value * 1024), 2, 1, 16, 16, &[0xAA; 64]);
     }
-    assert!(tbl.lookup(make_tag(7)).is_some());
-    assert!(tbl.lookup(make_tag(7 + 128)).is_some());
-    assert!(tbl.lookup(make_tag(7 + 192)).is_some());
-
-    let victim = tbl.insert(
-        make_tag(7 + 256),
-        Payload {
-            image_id: 99,
-            cols: 3,
-            rows: 2,
-        },
-    );
+    for value in [0, 2, 3] {
+        assert!(ways.lookup(make_tag(7 + value * 1024)).is_some());
+    }
+    ways.insert(make_tag(7 + 4 * 1024), 2, 1, 16, 16, &[0xBB; 64]);
+    assert!(ways.lookup(make_tag(7 + 1024)).is_none());
     assert_eq!(
-        victim,
-        Some(Payload {
-            image_id: 11,
-            cols: 2,
-            rows: 1
-        })
+        ways.lookup(make_tag(7 + 4 * 1024))
+            .map(|hit| hit.rgba.as_slice()),
+        Some(&[0xBB; 64][..])
     );
-    assert_eq!(tbl.lookup(make_tag(7 + 64)), None);
-    assert_eq!(tbl.lookup(make_tag(7 + 256)).map(|p| p.image_id), Some(99));
-
-    tbl.invalidate();
-    assert_eq!(tbl.lookup(make_tag(7 + 256)), None);
-
     let mut cache = Cache::new();
     let base = 1u64 << 6;
     let outlier = vec![0xAA; Cache::MAX_RETAINED_SLOT_CAP + 4096];
@@ -178,19 +153,11 @@ fn vram_l0_plru_eviction_and_l1_capacity_bounds() {
 
 #[test]
 fn prop_vram_tag_and_image_id_never_zero() {
-    let strat = (
-        any::<u16>(),
-        any::<u16>(),
-        any::<u16>(),
-        any::<u8>(),
-        any::<[u8; 3]>(),
-        prop_vec(any::<u8>(), 0..256),
-    );
-    let res = runner().run(&strat, |(cw, ch, cols, kind, rgb, payload)| {
-        let tag = compute_tag(cw, ch, cols, kind, rgb, &payload);
-        prop_assert_ne!(tag.get(), 0);
-        let id = tag.image_id().get();
-        prop_assert!((1..=0x00FF_FFFF).contains(&id));
+    let res = runner().run(&(1..=u64::MAX), |value| {
+        if let Some(tag) = Tag::new(value) {
+            prop_assert_eq!(tag.get(), value);
+            prop_assert_ne!(tag.image_id().get(), 0);
+        }
         Ok(())
     });
     assert!(res.is_ok(), "{res:?}");
@@ -380,7 +347,7 @@ fn kitty_base64_chunking_tmux_delete_and_placeholder() {
 }
 
 #[test]
-fn tty_osc_parse_luminance_and_render_ansi_newline_invariant() {
+fn tty_osc_parse_and_luminance() {
     assert_eq!(parse_osc_rgb(b"\x1b]11;rgb:1e1e/1e1e/2"), None);
     assert_eq!(
         parse_osc_rgb(b"\x1b]11;rgb:1e1e/1e1e/2e2e\x07"),
@@ -397,69 +364,6 @@ fn tty_osc_parse_luminance_and_render_ansi_newline_invariant() {
     metrics.cell_w = 2;
     assert_eq!(metrics.max_width_px(), u16::MAX);
     assert_eq!(Term::default().metrics, Metrics::FALLBACK);
-
-    // Trailing newline before span must not duplicate into `\n\n` after SGR_RESET.
-    let mut out = Vec::new();
-    let src = b"line1\n$$x$$\nline2";
-    let spans = [SpanCoord {
-        outer_start: 6,
-        outer_end: 11,
-        image_id: 7,
-        cols: 1,
-        rows: 1,
-    }];
-    render_ansi(src, &spans, &DARK, &mut out);
-    assert!(!out.windows(2).any(|w| w == b"\n\n"));
-    assert!(!out.windows(5).any(|w| w == b"$$x$$"));
-
-    let res = runner().run(&prop_vec(any::<u8>(), 0..128), |buf| {
-        let _ = parse_osc_rgb(&buf);
-        Ok(())
-    });
-    assert!(res.is_ok(), "{res:?}");
-}
-
-#[test]
-fn prop_layout_no_panic_and_exact_width_sum() {
-    let scale_strat = (
-        any::<f32>(),
-        any::<f32>(),
-        any::<f32>(),
-        any::<f32>(),
-        any::<f32>(),
-        0usize..128,
-    );
-    let res = runner().run(&scale_strat, |(d0, d1, r0, r1, val, count)| {
-        let mut ticks = Vec::new();
-        let scale = LinearScale::new(d0, d1, r0, r1);
-        let _ = scale.map(val);
-        scale.compute_ticks(count, &mut ticks);
-        prop_assert!(ticks.len() <= 64);
-        Ok(())
-    });
-    assert!(res.is_ok(), "{res:?}");
-
-    let tbl_strat = (
-        0usize..32,
-        prop_vec(0usize..500, 0..128),
-        any::<f32>(),
-        any::<f32>(),
-        any::<f32>(),
-    );
-    let res = runner().run(&tbl_strat, |(cols, lens, cw, pad, max_w)| {
-        let mut widths = Vec::new();
-        let metrics = compute_table_widths(cols, &lens, cw, pad, max_w, &mut widths);
-        if cols == 0 || !cw.is_finite() || !pad.is_finite() || !max_w.is_finite() {
-            prop_assert_eq!(metrics, TableMetrics::default());
-            prop_assert!(widths.is_empty());
-        } else {
-            prop_assert_eq!(widths.len(), cols);
-            let sum: f32 = widths.iter().sum();
-            prop_assert!((metrics.total_width - sum).abs() <= 1e-2);
-        }
-        Ok(())
-    });
-    assert!(res.is_ok(), "{res:?}");
 }
 
 #[test]

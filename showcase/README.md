@@ -1,7 +1,7 @@
 # Rendering and scrolling stands
 
-`scenarios/` contains 30 deterministic demonstration files. The incident and
-telemetry data are synthetic demonstrations, not production measurements.
+`showcase/` contains the checked-in demonstration corpus. The generator writes
+30 additional deterministic files, including synthetic incident and telemetry data.
 
 - `incident.*`: 96 checkpoints, wrapped multilingual prose, tasks, callouts,
   formulas and native tables; markers `SCROLL-BEGIN`, `ANCHOR-000`…`ANCHOR-095`,
@@ -18,7 +18,8 @@ telemetry data are synthetic demonstrations, not production measurements.
   compressed payloads. The preview shows supported metadata, not an extraction UI.
 - `queueing.typ` demonstrates rendered headings, a Typst fraction and a native measurement table. No Typst code is executed.
 
-Rebuild inputs with `python3 showcase/build_stands.py` (Python standard library).
+Generate the additional files with `python3 showcase/checks/build_stands.py`.
+The verifier also generates them automatically in a temporary directory.
 
 ```sh
 cargo +stable build
@@ -38,10 +39,10 @@ one optimized executable on identical corpus bytes. Reports include span counts:
 different counts must be explained before comparing throughput as equivalent work.
 GiB/s here means source bytes scanned, not terminal rendering throughput.
 
-For the editor test, run an isolated `ii --daemon --socket <private-path>` and:
+For the editor test, use the PTY runner with its own daemon and fixtures:
 
 ```sh
-II_ROOT="$PWD" II_SOCKET="<private-path>" nvim --headless -u NONE -l showcase/checks/nvim.lua
+python3 showcase/checks/nvim_ui.py --binary target/debug/ii
 ```
 
 `checks/latest.json` records local timings and the binary path used for the run;
@@ -50,12 +51,14 @@ these are not universal performance promises. `checks/scan-comparison.csv` recor
 ## Yazi input and graphics regression
 
 ```sh
-python3 showcase/checks/yazi.py --binary target/release/ii --report showcase/checks/yazi-latest.json
+python3 showcase/checks/yazi.py --binary target/release/ii
+python3 showcase/checks/yazi.py --binary target/release/ii --notebook
 ```
 
 This runs real Yazi with private configuration in a controlling PTY, sends 40 arrow
 keys and 40 scroll keys, answers capability queries and parses every output packet.
 It checks that every graphic command suppresses responses, no UI redraw interrupts
 an APC, no Base64 or repeated arrow letters appear as text, input remains raw, and
-Yazi exits normally. The old competing CLI writer failed this test. The main-loop
-publication passes. A real emulator is still needed to assess visual appearance.
+Yazi exits normally. The notebook run scrolls across the first chart and back,
+checks row and column selectors in the TUI output, and counts redraws that reused
+existing images. A real emulator is needed to assess pixel appearance.

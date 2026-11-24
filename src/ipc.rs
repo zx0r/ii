@@ -197,22 +197,28 @@ impl Extmark {
 
 pub fn encode_dual_response(cmd: Cmd, apc: &[u8], text: &[u8], out: &mut Vec<u8>) {
     let total = apc.len().saturating_add(text.len());
-    let (Ok(payload_len), Ok(apc_len)) = (u32::try_from(total), u32::try_from(apc.len())) else {
-        encode_error(cmd as u16, b"response too large", out);
-        return;
-    };
-    if payload_len > MAX_PAYLOAD {
+    if total > MAX_PAYLOAD as usize {
         encode_error(cmd as u16, b"response exceeds limit", out);
         return;
     }
-    let mut hdr = Header::new(cmd, payload_len);
-    hdr.command = (cmd as u16) | RESP_FLAG;
-    hdr.flags = apc_len;
     out.clear();
     out.reserve(32 + total);
-    out.extend_from_slice(&hdr.to_le_bytes());
+    out.resize(32, 0);
     out.extend_from_slice(apc);
     out.extend_from_slice(text);
+    finish_dual_response(cmd, apc.len(), out);
+}
+
+pub(crate) fn finish_dual_response(cmd: Cmd, apc_len: usize, out: &mut Vec<u8>) {
+    if out.len() - 32 > MAX_PAYLOAD as usize {
+        encode_error(cmd as u16, b"response exceeds limit", out);
+        return;
+    }
+    let payload_len = u32::try_from(out.len() - 32).unwrap_or(MAX_PAYLOAD);
+    let mut hdr = Header::new(cmd, payload_len);
+    hdr.command = (cmd as u16) | RESP_FLAG;
+    hdr.flags = u32::try_from(apc_len).unwrap_or(payload_len);
+    out[..32].copy_from_slice(&hdr.to_le_bytes());
 }
 
 pub fn encode_error(cmd: u16, msg: &[u8], out: &mut Vec<u8>) {
@@ -357,11 +363,17 @@ pub fn exchange(
     read_exact(fd.as_fd(), &mut resp_hdr)?;
     let parsed = Header::from_le_bytes(&resp_hdr);
     parsed.validate()?;
-    if parsed.command != header.command | RESP_FLAG
-        || parsed.req_id_lo != header.req_id_lo
+    if parsed.req_id_lo != header.req_id_lo
         || parsed.req_id_hi != header.req_id_hi
         || parsed.flags > parsed.payload_len
     {
+        return Err(Error::InvalidState);
+    }
+    let expected = header.command | RESP_FLAG;
+    if parsed.command == expected | ERR_FLAG && parsed.flags == 0 {
+        return Err(Error::Remote(header.command));
+    }
+    if parsed.command != expected {
         return Err(Error::InvalidState);
     }
 

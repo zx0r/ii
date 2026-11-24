@@ -156,8 +156,9 @@ fn stage_or_fallback(
     scene.text_pool.truncate(start);
     if !is_chem {
         let mut healed = Vec::with_capacity(raw_src.len().saturating_add(64));
-        if compile_latex_streaming(raw_src, display, palette, &mut healed, &mut scene.text_pool)
-            .is_ok()
+        let repaired = heal::heal(raw_src, &mut healed);
+        if repaired != raw_src
+            && compile_latex(repaired, display, palette, &mut scene.text_pool).is_ok()
         {
             let (svg_w, svg_h) = svg::extract_svg_dimensions(&scene.text_pool[start..]);
             if scene.commit_svg(0.0, scene.height, svg_w, svg_h, start) {
@@ -252,13 +253,19 @@ pub fn document_to_markdown(src: &[u8], out: &mut Vec<u8>) -> Result<(), Error> 
             out.extend_from_slice(marker);
             out.extend_from_slice(body.as_bytes());
         } else {
-            out.extend_from_slice(
-                line.replace("\\[", "$$")
-                    .replace("\\]", "$$")
-                    .replace("\\(", "$")
-                    .replace("\\)", "$")
-                    .as_bytes(),
-            );
+            let bytes = line.as_bytes();
+            let mut start = 0;
+            for pos in memchr::memchr_iter(b'\\', bytes) {
+                let marker: &[u8] = match bytes.get(pos + 1) {
+                    Some(b'[' | b']') => b"$$",
+                    Some(b'(' | b')') => b"$",
+                    _ => continue,
+                };
+                out.extend_from_slice(&bytes[start..pos]);
+                out.extend_from_slice(marker);
+                start = pos + 2;
+            }
+            out.extend_from_slice(&bytes[start..]);
         }
         out.push(b'\n');
     }

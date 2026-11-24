@@ -53,27 +53,75 @@ fn emit_mono_block(buf: &[u8], color: ColorToken, font_px: u16, bordered: bool, 
     scene.height = line_y + 6.0;
 }
 
+const MIME_KEYS: [&[u8]; 8] = [
+    b"image/svg+xml",
+    b"image/png",
+    b"text/latex",
+    b"application/vnd.vegalite.v6+json",
+    b"application/vnd.vegalite.v5+json",
+    b"application/vnd.plotly.v1+json",
+    b"text/markdown",
+    b"text/plain",
+];
+
+const MIME_TAGS: [&[u8]; MIME_KEYS.len()] = [
+    b"svg", b"png", b"tex", b"vl", b"vl", b"plotly", b"", b"text",
+];
+
+fn mime(data: &[u8]) -> impl Iterator<Item = (&[u8], &[u8])> {
+    MIME_TAGS
+        .into_iter()
+        .zip(json::get_fields(data, MIME_KEYS))
+        .filter_map(|(tag, value)| Some((tag, value?)))
+}
+
+fn cell_fields(cell: &[u8]) -> [Option<&[u8]>; 3] {
+    json::get_fields(cell, [b"cell_type", b"source", b"outputs"])
+}
+
+fn output_fields(output: &[u8]) -> [Option<&[u8]>; 3] {
+    json::get_fields(output, [b"data", b"text", b"evalue"])
+}
+
+fn collect_mime(value: &[u8], buf: &mut Vec<u8>) {
+    if value.trim_ascii().starts_with(b"{") {
+        buf.clear();
+        buf.extend_from_slice(value);
+    } else {
+        collect_json_lines(value, buf);
+    }
+}
+
 fn emit_output(out_obj: &[u8], buf: &mut Vec<u8>, palette: &theme::Palette, scene: &mut Scene) {
-    if let Some(data) = json::get_field(out_obj, b"data") {
-        if let Some(raw_svg) = json::get_field(data, b"image/svg+xml") {
-            collect_json_lines(raw_svg, buf);
-            let _ = fmt::dispatch_with_palette(Kind::Svg, buf, palette, scene);
-        } else if let Some(raw_tex) = json::get_field(data, b"text/latex") {
-            collect_json_lines(raw_tex, buf);
-            let _ = fmt::dispatch_with_palette(Kind::Tex, buf, palette, scene);
-        } else if let Some(raw_md) = json::get_field(data, b"text/markdown") {
-            collect_json_lines(raw_md, buf);
-            let _ = fmt::dispatch_with_palette(Kind::Md, buf, palette, scene);
-        } else if let Some(raw_txt) = json::get_field(data, b"text/plain") {
-            collect_json_lines(raw_txt, buf);
-            emit_mono_block(buf, ColorToken::FG_MUTED, 12, false, scene);
+    let [data, stream, error] = output_fields(out_obj);
+    if let Some(data) = data {
+        for (tag, value) in mime(data) {
+            let kind = match tag {
+                b"svg" => Kind::Svg,
+                b"tex" => Kind::Tex,
+                b"vl" | b"plotly" => Kind::Chart,
+                b"" => Kind::Md,
+                b"text" => {
+                    collect_mime(value, buf);
+                    emit_mono_block(buf, ColorToken::FG_MUTED, 12, false, scene);
+                    break;
+                }
+                // PNG is transported as pixels by the document compositor.
+                _ => continue,
+            };
+            collect_mime(value, buf);
+            if fmt::dispatch_with_palette(kind, buf, palette, scene).is_ok() {
+                break;
+            }
         }
-    } else if let Some(stream) = json::get_field(out_obj, b"text") {
-        collect_json_lines(stream, buf);
-        emit_mono_block(buf, ColorToken::FG_MUTED, 12, false, scene);
-    } else if let Some(evalue) = json::get_field(out_obj, b"evalue") {
-        collect_json_lines(evalue, buf);
-        emit_mono_block(buf, ColorToken::ACCENT_RED, 12, false, scene);
+    } else if let Some(value) = stream.or(error) {
+        collect_json_lines(value, buf);
+        let color = if stream.is_some() {
+            ColorToken::FG_MUTED
+        } else {
+            ColorToken::ACCENT_RED
+        };
+        emit_mono_block(buf, color, 12, false, scene);
     }
 }
 
@@ -98,10 +146,10 @@ pub fn parse_with_palette(
     let mut cell_buf = Vec::with_capacity(4096);
 
     for cell in json::iter_array(cells) {
-        let is_md = json::get_field(cell, b"cell_type")
-            .is_some_and(|cell_type| cell_type.trim_ascii() == b"\"markdown\"");
+        let [kind, source, outputs] = cell_fields(cell);
+        let is_md = kind == Some(b"\"markdown\"");
 
-        if let Some(source) = json::get_field(cell, b"source") {
+        if let Some(source) = source {
             collect_json_lines(source, &mut cell_buf);
             if is_md {
                 let _ = fmt::dispatch_with_palette(Kind::Md, &cell_buf, palette, scene);
@@ -110,7 +158,7 @@ pub fn parse_with_palette(
             }
         }
 
-        if let Some(outputs) = json::get_field(cell, b"outputs") {
+        if let Some(outputs) = outputs {
             for out_obj in json::iter_array(outputs) {
                 emit_output(out_obj, &mut cell_buf, palette, scene);
             }
@@ -122,7 +170,7 @@ pub fn parse_with_palette(
 /// Normalize notebook cells and MIME alternatives into the native document path.
 ///
 /// # Errors
-/// Returns `JsonNav` when the notebook has no cells array or invalid string payloads.
+/// Returns `JsonNav` when the notebook has no cells array or `ResourceLimit` if output exceeds the document budget.
 pub fn to_markdown(src: &[u8], out: &mut Vec<u8>) -> Result<(), Error> {
     to_markdown_mapped(src, out, |_, _, _, _| {})
 }
@@ -130,7 +178,7 @@ pub fn to_markdown(src: &[u8], out: &mut Vec<u8>) -> Result<(), Error> {
 /// Normalize with original JSON cell ranges and normalized byte ranges.
 ///
 /// # Errors
-/// Returns `JsonNav` when the notebook has no cells array.
+/// Returns `JsonNav` when the notebook has no cells array or `ResourceLimit` if output exceeds the document budget.
 pub fn to_markdown_mapped(
     src: &[u8],
     out: &mut Vec<u8>,
@@ -141,19 +189,21 @@ pub fn to_markdown_mapped(
     for cell in json::iter_array(cells) {
         let start = out.len();
         let offset = cell.as_ptr().addr() - src.as_ptr().addr();
-        let markdown = json::get_field(cell, b"cell_type").is_some_and(|v| v == b"\"markdown\"");
-        if let Some(source) = json::get_field(cell, b"source") {
+        let [kind, source, outputs] = cell_fields(cell);
+        let markdown = kind == Some(b"\"markdown\"");
+        if let Some(source) = source {
             collect_json_lines(source, &mut text);
             if markdown {
+                check_output(out, text.len() + 2)?;
                 out.extend_from_slice(&text);
             } else {
-                fenced(&text, b"text", out);
+                fenced(&text, b"text", out, 2)?;
             }
             out.extend_from_slice(b"\n\n");
         }
-        if let Some(outputs) = json::get_field(cell, b"outputs") {
+        if let Some(outputs) = outputs {
             for output in json::iter_array(outputs) {
-                output_markdown(output, &mut text, out);
+                output_markdown(output, &mut text, out)?;
             }
         }
         cell_range(offset, offset + cell.len(), start, out.len());
@@ -161,57 +211,53 @@ pub fn to_markdown_mapped(
     Ok(())
 }
 
-fn output_markdown(output: &[u8], text: &mut Vec<u8>, out: &mut Vec<u8>) {
-    if let Some(data) = json::get_field(output, b"data") {
-        let alternatives: &[(&[u8], &[u8])] = &[
-            (b"image/svg+xml", b"svg"),
-            (b"image/png", b"png"),
-            (b"text/latex", b"tex"),
-            (b"application/vnd.vegalite.v6+json", b"vl"),
-            (b"application/vnd.vegalite.v5+json", b"vl"),
-            (b"application/vnd.plotly.v1+json", b"plotly"),
-            (b"text/markdown", b""),
-            (b"text/plain", b"text"),
-        ];
-        for &(mime, tag) in alternatives {
-            if let Some(value) = json::get_field(data, mime) {
-                if value.trim_ascii().starts_with(b"{") {
-                    text.clear();
-                    text.extend_from_slice(value);
-                } else {
-                    collect_json_lines(value, text);
-                }
-                if tag == b"png" {
-                    let Some(bytes) = decode_base64(text) else {
-                        continue;
-                    };
-                    fenced(&bytes, tag, out);
-                } else if tag.is_empty() {
-                    out.extend_from_slice(text);
-                } else {
-                    fenced(text, tag, out);
-                }
-                out.extend_from_slice(b"\n\n");
-                break;
+fn output_markdown(output: &[u8], text: &mut Vec<u8>, out: &mut Vec<u8>) -> Result<(), Error> {
+    let [data, stream, error] = output_fields(output);
+    if let Some(data) = data {
+        for (tag, value) in mime(data) {
+            collect_mime(value, text);
+            if tag == b"png" {
+                let Some(bytes) = decode_base64(text) else {
+                    continue;
+                };
+                fenced(&bytes, tag, out, 2)?;
+            } else if tag.is_empty() {
+                check_output(out, text.len() + 2)?;
+                out.extend_from_slice(text);
+            } else {
+                fenced(text, tag, out, 2)?;
             }
+            out.extend_from_slice(b"\n\n");
+            break;
         }
-    } else if let Some(value) =
-        json::get_field(output, b"text").or_else(|| json::get_field(output, b"evalue"))
-    {
+    } else if let Some(value) = stream.or(error) {
         collect_json_lines(value, text);
-        fenced(text, b"text", out);
+        fenced(text, b"text", out, 0)?;
     }
+    Ok(())
 }
 
-fn fenced(text: &[u8], tag: &[u8], out: &mut Vec<u8>) {
+const fn check_output(out: &[u8], append: usize) -> Result<(), Error> {
+    if out.len().saturating_add(append) > super::MAX_DOCUMENT_BYTES {
+        return Err(Error::ResourceLimit);
+    }
+    Ok(())
+}
+
+fn fenced(text: &[u8], tag: &[u8], out: &mut Vec<u8>, trailing: usize) -> Result<(), Error> {
     // Pick a fence longer than any run in the payload so code cannot become markup.
     let mut longest = 0usize;
-    let mut run = 0;
-    for &byte in text {
-        run = if byte == b'`' { run + 1 } else { 0 };
-        longest = longest.max(run);
+    let mut tail = text;
+    while let Some(start) = memchr::memchr(b'`', tail) {
+        let len = 1 + tail[start + 1..]
+            .iter()
+            .take_while(|&&byte| byte == b'`')
+            .count();
+        longest = longest.max(len);
+        tail = &tail[start + len..];
     }
     let count = longest.saturating_add(1).max(3);
+    check_output(out, 2 * count + tag.len() + text.len() + 3 + trailing)?;
     out.resize(out.len() + count, b'`');
     out.extend_from_slice(tag);
     out.push(b'\n');
@@ -221,6 +267,7 @@ fn fenced(text: &[u8], tag: &[u8], out: &mut Vec<u8>) {
     }
     out.resize(out.len() + count, b'`');
     out.push(b'\n');
+    Ok(())
 }
 
 // Notebook MIME data is Base64 text. Reject malformed padding and trailing bits;

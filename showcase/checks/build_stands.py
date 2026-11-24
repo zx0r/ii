@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Rebuild deterministic demonstration inputs using only the Python standard library."""
+import argparse
 import base64
 import csv
 import io
@@ -12,19 +13,19 @@ import zlib
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-OUT = HERE / "scenarios"
-
-
-def write(name, text):
-    (OUT / name).write_text(text, encoding="utf-8")
+OUT = HERE.parent / "scenarios"
 
 
 def chunk(kind, data):
     return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
 
 
-def build():
-    OUT.mkdir(exist_ok=True)
+def build(out=OUT):
+    out.mkdir(parents=True, exist_ok=True)
+
+    def write(name, text):
+        (out / name).write_text(text, encoding="utf-8")
+
     sections = ["# Checkout service incident review\n\nSCROLL-BEGIN\n"]
     for minute in range(96):
         latency = 28 + 170 * math.exp(-((minute - 38) / 12) ** 2)
@@ -121,7 +122,7 @@ The final observation is LATEX-END.
     png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))
     png += chunk(b"tEXt", b"Description\0Checkout incident heatmap: x=minute 0..95; y=replica cohort; red=high lag")
     png += chunk(b"IDAT", zlib.compress(pixels, 9)) + chunk(b"IEND", b"")
-    (OUT / "incident-heatmap.png").write_bytes(png)
+    (out / "incident-heatmap.png").write_bytes(png)
     cells = []
     for i in range(16):
         cells.append({"cell_type": "markdown", "metadata": {}, "source": [
@@ -141,10 +142,10 @@ The final observation is LATEX-END.
                       "source": [f"requests = {1400+i*7}\n", "print(requests)\n"], "outputs": outputs})
     notebook = {"nbformat": 4, "nbformat_minor": 5, "metadata": {"kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"}}, "cells": cells}
     write("analysis.ipynb", json.dumps(notebook, ensure_ascii=False, indent=2) + "\n")
-    payloads = {"incident/report.md": document.encode(), "incident/telemetry.csv": (OUT / "telemetry.csv").read_bytes(),
+    payloads = {"incident/report.md": document.encode(), "incident/telemetry.csv": (out / "telemetry.csv").read_bytes(),
                 "incident/latency.vl": json.dumps(vega).encode(), "incident/checksums.txt": b"Capture collected at 2026-11-23T00:00:00Z\n"}
     for ext in ["zip", "jar"]:
-        with zipfile.ZipFile(OUT / ("evidence." + ext), "w", zipfile.ZIP_DEFLATED) as archive:
+        with zipfile.ZipFile(out / ("evidence." + ext), "w", zipfile.ZIP_DEFLATED) as archive:
             contents = dict(payloads)
             if ext == "jar":
                 contents["META-INF/MANIFEST.MF"] = b"Manifest-Version: 1.0\r\nImplementation-Title: Incident evidence\r\n\r\n"
@@ -164,7 +165,7 @@ The final observation is LATEX-END.
         rows.writerow([name, "sha256=" + digest, len(value)])
     rows.writerow(["incident_evidence-1.0.0.dist-info/RECORD", "", ""])
     wheel["incident_evidence-1.0.0.dist-info/RECORD"] = record.getvalue().encode()
-    with zipfile.ZipFile(OUT / "incident_evidence-1.0.0-py3-none-any.whl", "w") as archive:
+    with zipfile.ZipFile(out / "incident_evidence-1.0.0-py3-none-any.whl", "w") as archive:
         for name, value in wheel.items():
             archive.writestr(zipfile.ZipInfo(name, (2026, 11, 23, 0, 0, 0)), value)
     raw = io.BytesIO()
@@ -173,13 +174,13 @@ The final observation is LATEX-END.
             info = tarfile.TarInfo(name)
             info.size, info.mtime, info.mode = len(data), 1795392000, 0o644
             archive.addfile(info, io.BytesIO(data))
-    (OUT / "evidence.tar").write_bytes(raw.getvalue())
+    (out / "evidence.tar").write_bytes(raw.getvalue())
     import gzip
     import bz2
     import lzma
     for ext, data in [("tgz", gzip.compress(raw.getvalue(), mtime=0)), ("tbz2", bz2.compress(raw.getvalue())),
                       ("txz", lzma.compress(raw.getvalue()))]:
-        (OUT / ("evidence." + ext)).write_bytes(data)
+        (out / ("evidence." + ext)).write_bytes(data)
     # A Zstandard frame containing uncompressed raw blocks, per the frame specification.
     data = raw.getvalue()
     frame = b"\x28\xb5\x2f\xfd\xa0" + struct.pack("<I", len(data))
@@ -187,9 +188,11 @@ The final observation is LATEX-END.
         block = data[offset:offset+131072]
         header = len(block) << 3 | int(offset + len(block) == len(data))
         frame += header.to_bytes(3, "little") + block
-    (OUT / "evidence.tzst").write_bytes(frame)
-    print(f"Built {len(list(OUT.iterdir()))} demonstration inputs in {OUT}")
+    (out / "evidence.tzst").write_bytes(frame)
+    print(f"Built {len(list(out.iterdir()))} demonstration inputs in {out}")
 
 
 if __name__ == "__main__":
-    build()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", type=Path, default=OUT)
+    build(parser.parse_args().output)

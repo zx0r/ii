@@ -289,7 +289,7 @@ jobs:
           cargo_toml = File.read('Cargo.toml')
           app_name   = cargo_toml[/name\s*=\s*"([^"]+)"/, 1] || "ii"
           class_name = app_name.split(/[-_]/).map(&:capitalize).join
-          desc       = cargo_toml[/description\s*=\s*"([^"]+)"/, 1] || "Fast, zero-overhead terminal state widgets for tmux and status lines"
+          desc       = cargo_toml[/description\s*=\s*"([^"]+)"/, 1] || "Terminal graphical coprocessor: math, diagrams and charts over the Kitty graphics protocol"
           homepage   = (cargo_toml[/homepage\s*=\s*"([^"]+)"/, 1] || "https://github.com/zx0r/#{app_name}").sub(/#.*$/, '')
           repo_url   = cargo_toml[/repository\s*=\s*"([^"]+)"/, 1] || "https://github.com/zx0r/#{app_name}"
 

@@ -44,15 +44,6 @@ rustflags = [
     "-C", "link-arg=-Wl,-headerpad_max_install_names",
 ]
 
-# Windows MSVC: lld-link fastlink with unused reference stripping
-[target.x86_64-pc-windows-msvc]
-linker = "lld-link"
-rustflags = [
-    "-C", "link-arg=/DEBUG:FASTLINK",
-    "-C", "link-arg=/OPT:REF",
-    "-C", "link-arg=/OPT:ICF",
-]
-
 # ------------------------------------------------------------------------------
 # Local command aliases
 # ------------------------------------------------------------------------------

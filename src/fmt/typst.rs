@@ -229,32 +229,68 @@ fn table(src: &str, out: &mut Vec<u8>) -> Option<usize> {
 /// # Errors
 /// Returns UTF-8 and expression resource errors.
 pub fn to_markdown(src: &[u8], out: &mut Vec<u8>) -> Result<(), Error> {
+    normalize(src, out, None)
+}
+
+pub(crate) fn to_markdown_mapped(
+    src: &[u8],
+    out: &mut Vec<u8>,
+    anchors: &mut Vec<(usize, usize, usize, usize)>,
+) -> Result<(), Error> {
+    normalize(src, out, Some(anchors))
+}
+
+fn normalize(
+    src: &[u8],
+    out: &mut Vec<u8>,
+    mut anchors: Option<&mut Vec<(usize, usize, usize, usize)>>,
+) -> Result<(), Error> {
     let src = core::str::from_utf8(src).map_err(|_| Error::LatexCompile)?;
     let mut normalized = Vec::new();
+    let mut boundaries = Vec::new();
     let mut pos = 0;
     while pos < src.len() {
         if src[pos..].starts_with("#table(")
             && let Some(used) = table(&src[pos..], &mut normalized)
         {
             pos += used;
-            continue;
-        }
-        let end = src[pos..].find('\n').map_or(src.len(), |i| pos + i);
-        let line = &src[pos..end];
-        let level = line.bytes().take_while(|&b| b == b'=').count();
-        if (1..=6).contains(&level) && line.as_bytes().get(level) == Some(&b' ') {
-            normalized.resize(normalized.len() + level, b'#');
-            normalized.extend_from_slice(&line.as_bytes()[level..]);
         } else {
-            normalized.extend_from_slice(line.as_bytes());
+            let end = src[pos..].find('\n').map_or(src.len(), |i| pos + i);
+            let line = &src.as_bytes()[pos..end];
+            let level = line.iter().take_while(|&&b| b == b'=').count();
+            if (1..=6).contains(&level) && line.get(level) == Some(&b' ') {
+                normalized.resize(normalized.len() + level, b'#');
+                normalized.extend_from_slice(&line[level..]);
+            } else {
+                normalized.extend_from_slice(line);
+            }
+            if end < src.len() {
+                normalized.push(b'\n');
+            }
+            pos = (end + 1).min(src.len());
         }
-        if end < src.len() {
-            normalized.push(b'\n');
+        if anchors.is_some() {
+            boundaries.push((pos, normalized.len()));
         }
-        pos = (end + 1).min(src.len());
     }
+
+    let mut boundaries = boundaries.into_iter().peekable();
+    let (mut source_start, mut output_start) = (0, out.len());
     let mut pos = 0;
-    while pos < normalized.len() {
+    loop {
+        // A math expression spanning lines consumes the intermediate
+        // boundaries. Keep its original lines attached to a single block.
+        while let Some((source_end, intermediate)) = boundaries.next_if(|&(_, at)| at <= pos) {
+            if intermediate == pos
+                && let Some(anchors) = &mut anchors
+            {
+                anchors.push((source_start, source_end, output_start, out.len()));
+                (source_start, output_start) = (source_end, out.len());
+            }
+        }
+        if pos == normalized.len() {
+            break;
+        }
         if normalized[pos] == b'$'
             && (pos == 0 || normalized[pos - 1] != b'\\')
             && let Some(end) = memchr::memchr(b'$', &normalized[pos + 1..])
@@ -264,13 +300,17 @@ pub fn to_markdown(src: &[u8], out: &mut Vec<u8>) -> Result<(), Error> {
                 core::str::from_utf8(&normalized[pos + 1..end]).map_err(|_| Error::LatexCompile)?;
             let display =
                 expr.starts_with(char::is_whitespace) && expr.ends_with(char::is_whitespace);
-            out.extend_from_slice(if display { b"$$" } else { b"$" });
+            let delimiter: &[u8] = if display { b"$$" } else { b"$" };
+            out.extend_from_slice(delimiter);
             math(expr.trim(), out)?;
-            out.extend_from_slice(if display { b"$$" } else { b"$" });
+            out.extend_from_slice(delimiter);
             pos = end + 1;
         } else {
-            out.push(normalized[pos]);
-            pos += 1;
+            let stop = boundaries.peek().map_or(normalized.len(), |&(_, end)| end);
+            let next =
+                memchr::memchr(b'$', &normalized[pos + 1..stop]).map_or(stop, |i| pos + 1 + i);
+            out.extend_from_slice(&normalized[pos..next]);
+            pos = next;
         }
     }
     Ok(())

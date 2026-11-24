@@ -26,6 +26,8 @@ fn svg_options(src: &[u8]) -> resvg::usvg::Options<'static> {
 }
 
 pub const MAX_DIM: u32 = 4096;
+pub(crate) const MAX_RASTER_BYTES: usize = 32 * 1024 * 1024;
+const MAX_CELLS: u32 = 297;
 const GRID_ROW_H: f32 = 18.0;
 
 const UNPREMUL_LUT: [u32; 256] = {
@@ -58,6 +60,33 @@ pub fn unpremultiply(rgba: &mut [u8]) {
 }
 
 #[inline]
+fn grid_bound(limit: u32, cell: u16) -> u32 {
+    let cell = u32::from(cell.max(1));
+    (limit.min(MAX_DIM) / cell).min(MAX_CELLS) * cell
+}
+
+const fn raster_bytes(w: u32, h: u32) -> Result<usize, Error> {
+    let bytes = (w as usize).saturating_mul(h as usize).saturating_mul(4);
+    if w == 0 || h == 0 || w > MAX_DIM || h > MAX_DIM || bytes > MAX_RASTER_BYTES {
+        return Err(Error::ImageTooLarge { w, h });
+    }
+    Ok(bytes)
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "the bounded pixel budget is exactly representable"
+)]
+fn raster_scale(w: f32, h: f32, cw: u16, ch: u16) -> f32 {
+    // Account for padding to the next cell on both axes.
+    let padding = MAX_DIM * (u32::from(cw) + u32::from(ch));
+    let pixels = (MAX_RASTER_BYTES / 4)
+        .saturating_sub(padding as usize)
+        .max(1);
+    (pixels as f32).sqrt() / w.sqrt() / h.sqrt()
+}
+
+#[inline]
 fn snap_dims(
     raw_w: u32,
     raw_h: u32,
@@ -68,8 +97,8 @@ fn snap_dims(
         return Err(Error::ImageTooLarge { w: raw_w, h: raw_h });
     }
     let (cw, ch) = (u32::from(cell_w.max(1)), u32::from(cell_h.max(1)));
-    let max_cols = (MAX_DIM / cw).max(1);
-    let max_rows = (MAX_DIM / ch).max(1);
+    let max_cols = (MAX_DIM / cw).clamp(1, MAX_CELLS);
+    let max_rows = (MAX_DIM / ch).clamp(1, MAX_CELLS);
     let cols = raw_w.max(1).div_ceil(cw).min(max_cols);
     let rows = raw_h.max(1).div_ceil(ch).min(max_rows);
     let (snap_w, snap_h) = (cols.saturating_mul(cw), rows.saturating_mul(ch));
@@ -77,13 +106,7 @@ fn snap_dims(
         w: snap_w,
         h: snap_h,
     };
-    if snap_w > MAX_DIM || snap_h > MAX_DIM {
-        return Err(too_big);
-    }
-    let bytes = (snap_w as usize)
-        .checked_mul(snap_h as usize)
-        .and_then(|px| px.checked_mul(4))
-        .ok_or(too_big)?;
+    let bytes = raster_bytes(snap_w, snap_h)?;
     Ok((
         u16::try_from(snap_w).map_err(|_| too_big)?,
         u16::try_from(snap_h).map_err(|_| too_big)?,
@@ -91,6 +114,53 @@ fn snap_dims(
         u16::try_from(rows).map_err(|_| too_big)?,
         bytes,
     ))
+}
+
+struct Fit {
+    scale: f32,
+    content: (u16, u16),
+    snapped: (u16, u16, u16, u16, usize),
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "pixel bounds limit positive dimensions to MAX_DIM"
+)]
+fn fit_vector(
+    (width, height): (f32, f32),
+    (max_w, max_h): (u16, u16),
+    (cw, ch): (u16, u16),
+    preferred_scale: f32,
+) -> Result<Fit, Error> {
+    let bound_w = grid_bound(u32::from(max_w.max(cw.max(1))), cw) as u16;
+    let bound_h = grid_bound(u32::from(max_h.max(ch.max(1))), ch) as u16;
+    if !(width.is_finite()
+        && height.is_finite()
+        && width > 0.0
+        && height > 0.0
+        && preferred_scale.is_finite()
+        && preferred_scale > 0.0
+        && bound_w > 0
+        && bound_h > 0)
+    {
+        return Err(Error::SvgParse);
+    }
+    let scale = preferred_scale
+        .min(4.0)
+        .min(f32::from(bound_w) / width)
+        .min(f32::from(bound_h) / height)
+        .min(raster_scale(width, height, cw, ch));
+    let content = (
+        ((width * scale).ceil() as u16).clamp(1, bound_w),
+        ((height * scale).ceil() as u16).clamp(1, bound_h),
+    );
+    let snapped = snap_dims(u32::from(content.0), u32::from(content.1), cw, ch)?;
+    Ok(Fit {
+        scale,
+        content,
+        snapped,
+    })
 }
 
 /// Vector path command for building in-memory icon shapes.
@@ -500,36 +570,14 @@ pub fn rasterize(
     max_width_px: u16,
     rgba: &mut Vec<u8>,
 ) -> Result<(u16, u16, u16, u16), Error> {
-    let max_w = u32::from(max_width_px.max(cell_w.max(1))).min(MAX_DIM);
     let tree = resvg::usvg::Tree::from_data(svg, &svg_options(svg)).map_err(|_| Error::SvgParse)?;
-    let (src_w, src_h) = (tree.size().width(), tree.size().height());
-    if !(src_w.is_finite() && src_h.is_finite() && src_w > 0.0 && src_h > 0.0) {
-        return Err(Error::SvgParse);
-    }
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "max_w <= MAX_DIM (4096) exact in f32"
-    )]
-    let max_w_f = max_w as f32;
-    // Fit both axes rather than clipping the bottom. KGP row diacritics encode
-    // at most 297 rows; account for cell snapping before choosing the scale.
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "bounded pixel dimensions are exact in f32"
-    )]
-    let max_h = ((MAX_DIM / u32::from(cell_h.max(1))).min(297) * u32::from(cell_h.max(1))) as f32;
-    let scale = 1.0_f32.min(max_w_f / src_w).min(max_h / src_h);
-
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "positive scaled dims validated in snap_dims"
-    )]
-    let (raw_w, raw_h) = (
-        ((src_w * scale).ceil() as u32).max(1),
-        ((src_h * scale).ceil() as u32).max(1),
-    );
-    let (w, h, cols, rows, bytes) = snap_dims(raw_w, raw_h, cell_w, cell_h)?;
+    let fit = fit_vector(
+        (tree.size().width(), tree.size().height()),
+        (max_width_px, u16::MAX),
+        (cell_w, cell_h),
+        1.0,
+    )?;
+    let (w, h, cols, rows, bytes) = fit.snapped;
     rgba.clear();
     rgba.resize(bytes, 0);
 
@@ -537,7 +585,7 @@ pub fn rasterize(
         .ok_or(Error::SvgParse)?;
     resvg::render(
         &tree,
-        tiny_skia::Transform::from_scale(scale, scale),
+        tiny_skia::Transform::from_scale(fit.scale, fit.scale),
         &mut pixmap,
     );
     unpremultiply(rgba);
@@ -580,51 +628,38 @@ pub fn rasterize_scene_scaled(
     preferred_scale: f32,
     rgba: &mut Vec<u8>,
 ) -> Result<(u16, u16, u16, u16), Error> {
-    let max_w = u32::from(max_width_px.max(cell_w.max(1))).min(MAX_DIM);
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "max_w <= MAX_DIM (4096) exact in f32"
-    )]
-    let max_w_f = max_w as f32;
-    let src_w = if scene.width.is_finite() && scene.width > 0.0 {
-        scene.width
-    } else {
-        1.0
-    };
-    let src_h = if scene.height.is_finite() && scene.height > 0.0 {
-        scene.height
-    } else {
-        1.0
-    };
-    // Fit both axes rather than clipping the bottom. KGP row diacritics encode
-    // at most 297 rows; account for cell snapping before choosing the scale.
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "bounded pixel dimensions are exact in f32"
-    )]
-    let max_h = ((MAX_DIM / u32::from(cell_h.max(1))).min(297) * u32::from(cell_h.max(1))) as f32;
-    if !preferred_scale.is_finite() || preferred_scale <= 0.0 {
-        return Err(Error::SvgParse);
-    }
-    let scale = preferred_scale
-        .min(4.0)
-        .min(max_w_f / src_w)
-        .min(max_h / src_h);
+    rasterize_scene_fitted(
+        scene,
+        palette,
+        (cell_w, cell_h),
+        (max_width_px, u16::MAX),
+        preferred_scale,
+        rgba,
+    )
+}
 
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "clamped positive finite f32 <= MAX_DIM"
-    )]
-    let raw_w = ((src_w * scale).ceil() as u32).clamp(1, max_w);
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "clamped positive finite f32 <= MAX_DIM"
-    )]
-    let raw_h = ((src_h * scale).ceil() as u32).clamp(1, MAX_DIM);
-
-    let (w, h, cols, rows, bytes) = snap_dims(raw_w, raw_h, cell_w, cell_h)?;
+pub(crate) fn rasterize_scene_fitted(
+    scene: &Scene,
+    palette: &Palette,
+    (cell_w, cell_h): (u16, u16),
+    max_size: (u16, u16),
+    preferred_scale: f32,
+    rgba: &mut Vec<u8>,
+) -> Result<(u16, u16, u16, u16), Error> {
+    let dimension = |value: f32| {
+        if value.is_finite() && value > 0.0 {
+            value
+        } else {
+            1.0
+        }
+    };
+    let fit = fit_vector(
+        (dimension(scene.width), dimension(scene.height)),
+        max_size,
+        (cell_w, cell_h),
+        preferred_scale,
+    )?;
+    let (w, h, cols, rows, bytes) = fit.snapped;
     rgba.clear();
     rgba.resize(bytes, 0);
 
@@ -632,6 +667,7 @@ pub fn rasterize_scene_scaled(
         .ok_or(Error::SvgParse)?;
 
     let metrics = StyleMetrics::from_cell_geometry(cell_w, cell_h);
+    let scale = fit.scale;
     let ts = tiny_skia::Transform::from_scale(scale, scale);
     let mut labels =
         format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}\" height=\"{h}\">");
@@ -691,22 +727,8 @@ pub fn decode_png(src: &[u8], rgba: &mut Vec<u8>) -> Result<(u32, u32), Error> {
     dec.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = dec.read_info().map_err(|_| Error::PngDecode)?;
     let (width, height) = (reader.info().width, reader.info().height);
-    if width == 0 || height == 0 || width > MAX_DIM || height > MAX_DIM {
-        return Err(Error::ImageTooLarge {
-            w: width,
-            h: height,
-        });
-    }
-    let px_count = (width as usize)
-        .checked_mul(height as usize)
-        .ok_or(Error::ImageTooLarge {
-            w: width,
-            h: height,
-        })?;
-    let rgba_len = px_count.checked_mul(4).ok_or(Error::ImageTooLarge {
-        w: width,
-        h: height,
-    })?;
+    let rgba_len = raster_bytes(width, height)?;
+    let px_count = rgba_len / 4;
     let buf_size = reader.output_buffer_size().ok_or(Error::PngDecode)?;
 
     rgba.clear();
@@ -759,12 +781,6 @@ pub struct CanvasLayout {
 /// # Errors
 /// Returns `Error::SvgParse` if intrinsic dimensions are not finite and positive,
 /// or `Error::ImageTooLarge` if snapped bounds exceed `MAX_DIM`.
-#[expect(
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "bounded positive dimension conversions"
-)]
 pub fn scale_down_and_snap(
     intrinsic_w: f32,
     intrinsic_h: f32,
@@ -773,52 +789,24 @@ pub fn scale_down_and_snap(
     cell_w: u16,
     cell_h: u16,
 ) -> Result<CanvasLayout, Error> {
-    if !(intrinsic_w.is_finite()
-        && intrinsic_h.is_finite()
-        && intrinsic_w > 0.0
-        && intrinsic_h > 0.0)
-    {
-        return Err(Error::SvgParse);
-    }
-
-    let max_px_w = f32::from(cols) * f32::from(cell_w);
-    let max_px_h = f32::from(rows) * f32::from(cell_h);
-
-    let scale_x = max_px_w / intrinsic_w;
-    let scale_y = max_px_h / intrinsic_h;
-    let scale = 1.0_f32.min(scale_x).min(scale_y);
-
-    let content_w = ((intrinsic_w * scale).ceil() as u32)
-        .min(max_px_w as u32)
-        .max(1);
-    let content_h = ((intrinsic_h * scale).ceil() as u32)
-        .min(max_px_h as u32)
-        .max(1);
-
-    let grid_cols = content_w.div_ceil(u32::from(cell_w)).max(1) as u16;
-    let grid_rows = content_h.div_ceil(u32::from(cell_h)).max(1) as u16;
-
-    let snap_w = u32::from(grid_cols) * u32::from(cell_w);
-    let snap_h = u32::from(grid_rows) * u32::from(cell_h);
-
-    if snap_w > MAX_DIM || snap_h > MAX_DIM {
-        return Err(Error::ImageTooLarge {
-            w: snap_w,
-            h: snap_h,
-        });
-    }
-
-    let off_x = ((snap_w - content_w) / 2) as f32;
-    let off_y = ((snap_h - content_h) / 2) as f32;
-
+    let fit = fit_vector(
+        (intrinsic_w, intrinsic_h),
+        (
+            cols.max(1).saturating_mul(cell_w.max(1)),
+            rows.max(1).saturating_mul(cell_h.max(1)),
+        ),
+        (cell_w, cell_h),
+        1.0,
+    )?;
+    let (w, h, grid_cols, grid_rows, _) = fit.snapped;
     Ok(CanvasLayout {
-        scale,
+        scale: fit.scale,
         grid_cols,
         grid_rows,
-        snap_w,
-        snap_h,
-        off_x,
-        off_y,
+        snap_w: u32::from(w),
+        snap_h: u32::from(h),
+        off_x: f32::from((w - fit.content.0) / 2),
+        off_y: f32::from((h - fit.content.1) / 2),
     })
 }
 
@@ -839,13 +827,7 @@ pub fn rasterize_svg_snapped(
     let (src_w, src_h) = (tree.size().width(), tree.size().height());
 
     let layout = scale_down_and_snap(src_w, src_h, cols, rows, cell_w, cell_h)?;
-    let byte_len = (layout.snap_w as usize)
-        .checked_mul(layout.snap_h as usize)
-        .and_then(|px| px.checked_mul(4))
-        .ok_or(Error::ImageTooLarge {
-            w: layout.snap_w,
-            h: layout.snap_h,
-        })?;
+    let byte_len = raster_bytes(layout.snap_w, layout.snap_h)?;
 
     rgba_out.clear();
     rgba_out.resize(byte_len, 0);
@@ -874,13 +856,11 @@ pub fn fit_rgba(
     max_w: u16,
     rgba: &mut Vec<u8>,
 ) -> Result<(u16, u16), Error> {
-    let cw = u32::from(cell_w.max(1));
-    let ch = u32::from(cell_h.max(1));
-    if w == 0 || h == 0 || rgba.len() != w as usize * h as usize * 4 {
+    if rgba.len() != raster_bytes(w, h)? {
         return Err(Error::PngDecode);
     }
-    let bound_w = u32::from(max_w).min(MAX_DIM) / cw * cw;
-    let bound_h = (MAX_DIM / ch).min(297) * ch;
+    let bound_w = grid_bound(u32::from(max_w), cell_w);
+    let bound_h = grid_bound(MAX_DIM, cell_h);
     if bound_w == 0 || bound_h == 0 {
         return Err(Error::ImageTooLarge { w, h });
     }
@@ -895,6 +875,9 @@ pub fn fit_rgba(
             .max(1);
     }
     let (sw, sh, _, _, bytes) = snap_dims(dw, dh, cell_w, cell_h)?;
+    if (u32::from(sw), u32::from(sh)) == (w, h) && (dw, dh) == (w, h) {
+        return Ok((sw, sh));
+    }
     let mut dst = vec![0; bytes];
     for y in 0..dh {
         let sy = u64::from(y) * u64::from(h) / u64::from(dh);

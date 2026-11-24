@@ -51,10 +51,6 @@ test *args:
 test-fast *args:
     cargo nextest run --locked --lib --bins --tests --all-features --fail-fast {{ args }}
 
-# Run deterministic snapshot & invariant verification suite
-test-snapshot *args:
-    cargo test --locked --test snapshot --all-features {{ args }} -- --nocapture
-
 # Run tests via standard cargo test harness with full backtraces
 test-all *args:
     env RUST_BACKTRACE=1 cargo test --locked --lib --bins --tests --all-features {{ args }}
@@ -118,6 +114,10 @@ release-small:
 release:
     cargo build --locked --release
     @ls -lh {{ target_dir }}/release/{{ bin }}
+
+# Host-tuned build kept separate from portable release artifacts.
+release-native:
+    env RUSTFLAGS="{{ native }}" cargo build --locked --release --target-dir {{ target_dir }}/native
 
 # Run local cargo-dist release packaging dry run
 dist-plan:

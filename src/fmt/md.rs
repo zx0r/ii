@@ -105,14 +105,21 @@ fn newline(src: &[u8]) -> Option<usize> {
 }
 
 #[inline]
-fn scan_fence(src: &[u8], pos: usize, out: &mut Vec<Span>) -> usize {
-    let line_start = memchr::memrchr(b'\n', &src[..pos]).map_or(0, |i| i + 1);
-    if !src[line_start..pos]
+fn fence_line_start<const CLOSE: bool>(src: &[u8], pos: usize) -> Option<usize> {
+    let start = src[..pos]
         .iter()
-        .all(|&b| b == b' ' || b == b'\t')
-    {
+        .rposition(|&b| {
+            !(matches!(b, b' ' | b'\t') || CLOSE && b != b'\n' && b.is_ascii_whitespace())
+        })
+        .map_or(0, |idx| idx + 1);
+    (start == 0 || src[start - 1] == b'\n').then_some(start)
+}
+
+#[inline]
+fn scan_fence(src: &[u8], pos: usize, out: &mut Vec<Span>) -> usize {
+    let Some(line_start) = fence_line_start::<false>(src, pos) else {
         return pos + 1;
-    }
+    };
     let delimiter = src[pos];
     let count = src[pos..].iter().take_while(|&&b| b == delimiter).count();
     let line_end = newline(&src[pos + count..]).map_or(src.len(), |i| pos + count + i);
@@ -121,18 +128,19 @@ fn scan_fence(src: &[u8], pos: usize, out: &mut Vec<Span>) -> usize {
     let mut search = inner_start;
     while let Some(off) = memchr::memchr(delimiter, &src[search..]) {
         let close = search + off;
-        let start = memchr::memrchr(b'\n', &src[..close]).map_or(0, |i| i + 1);
         let run = src[close..].iter().take_while(|&&b| b == delimiter).count();
-        let end = newline(&src[close + run..]).map_or(src.len(), |i| close + run + i);
         if run >= count
-            && src[start..close].iter().all(u8::is_ascii_whitespace)
-            && src[close + run..end].iter().all(u8::is_ascii_whitespace)
+            && let Some(start) = fence_line_start::<true>(src, close)
         {
-            let outer_end = (end + 1).min(src.len());
-            if let Some(kind) = kind {
-                push_span(out, (line_start, outer_end), (inner_start, start), kind);
+            let after = close + run;
+            let end = newline(&src[after..]).map_or(src.len(), |i| after + i);
+            if src[after..end].iter().all(u8::is_ascii_whitespace) {
+                let outer_end = (end + 1).min(src.len());
+                if let Some(kind) = kind {
+                    push_span(out, (line_start, outer_end), (inner_start, start), kind);
+                }
+                return outer_end;
             }
-            return outer_end;
         }
         search = close + run;
     }
@@ -308,6 +316,120 @@ fn scan_inline_math(src: &[u8], pos: usize, out: &mut Vec<Span>) -> usize {
     inner_s
 }
 
+#[inline]
+const fn is_token(b: u8) -> bool {
+    matches!(b, b'`' | b'$' | b'\\' | b'~')
+}
+
+#[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
+#[inline]
+fn token<const BULK: bool>(src: &[u8]) -> Option<usize> {
+    // SAFETY: this branch is only compiled when NEON is a target feature.
+    unsafe { neon::<BULK>(src) }
+}
+
+#[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
+#[inline]
+#[target_feature(enable = "neon")]
+fn neon<const BULK: bool>(src: &[u8]) -> Option<usize> {
+    use core::arch::aarch64::{
+        vandq_u8, vceqq_u8, vdupq_n_u8, vld1q_u8, vmaxvq_u8, vorrq_u8, vqtbl1q_u8,
+    };
+
+    // Low nibbles are unique. Zero in unused slots cannot match any input with
+    // those nibbles, and the comparison checks the complete byte.
+    const TOKENS: [u8; 16] = [b'`', 0, 0, 0, b'$', 0, 0, 0, 0, 0, 0, 0, b'\\', 0, b'~', 0];
+
+    // SAFETY: the table contains all 16 readable bytes.
+    let table = unsafe { vld1q_u8(TOKENS.as_ptr()) };
+    let mask = vdupq_n_u8(15);
+    let hits = |block: &[u8; 16]| {
+        // SAFETY: a fixed-size slice guarantees 16 readable bytes. The load
+        // accepts unaligned addresses.
+        let bytes = unsafe { vld1q_u8(block.as_ptr()) };
+        vceqq_u8(bytes, vqtbl1q_u8(table, vandq_u8(bytes, mask)))
+    };
+
+    let (blocks, tail) = src.as_chunks::<16>();
+    let mut off = 0;
+    let rest = if BULK {
+        let (wide, last) = blocks.as_chunks::<4>();
+        for [a, b, c, d] in wide {
+            let any = vorrq_u8(vorrq_u8(hits(a), hits(b)), vorrq_u8(hits(c), hits(d)));
+            if vmaxvq_u8(any) != 0 {
+                return src[off..off + 64]
+                    .iter()
+                    .position(|&b| is_token(b))
+                    .map(|i| off + i);
+            }
+            off += 64;
+        }
+        last
+    } else {
+        blocks
+    };
+    for block in rest {
+        if vmaxvq_u8(hits(block)) != 0 {
+            return block.iter().position(|&b| is_token(b)).map(|i| off + i);
+        }
+        off += 16;
+    }
+    tail.iter().position(|&b| is_token(b)).map(|i| off + i)
+}
+
+#[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
+#[inline]
+fn token<const BULK: bool>(src: &[u8]) -> Option<usize> {
+    // SAFETY: this branch is only compiled when SSE2 is a target feature.
+    unsafe { sse2::<BULK>(src) }
+}
+
+#[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
+#[inline]
+#[target_feature(enable = "sse2")]
+fn sse2<const BULK: bool>(src: &[u8]) -> Option<usize> {
+    use core::arch::x86_64::{
+        _mm_cmpeq_epi8, _mm_loadu_si128, _mm_movemask_epi8, _mm_or_si128, _mm_set1_epi8,
+    };
+
+    let backtick = _mm_set1_epi8(i8::from_ne_bytes([b'`']));
+    let dollar = _mm_set1_epi8(i8::from_ne_bytes([b'$']));
+    let slash = _mm_set1_epi8(i8::from_ne_bytes([b'\\']));
+    let tilde = _mm_set1_epi8(i8::from_ne_bytes([b'~']));
+    let (blocks, tail) = src.as_chunks::<16>();
+    for (i, block) in blocks.iter().enumerate() {
+        // SAFETY: a fixed-size slice guarantees 16 readable bytes. The load
+        // accepts unaligned addresses.
+        let bytes = unsafe { _mm_loadu_si128(block.as_ptr().cast()) };
+        let hits = _mm_or_si128(
+            _mm_or_si128(
+                _mm_cmpeq_epi8(bytes, backtick),
+                _mm_cmpeq_epi8(bytes, dollar),
+            ),
+            _mm_or_si128(_mm_cmpeq_epi8(bytes, slash), _mm_cmpeq_epi8(bytes, tilde)),
+        );
+        let mask = _mm_movemask_epi8(hits);
+        if mask != 0 {
+            return Some(i * 16 + mask.trailing_zeros() as usize);
+        }
+    }
+    tail.iter()
+        .position(|&b| is_token(b))
+        .map(|i| blocks.len() * 16 + i)
+}
+
+#[cfg(any(
+    miri,
+    not(any(
+        all(target_arch = "aarch64", target_feature = "neon"),
+        all(target_arch = "x86_64", target_feature = "sse2"),
+    ))
+))]
+#[inline]
+fn token<const BULK: bool>(src: &[u8]) -> Option<usize> {
+    src.iter().position(|&b| is_token(b))
+}
+
 /// Scan document bytes for renderable graphical/math spans (zero alloc after warmup).
 pub fn scan(src: &[u8], out: &mut Vec<Span>) {
     out.clear();
@@ -325,19 +447,16 @@ pub fn scan(src: &[u8], out: &mut Vec<Span>) {
         0usize
     };
 
-    while pos < len {
-        let remaining = &src[pos..];
-        let head = remaining.len().min(16);
-        let token = remaining[..head]
-            .iter()
-            .position(|&b| matches!(b, b'`' | b'$' | b'\\'))
-            .or_else(|| memchr::memchr3(b'`', b'$', b'\\', &remaining[head..]).map(|i| head + i));
-        let Some(rel) = token else {
-            break;
-        };
-        pos += rel;
+    let Some(rel) = token::<true>(&src[pos..]) else {
+        return;
+    };
+    pos += rel;
+
+    loop {
         match src[pos] {
-            b'`' if src[pos..].starts_with(b"```") => pos = scan_fence(src, pos, out),
+            delimiter @ (b'`' | b'~') if src.get(pos + 1..pos + 3) == Some(&[delimiter; 2]) => {
+                pos = scan_fence(src, pos, out);
+            }
             b'`' => {
                 pos += 1;
                 let remaining = &src[pos..];
@@ -363,6 +482,10 @@ pub fn scan(src: &[u8], out: &mut Vec<Span>) {
             b'\\' => pos = (pos + 2).min(len),
             _ => pos += 1,
         }
+        let Some(rel) = token::<false>(&src[pos..]) else {
+            break;
+        };
+        pos += rel;
     }
 }
 
@@ -394,4 +517,26 @@ pub fn parse_with_palette(
         let _ = fmt::dispatch_with_palette(sp.kind(), payload, palette, scene);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_token, token};
+
+    #[test]
+    fn token_kernels_match_scalar_across_lanes_and_tail() {
+        let mut src = [b'a'; 97];
+        for byte in u8::MIN..=u8::MAX {
+            for at in [0, 15, 16, 31, 32, 63, 64, 95, 96] {
+                src[at] = byte;
+                for start in [0, 1, 15] {
+                    let suffix = &src[start..];
+                    let expected = suffix.iter().position(|&byte| is_token(byte));
+                    assert_eq!(token::<false>(suffix), expected);
+                    assert_eq!(token::<true>(suffix), expected);
+                }
+                src[at] = b'a';
+            }
+        }
+    }
 }

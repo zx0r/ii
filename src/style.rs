@@ -5,9 +5,20 @@
 
 use memchr::memchr;
 
-use crate::theme::{Palette, SGR_RESET, SemanticRole};
+use crate::{
+    err::Error,
+    theme::{Palette, SGR_RESET, SemanticRole},
+};
 
 const MAX_TABLE_COLS: usize = 32;
+const MAX_LINE_BYTES: usize = 1024 * 1024;
+
+const fn check_line(line: &[u8], limit: usize) -> Result<(), Error> {
+    if limit != usize::MAX && line.len() > MAX_LINE_BYTES {
+        return Err(Error::ResourceLimit);
+    }
+    Ok(())
+}
 
 /// Stateful fence marker for an incremental prose stream.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -23,7 +34,10 @@ pub struct State {
     pub full_width_tables: bool,
 }
 
-type References = std::collections::BTreeMap<String, (String, String)>;
+pub(crate) type References = std::collections::BTreeMap<String, (String, String)>;
+type Cell<'a> =
+    dyn FnMut(&[u8], usize, &References, &mut Vec<u8>, usize) -> Result<usize, Error> + 'a;
+type InlineMath<'a> = dyn FnMut(core::ops::Range<usize>, &mut Vec<u8>) -> Result<bool, Error> + 'a;
 
 impl State {
     #[must_use]
@@ -45,6 +59,9 @@ impl State {
             return;
         }
         self.prepared = true;
+        if memchr::memchr2(b'[', b'|', src).is_none() {
+            return;
+        }
         if let Ok(text) = core::str::from_utf8(src) {
             let parser = pulldown_cmark::Parser::new_ext(text, pulldown_cmark::Options::all());
             for (name, definition) in parser.reference_definitions().iter() {
@@ -58,6 +75,9 @@ impl State {
                             .map_or_else(String::new, ToString::to_string),
                     ),
                 );
+            }
+            if memchr(b'|', src).is_none() {
+                return;
             }
             for (event, range) in parser.into_offset_iter() {
                 if matches!(
@@ -202,24 +222,40 @@ fn bold(out: &mut Vec<u8>, palette: &Palette, role_: SemanticRole) {
 }
 
 fn inline(src: &[u8], palette: &Palette, out: &mut Vec<u8>, references: &References) {
+    let _ = inline_with_math(src, palette, out, references, None);
+}
+
+pub(crate) fn inline_with_math(
+    src: &[u8],
+    palette: &Palette,
+    out: &mut Vec<u8>,
+    references: &References,
+    mut math: Option<&mut InlineMath<'_>>,
+) -> Result<(), Error> {
     use pulldown_cmark::{BrokenLink, Event, Options, Parser, Tag, TagEnd};
-    if !src
-        .iter()
-        .any(|b| matches!(*b, b'*' | b'_' | b'~' | b'`' | b'[' | b'<' | b'&' | b'\\'))
-    {
+    if !src.iter().any(|&b| {
+        matches!(
+            b,
+            b'*' | b'_' | b'~' | b'`' | b'[' | b'<' | b'&' | b'\\' | 127
+        ) || b < 32 && b != b'\t'
+            || b == b'$' && math.is_some()
+    }) {
         out.extend_from_slice(src);
-        return;
+        return Ok(());
     }
     let Ok(text) = core::str::from_utf8(src) else {
         emit_literal(src, out);
-        return;
+        return Ok(());
     };
     let resolver = |broken: BrokenLink<'_>| {
         references
             .get(&broken.reference.to_lowercase())
             .map(|(url, title)| (url.clone().into(), title.clone().into()))
     };
-    for event in Parser::new_with_broken_link_callback(text, Options::all(), Some(resolver)) {
+    for (event, range) in
+        Parser::new_with_broken_link_callback(text, Options::all(), Some(resolver))
+            .into_offset_iter()
+    {
         match event {
             Event::Text(t) | Event::Html(t) | Event::InlineHtml(t) => {
                 emit_literal(t.as_bytes(), out);
@@ -258,6 +294,11 @@ fn inline(src: &[u8], palette: &Palette, out: &mut Vec<u8>, references: &Referen
             Event::SoftBreak => out.push(b' '),
             Event::HardBreak => out.push(b'\n'),
             Event::InlineMath(t) | Event::DisplayMath(t) => {
+                if let Some(render) = &mut math
+                    && render(range, out)?
+                {
+                    continue;
+                }
                 out.push(b'$');
                 emit_literal(t.as_bytes(), out);
                 out.push(b'$');
@@ -270,6 +311,7 @@ fn inline(src: &[u8], palette: &Palette, out: &mut Vec<u8>, references: &Referen
             _ => {}
         }
     }
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -327,7 +369,7 @@ fn table_sep(line: &[u8]) -> bool {
         })
 }
 
-fn width(src: &[u8]) -> usize {
+pub(crate) fn width(src: &[u8]) -> usize {
     let mut visible = 0;
     let mut pos = 0;
     while pos < src.len() {
@@ -383,7 +425,9 @@ fn table_row(
     references: &References,
     palette: &Palette,
     out: &mut Vec<u8>,
-) {
+    cell: &mut Cell<'_>,
+    limit: &mut usize,
+) -> Result<(), Error> {
     out.extend_from_slice(indent);
     role(out, palette, SemanticRole::Border);
     out.extend_from_slice("│".as_bytes());
@@ -393,7 +437,13 @@ fn table_row(
         let raw = cells.get(idx).copied().unwrap_or(b"");
         rendered.clear();
         clipped.clear();
-        inline(raw, palette, &mut rendered, references);
+        *limit = (*limit).min(cell(
+            raw,
+            widths[idx],
+            references,
+            &mut rendered,
+            out.len(),
+        )?);
         crate::viewport::append(
             &rendered,
             u16::try_from(widths[idx]).unwrap_or(u16::MAX),
@@ -410,6 +460,16 @@ fn table_row(
             Align::Center => (pad / 2, pad - pad / 2),
             Align::Right => (pad, 0),
         };
+        // One cell also emits borders, padding, and up to three SGR changes.
+        if out
+            .len()
+            .saturating_add(pad)
+            .saturating_add(clipped.len())
+            .saturating_add(80)
+            > *limit
+        {
+            return Err(Error::ResourceLimit);
+        }
         out.push(b' ');
         for _ in 0..before {
             out.push(b' ');
@@ -430,6 +490,7 @@ fn table_row(
     }
     out.extend_from_slice(SGR_RESET);
     out.push(b'\n');
+    Ok(())
 }
 
 fn fit_widths(widths: &mut [usize], cols_limit: u16, indent: usize) {
@@ -465,6 +526,14 @@ fn fit_widths(widths: &mut [usize], cols_limit: u16, indent: usize) {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "table shares the caller's styling and byte budget"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "width measurement and row emission share one parsed table"
+)]
 fn emit_table(
     src: &[u8],
     pos: &mut usize,
@@ -473,16 +542,20 @@ fn emit_table(
     references: &References,
     palette: &Palette,
     out: &mut Vec<u8>,
-) -> bool {
+    limit: &mut usize,
+    cell: &mut Cell<'_>,
+) -> Result<bool, Error> {
     let first_end = memchr(b'\n', &src[*pos..]).map_or(src.len(), |n| *pos + n);
     let second_start = first_end.saturating_add(1);
     if second_start >= src.len() {
-        return false;
+        return Ok(false);
     }
     let second_end = memchr(b'\n', &src[second_start..]).map_or(src.len(), |n| second_start + n);
     let first = &src[*pos..first_end];
+    check_line(first, *limit)?;
+    check_line(&src[second_start..second_end], *limit)?;
     if !first.contains(&b'|') || !table_sep(&src[second_start..second_end]) {
-        return false;
+        return Ok(false);
     }
     let (indent_, _) = indent(first);
     let mut header = [&b""[..]; MAX_TABLE_COLS];
@@ -490,7 +563,7 @@ fn emit_table(
     let cols = table_cells(first, &mut header);
     let sep_cols = table_cells(&src[second_start..second_end], &mut separator);
     if cols == 0 || cols != sep_cols {
-        return false;
+        return Ok(false);
     }
     let mut widths = [0usize; MAX_TABLE_COLS];
     let mut aligns = [Align::Left; MAX_TABLE_COLS];
@@ -511,6 +584,7 @@ fn emit_table(
     while end <= src.len() {
         let line_end = memchr(b'\n', &src[end..]).map_or(src.len(), |n| end + n);
         let line = &src[end..line_end];
+        check_line(line, *limit)?;
         if !line.contains(&b'|') || table_sep(line) {
             break;
         }
@@ -552,7 +626,9 @@ fn emit_table(
         references,
         palette,
         out,
-    );
+        cell,
+        limit,
+    )?;
     border(
         indent_,
         &widths[..cols],
@@ -564,6 +640,9 @@ fn emit_table(
     );
     let mut row_start = data_start;
     while row_start < end {
+        if out.len() > *limit {
+            return Err(Error::ResourceLimit);
+        }
         let row_end = memchr(b'\n', &src[row_start..]).map_or(src.len(), |n| row_start + n);
         let count = table_cells(&src[row_start..row_end], &mut cells);
         if count != cols {
@@ -578,7 +657,9 @@ fn emit_table(
             references,
             palette,
             out,
-        );
+            cell,
+            limit,
+        )?;
         row_start = row_end.saturating_add(1);
     }
     border(
@@ -590,8 +671,11 @@ fn emit_table(
         palette,
         out,
     );
+    if out.len() > *limit {
+        return Err(Error::ResourceLimit);
+    }
     *pos = end;
-    true
+    Ok(true)
 }
 
 fn heading(line: &[u8]) -> Option<(usize, &[u8])> {
@@ -1000,8 +1084,42 @@ pub fn emit_blocks(
     palette: &Palette,
     state: &mut State,
     out: &mut Vec<u8>,
-    mut block: impl FnMut(usize, usize, usize, usize),
+    block: impl FnMut(usize, usize, usize, usize),
 ) {
+    let _ = emit_blocks_bounded(src, palette, state, out, usize::MAX, block);
+}
+
+pub(crate) fn emit_blocks_bounded(
+    src: &[u8],
+    palette: &Palette,
+    state: &mut State,
+    out: &mut Vec<u8>,
+    limit: usize,
+    block: impl FnMut(usize, usize, usize, usize),
+) -> Result<(), Error> {
+    emit_blocks_with_cells(
+        src,
+        palette,
+        state,
+        out,
+        limit,
+        block,
+        &mut |raw, _, refs, rendered, _| {
+            inline(raw, palette, rendered, refs);
+            Ok(limit)
+        },
+    )
+}
+
+pub(crate) fn emit_blocks_with_cells(
+    src: &[u8],
+    palette: &Palette,
+    state: &mut State,
+    out: &mut Vec<u8>,
+    mut limit: usize,
+    mut block: impl FnMut(usize, usize, usize, usize),
+    cell: &mut Cell<'_>,
+) -> Result<(), Error> {
     state.prepare(src);
     let mut pos = 0;
     while pos < src.len() {
@@ -1016,14 +1134,17 @@ pub fn emit_blocks(
                 &state.references,
                 palette,
                 out,
-            )
+                &mut limit,
+                cell,
+            )?
         {
             block(start, pos.min(src.len()), output, out.len());
             continue;
         }
         let end = memchr(b'\n', &src[pos..]).map_or(src.len(), |n| pos + n);
         let line = &src[pos..end];
-        if line.iter().any(|&b| b < 32 && b != b'\t') {
+        check_line(line, limit)?;
+        if line.iter().any(|&b| b < 32 && b != b'\t' || b == 127) {
             let mut safe = Vec::new();
             emit_literal(line, &mut safe);
             emit_line(&safe, palette, state, out);
@@ -1033,9 +1154,13 @@ pub fn emit_blocks(
         if end < src.len() {
             out.push(b'\n');
         }
+        if out.len() > limit {
+            return Err(Error::ResourceLimit);
+        }
         pos = (end + 1).min(src.len());
         block(start, pos, output, out.len());
     }
+    Ok(())
 }
 
 /// Emit source text while neutralizing terminal control bytes.

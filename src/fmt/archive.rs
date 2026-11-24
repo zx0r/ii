@@ -7,6 +7,7 @@ use crate::{
 };
 
 const MAX_ROWS: usize = 128;
+const MAX_DEPTH: usize = 64;
 const ZIP_EOCD: [u8; 4] = *b"PK\x05\x06";
 const ZIP_CDH: [u8; 4] = *b"PK\x01\x02";
 const GZIP_MAGIC: [u8; 2] = [0x1F, 0x8B];
@@ -134,7 +135,25 @@ fn finalize_grid(scene: &mut Scene, cell_start: u32, rows: usize) {
     scene.height = f32::from(rows_u16).mul_add(18.0, grid_y);
 }
 
-fn parse_zip(src: &[u8], scene: &mut Scene) -> bool {
+#[derive(Clone, Copy)]
+enum EntryKind {
+    Zip(u32),
+    Tar(u8),
+}
+
+struct Entry<'a> {
+    name: &'a str,
+    size: u64,
+    kind: EntryKind,
+}
+
+impl Entry<'_> {
+    fn is_dir(&self) -> bool {
+        matches!(self.kind, EntryKind::Tar(b'5')) || self.name.ends_with('/')
+    }
+}
+
+fn zip<'a>(src: &'a [u8], mut entry: impl FnMut(Entry<'a>)) -> bool {
     if src.len() < 22 {
         return false;
     }
@@ -148,15 +167,7 @@ fn parse_zip(src: &[u8], scene: &mut Scene) -> bool {
         return false;
     };
 
-    let Ok(cell_start) = u32::try_from(scene.cells.len()) else {
-        return true;
-    };
-    push_row3(scene, "Entry", "Size", "Packed", true);
-    let mut rows = 1usize;
     let mut off = cd_off as usize;
-    let mut sz_buf = [0u8; 16];
-    let mut pk_buf = [0u8; 16];
-
     for _ in 0..usize::from(entries).min(MAX_ROWS - 1) {
         if src.get(off..off + 4) != Some(&ZIP_CDH) {
             break;
@@ -175,63 +186,57 @@ fn parse_zip(src: &[u8], scene: &mut Scene) -> bool {
             break;
         };
         let name = core::str::from_utf8(name_bytes).unwrap_or("<non-utf8>");
-        push_row3(
-            scene,
+        entry(Entry {
             name,
-            fmt_bytes_stack(u64::from(unpacked), &mut sz_buf),
-            fmt_bytes_stack(u64::from(packed), &mut pk_buf),
-            false,
-        );
-        rows += 1;
+            size: u64::from(unpacked),
+            kind: EntryKind::Zip(packed),
+        });
         off = name_end + usize::from(x_len) + usize::from(c_len);
     }
-    finalize_grid(scene, cell_start, rows);
     true
 }
 
-fn parse_tar(src: &[u8], scene: &mut Scene) -> bool {
+fn tar<'a>(src: &'a [u8], mut entry: impl FnMut(Entry<'a>)) -> bool {
     if !is_tar_header(src) {
         return false;
     }
-    let Ok(cell_start) = u32::try_from(scene.cells.len()) else {
-        return true;
-    };
-    push_row3(scene, "Entry", "Size", "Type", true);
-    let mut rows = 1usize;
     let mut off = 0usize;
-    let mut sz_buf = [0u8; 16];
-
-    while off + 512 <= src.len() && rows < MAX_ROWS {
-        let hdr = &src[off..off + 512];
+    for _ in 1..MAX_ROWS {
+        let Some(hdr) = src.get(off..off + 512) else {
+            break;
+        };
         if hdr[0] == 0 {
             break;
         }
-        let name_end = memchr::memchr(0, &hdr[..100]).unwrap_or(100);
-        let name = core::str::from_utf8(&hdr[..name_end]).unwrap_or("<non-utf8>");
+        let end = memchr::memchr(0, &hdr[..100]).unwrap_or(100);
+        let name = core::str::from_utf8(&hdr[..end]).unwrap_or("<non-utf8>");
         let Some(size) = parse_octal(&hdr[124..136]) else {
             break;
         };
-        let kind = match hdr[156] {
-            b'5' => "dir",
-            b'2' => "symlink",
-            b'1' => "link",
-            _ => "file",
-        };
-        push_row3(scene, name, fmt_bytes_stack(size, &mut sz_buf), kind, false);
-        rows += 1;
-        let data_blocks = usize::try_from(size)
-            .unwrap_or(usize::MAX)
-            .next_multiple_of(512);
-        let Some(next) = off
-            .checked_add(512)
-            .and_then(|v| v.checked_add(data_blocks))
+        entry(Entry {
+            name,
+            size,
+            kind: EntryKind::Tar(hdr[156]),
+        });
+        let Some(next) = usize::try_from(size)
+            .ok()
+            .and_then(|size| size.checked_next_multiple_of(512))
+            .and_then(|bytes| off.checked_add(512)?.checked_add(bytes))
+            .filter(|&next| next <= src.len())
         else {
             break;
         };
         off = next;
     }
-    finalize_grid(scene, cell_start, rows);
     true
+}
+
+fn entries<'a>(src: &'a [u8], emit: impl FnMut(Entry<'a>)) -> bool {
+    if src.starts_with(b"PK") {
+        zip(src, emit)
+    } else {
+        tar(src, emit)
+    }
 }
 
 fn parse_compressed_header(src: &[u8], scene: &mut Scene) {
@@ -270,8 +275,43 @@ fn parse_compressed_header(src: &[u8], scene: &mut Scene) {
 /// # Errors
 /// Never fails on unknown containers; degrades honestly to container header metadata.
 pub fn parse_into_scene(src: &[u8], scene: &mut Scene) -> Result<(), Error> {
-    if !parse_zip(src, scene) && !parse_tar(src, scene) {
+    let Ok(cell_start) = u32::try_from(scene.cells.len()) else {
+        return Ok(());
+    };
+    let packed = src.starts_with(b"PK");
+    if !packed && !is_tar_header(src) {
         parse_compressed_header(src, scene);
+        return Ok(());
+    }
+    push_row3(
+        scene,
+        "Entry",
+        "Size",
+        if packed { "Packed" } else { "Type" },
+        true,
+    );
+    let mut rows = 1;
+    let entry = |entry: Entry<'_>| {
+        let mut size = [0; 16];
+        let mut packed = [0; 16];
+        let label = match entry.kind {
+            EntryKind::Zip(n) => fmt_bytes_stack(u64::from(n), &mut packed),
+            EntryKind::Tar(b'5') => "dir",
+            EntryKind::Tar(b'2') => "symlink",
+            EntryKind::Tar(b'1') => "link",
+            EntryKind::Tar(_) => "file",
+        };
+        push_row3(
+            scene,
+            entry.name,
+            fmt_bytes_stack(entry.size, &mut size),
+            label,
+            false,
+        );
+        rows += 1;
+    };
+    if entries(src, entry) {
+        finalize_grid(scene, cell_start, rows);
     }
     Ok(())
 }
@@ -344,92 +384,77 @@ pub fn to_tree_with_palette(src: &[u8], palette: &Palette, out: &mut Vec<u8>) ->
     } else {
         src
     };
-    let mut scene = Scene::with_capacity(16, 4096);
-    parse_into_scene(src, &mut scene)?;
-    let mut paths = std::collections::BTreeSet::new();
-    if src.starts_with(b"PK") || is_tar_header(src) {
-        for row in scene.cells.as_chunks::<3>().0.iter().skip(1) {
-            let name = scene.cell_text(&row[0]).trim_end_matches('/');
-            if name.len() > 4096 || name.bytes().filter(|&b| b == b'/').count() > 64 {
-                return Err(Error::ResourceLimit);
-            }
-            for (i, _) in name.match_indices('/') {
-                paths.insert(&name[..i]);
-                if paths.len() > 4096 {
-                    return Err(Error::ResourceLimit);
-                }
-            }
-            if !name.is_empty() {
-                paths.insert(name);
-            }
+    let mut paths = std::collections::BTreeMap::<Vec<&str>, bool>::new();
+    let mut truncated = false;
+    if !entries(src, |entry| {
+        let path: Vec<_> = entry
+            .name
+            .split('/')
+            .filter(|part| !part.is_empty())
+            .collect();
+        if entry.name.len() > 4096 || path.len() > MAX_DEPTH {
+            truncated = true;
+            return;
         }
-        palette.write_sgr_fg(out, SemanticRole::Info);
-        out.extend_from_slice("󰉋 archive/".as_bytes());
+        for depth in 1..=path.len() {
+            let dir = depth < path.len() || entry.is_dir();
+            paths
+                .entry(path[..depth].to_vec())
+                .and_modify(|prev| *prev |= dir)
+                .or_insert(dir);
+        }
+    }) {
+        return Err(Error::ArchiveDecode);
+    }
+    if truncated || paths.len() > 4096 {
+        return Err(Error::ResourceLimit);
+    }
+
+    let paths: Vec<_> = paths.into_iter().collect();
+    let mut next_at_depth = [None::<usize>; MAX_DEPTH];
+    let mut more = vec![false; paths.len()];
+    for (i, (path, _)) in paths.iter().enumerate().rev() {
+        let depth = path.len() - 1;
+        more[i] = next_at_depth[depth].is_some_and(|next| paths[next].0[..depth] == path[..depth]);
+        next_at_depth[depth] = Some(i);
+    }
+
+    palette.write_sgr_fg(out, SemanticRole::Info);
+    out.extend_from_slice("󰉋 archive/".as_bytes());
+    out.extend_from_slice(SGR_RESET);
+    out.push(b'\n');
+    let mut bars = [false; MAX_DEPTH];
+    for ((path, directory), more) in paths.into_iter().zip(more) {
+        let depth = path.len() - 1;
+        palette.write_sgr_fg(out, SemanticRole::Border);
+        for &bar in &bars[..depth] {
+            out.extend_from_slice(if bar { "│   ".as_bytes() } else { b"    " });
+        }
+        out.extend_from_slice(if more {
+            "├── ".as_bytes()
+        } else {
+            "└── ".as_bytes()
+        });
+        bars[depth] = more;
+        palette.write_sgr_fg(
+            out,
+            if directory {
+                SemanticRole::Info
+            } else {
+                SemanticRole::TextPrimary
+            },
+        );
+        out.extend_from_slice(if directory {
+            "󰉋 ".as_bytes()
+        } else {
+            "󰈙 ".as_bytes()
+        });
+        crate::style::emit_literal(path[depth].as_bytes(), out);
+        if directory {
+            out.push(b'/');
+        }
         out.extend_from_slice(SGR_RESET);
         out.push(b'\n');
-        let paths: Vec<_> = paths.into_iter().collect();
-        for (i, path) in paths.iter().enumerate() {
-            palette.write_sgr_fg(out, SemanticRole::Border);
-            let components: Vec<_> = path.split('/').collect();
-            let mut prefix = String::new();
-            for (depth, part) in components.iter().enumerate() {
-                if depth > 0 {
-                    prefix.push('/');
-                }
-                prefix.push_str(part);
-                let parent = prefix.rsplit_once('/').map_or("", |(p, _)| p);
-                let sibling = paths[i + 1..].iter().any(|candidate| {
-                    let p = candidate.rsplit_once('/').map_or("", |(p, _)| p);
-                    p == parent && *candidate != prefix
-                });
-                out.extend_from_slice(if depth + 1 == components.len() {
-                    if sibling {
-                        "├── ".as_bytes()
-                    } else {
-                        "└── ".as_bytes()
-                    }
-                } else if sibling {
-                    "│   ".as_bytes()
-                } else {
-                    b"    "
-                });
-            }
-            let directory = paths.iter().any(|candidate| {
-                candidate
-                    .strip_prefix(path)
-                    .is_some_and(|s| s.starts_with('/'))
-            });
-            palette.write_sgr_fg(
-                out,
-                if directory {
-                    SemanticRole::Info
-                } else {
-                    SemanticRole::TextPrimary
-                },
-            );
-            out.extend_from_slice(if directory {
-                "󰉋 ".as_bytes()
-            } else {
-                "󰈙 ".as_bytes()
-            });
-            crate::style::emit_literal(components.last().copied().unwrap_or("").as_bytes(), out);
-            if directory {
-                out.push(b'/');
-            }
-            out.extend_from_slice(SGR_RESET);
-            out.push(b'\n');
-        }
-    } else {
-        out.extend_from_slice(
-            b"compressed archive/\n  contents not decoded; container metadata:\n",
-        );
-        for row in scene.cells.as_chunks::<3>().0.iter().skip(1) {
-            for cell in row {
-                out.extend_from_slice(scene.cell_text(cell).as_bytes());
-                out.push(b' ');
-            }
-            out.push(b'\n');
-        }
     }
     Ok(())
 }

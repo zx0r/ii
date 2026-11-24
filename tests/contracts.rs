@@ -30,9 +30,6 @@ fn source_anchors_are_independent_of_image_height() -> Result<(), Box<dyn std::e
     assert_eq!(second.start_row, 2);
     assert!(out.ansi.windows(6).any(|s| s == b"before"));
     assert!(out.ansi.windows(5).any(|s| s == b"after"));
-    let mut bytes = b"a\nb\nc\n".to_vec();
-    compose::crop_lines(&mut bytes, 1, 1);
-    assert_eq!(bytes, b"b\n");
     Ok(())
 }
 
@@ -107,16 +104,21 @@ fn math_delimiters_and_fence_lengths_are_not_lost() {
             [spans[0].inner_start as usize..spans[0].inner_end() as usize],
         b"graph TD\n```\nA-->B\n"
     );
+    let src = b"An inline ~~~ run.\n  ~~~~text\n$x$\n~~~\n$y$\n  ~~~~\n~~~math\nz^2\n~~~\n";
+    ii::fmt::md::scan(src, &mut spans);
+    assert_eq!(spans.len(), 1);
+    assert_eq!(
+        &src[spans[0].inner_start as usize..spans[0].inner_end() as usize],
+        b"z^2\n"
+    );
 }
 
 #[test]
 fn notebook_png_mime_survives_normalization_and_scanning() -> Result<(), Box<dyn std::error::Error>>
 {
+    let notebook = br#"{"cells":[{"cell_type":"code","outputs":[{"data":{"image/png":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4X8/wHwAGfQJ+ZSLZFwAAAABJRU5ErkJggg=="}}]}]}"#;
     let mut normalized = Vec::new();
-    ii::fmt::ipynb::to_markdown(
-        include_bytes!("../showcase/scenarios/analysis.ipynb"),
-        &mut normalized,
-    )?;
+    ii::fmt::ipynb::to_markdown(notebook, &mut normalized)?;
     let mut spans = Vec::new();
     ii::fmt::md::scan(&normalized, &mut spans);
     let png = spans
@@ -124,12 +126,9 @@ fn notebook_png_mime_survives_normalization_and_scanning() -> Result<(), Box<dyn
         .find(|s| s.kind() == ii::fmt::Kind::Png)
         .ok_or("PNG MIME was discarded")?;
     let data = &normalized[png.inner_start as usize..png.inner_end() as usize];
-    // The fence adds a newline; the PNG itself must remain byte-for-byte intact.
-    let expected = include_bytes!("../showcase/scenarios/incident-heatmap.png");
-    assert_eq!(&data[..expected.len()], expected);
     let mut rgba = Vec::new();
-    ii::raster::decode_png(data, &mut rgba)?;
-    assert!(rgba.as_chunks::<4>().0.iter().any(|p| p[3] > 0));
+    assert_eq!(ii::raster::decode_png(data, &mut rgba)?, (1, 1));
+    assert_eq!(rgba, [255, 127, 0, 255]);
     Ok(())
 }
 
@@ -306,7 +305,49 @@ fn qmd_table_with_math_keeps_all_rows_in_one_native_block() -> Result<(), Box<dy
     }
     assert_eq!(memchr::memmem::find_iter(table, "┌".as_bytes()).count(), 1);
     assert_eq!(memchr::memmem::find_iter(table, "└".as_bytes()).count(), 1);
-    assert_ne!(out.extmarks, [], "math outside the table stopped rendering");
+    for row in table.split(|&b| b == b'\n').filter(|row| {
+        [b"0.452".as_slice(), b"1.91", b"3.18", b"1.42"]
+            .iter()
+            .any(|number| memchr::memmem::find(row, number).is_some())
+    }) {
+        assert!(
+            memchr::memmem::find(row, "\u{10eeee}".as_bytes()).is_some(),
+            "missing inline graphic in {}",
+            String::from_utf8_lossy(row)
+        );
+    }
+    let table_row = memchr::memchr_iter(b'\n', &src[..start]).count();
+    for row in table_row + 2..table_row + 6 {
+        assert!(
+            out.extmarks
+                .iter()
+                .any(|mark| usize::from(mark.start_row) == row && mark.rows == 1)
+        );
+    }
+    assert!(
+        out.extmarks
+            .iter()
+            .any(|mark| usize::from(mark.start_row) < table_row)
+    );
+    compose::compose_document(
+        b"| Term | Example |\n| --- | --- |\n| **$x$** and `$x$` | $x$ |\n",
+        ctx,
+        None,
+        &mut ComposeScratch::new(),
+        &mut 0,
+        1,
+        &mut out,
+    )?;
+    assert_eq!(
+        out.uploads.len(),
+        1,
+        "repeated table graphic was transferred twice"
+    );
+    assert_eq!(out.extmarks.len(), 2, "code span was rendered as math");
+    assert!(
+        memchr::memmem::find(&out.ansi, b"**").is_none(),
+        "strong emphasis leaked markup"
+    );
     Ok(())
 }
 
@@ -463,10 +504,82 @@ fn graphic_cells_keep_coordinates_when_neovim_redraws_a_row_fragment() {
 }
 
 #[test]
+fn viewport_keeps_the_upload_for_a_wrapped_cell_with_a_shared_rgb() {
+    use ii::compose::{ComposeOut, Upload, append_visible_uploads};
+    let frame = ComposeOut {
+        apc: b"ab".to_vec(),
+        uploads: vec![
+            Upload {
+                image_id: 0x0112_3456,
+                start: 0,
+                end: 1,
+            },
+            Upload {
+                image_id: 0x0212_3456,
+                start: 1,
+                end: 2,
+            },
+        ],
+        ..ComposeOut::default()
+    };
+    let mut src = b"abc".to_vec();
+    ii::kitty::emit_explicit_placeholder(0x0212_3456, 2, 2, &mut src);
+    for skip in [0, 1, 2] {
+        let mut page = Vec::new();
+        ii::viewport::append(&src, 4, skip, 2, &mut page);
+        let mut apc = Vec::new();
+        append_visible_uploads(&frame, &page, &mut apc);
+        assert_eq!(apc, b"b", "wrong upload at row {skip}");
+    }
+}
+
+#[test]
+fn typst_anchors_follow_a_multiline_table() -> Result<(), Box<dyn std::error::Error>> {
+    use ii::compose::{self, ComposeCtx, ComposeOut, ComposeScratch};
+    let src =
+        b"= Before\n\n#table(\ncolumns: 2,\n[Name], [Value],\n[x], [42],\n)\n\nAfter the table\n";
+    let ctx = ComposeCtx {
+        cell_w: 9,
+        cell_h: 18,
+        cols: 80,
+        rows: 40,
+        max_w: 720,
+        palette: &ii::theme::DARK,
+        is_tmux: false,
+        is_remote: true,
+        skip_lines: 0,
+        max_lines: 0,
+        explicit_graphics: false,
+    };
+    let mut out = ComposeOut::new();
+    compose::render_file(
+        src,
+        ii::fmt::Kind::Typst,
+        ctx,
+        None,
+        &mut ComposeScratch::new(),
+        &mut 0,
+        1,
+        &mut out,
+    )?;
+    let tail = src.len() - b"After the table\n".len();
+    let &(start, end, first, last) = out.blocks.last().ok_or("missing Typst blocks")?;
+    assert_eq!((start, end), (tail, src.len()));
+    assert!(out.ansi[first..last].starts_with(b"After the table"));
+    let table = out
+        .blocks
+        .iter()
+        .find(|&&(a, _, _, _)| src[a..].starts_with(b"#table("))
+        .ok_or("missing source range for Typst table")?;
+    assert!(memchr::memmem::find(&out.ansi[table.2..table.3], b"42").is_some());
+    Ok(())
+}
+
+#[test]
 fn standalone_diagrams_fit_window_height_and_invalidate_cached_size()
 -> Result<(), Box<dyn std::error::Error>> {
     use ii::compose::{self, ComposeCtx, ComposeOut, ComposeScratch};
-    let source = include_bytes!("../showcase/scenarios/checkout.mmd");
+    let source = include_bytes!("../showcase/05.mmd");
     let mut scratch = ComposeScratch::new();
     let mut out = ComposeOut::new();
     let mut ids = Vec::new();

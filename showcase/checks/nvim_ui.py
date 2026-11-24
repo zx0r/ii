@@ -13,6 +13,8 @@ import tempfile
 import termios
 import time
 
+from build_stands import build
+
 ROOT=Path(__file__).resolve().parents[2]
 parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--binary',type=Path,default=ROOT/'target/debug/ii')
@@ -22,13 +24,15 @@ peer_module=importlib.util.module_from_spec(spec)
 spec.loader.exec_module(peer_module)
 
 with tempfile.TemporaryDirectory(prefix='ii-nvim-ui-') as tmp:
+    scenarios = Path(tmp) / 'scenarios'
+    build(scenarios)
     sock=str(Path(tmp)/'ii.sock')
     daemon=subprocess.Popen([str(args.binary.resolve()),'--daemon','--socket',sock],stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,env=dict(os.environ,XDG_CACHE_HOME=str(Path(tmp)/'cache')))
     master,slave=pty.openpty()
     fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',40,120,1080,720))
     def session():
         os.setsid();fcntl.ioctl(slave,termios.TIOCSCTTY,0)
-    env=dict(os.environ,TERM='xterm-kitty',II_ROOT=str(ROOT),II_BINARY=str(args.binary.resolve()),II_SOCKET=sock,II_FAILURE=str(Path(tmp)/'failure.txt'),XDG_STATE_HOME=str(Path(tmp)/'state'),XDG_CACHE_HOME=str(Path(tmp)/'cache'))
+    env=dict(os.environ,TERM='xterm-kitty',II_ROOT=str(ROOT),II_SCENARIOS=str(scenarios),II_BINARY=str(args.binary.resolve()),II_SOCKET=sock,II_FAILURE=str(Path(tmp)/'failure.txt'),XDG_STATE_HOME=str(Path(tmp)/'state'),XDG_CACHE_HOME=str(Path(tmp)/'cache'))
     env.pop('TMUX',None)
     child=None
     try:

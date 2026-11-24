@@ -2,54 +2,124 @@
 
 /// Append the requested visual rows, restoring SGR state inherited from skipped rows.
 pub fn append(src: &[u8], cols: u16, skip: u32, max: u32, out: &mut Vec<u8>) {
-    scan(src, cols, skip, max, out, Vec::new(), |_, _, _| {});
+    scan(
+        src,
+        cols,
+        skip,
+        max,
+        out,
+        usize::MAX,
+        &mut Vec::new(),
+        |_, _, _| {},
+    );
+}
+
+pub(crate) fn append_bounded(
+    src: &[u8],
+    cols: u16,
+    limit: usize,
+    out: &mut Vec<u8>,
+) -> Result<(), crate::err::Error> {
+    let start = out.len();
+    scan(src, cols, 0, 0, out, limit, &mut Vec::new(), |_, _, _| {});
+    if out.len() > limit {
+        out.truncate(start);
+        return Err(crate::err::Error::ResourceLimit);
+    }
+    Ok(())
 }
 
 /// Sparse visual-row checkpoints for a single immutable source and width.
 /// A page can resume inside a wrapped line with its original foreground/style.
-#[derive(Debug, Default)]
-pub(crate) struct RowIndex(Vec<(usize, Box<[u8]>)>);
+#[derive(Debug)]
+pub(crate) struct RowIndex {
+    checkpoints: Vec<(usize, Box<[u8]>)>,
+    stride: u32,
+    sgr: Vec<u8>,
+}
+
+impl Default for RowIndex {
+    fn default() -> Self {
+        Self {
+            checkpoints: Vec::new(),
+            stride: Self::STRIDE,
+            sgr: Vec::new(),
+        }
+    }
+}
 
 impl RowIndex {
     const STRIDE: u32 = 32;
     const MAX_ENTRIES: usize = 1024;
 
     pub(crate) fn clear(&mut self) {
-        self.0.clear();
+        self.checkpoints.clear();
+        self.stride = Self::STRIDE;
     }
 
-    pub(crate) fn page(&mut self, src: &[u8], cols: u16, skip: u32, rows: u32, out: &mut Vec<u8>) {
-        let block = ((skip / Self::STRIDE) as usize).min(self.0.len());
-        let (offset, sgr) = block.checked_sub(1).map_or((0, Vec::new()), |i| {
-            let (offset, sgr) = &self.0[i];
-            (*offset, sgr.to_vec())
+    pub(crate) fn page(
+        &mut self,
+        src: &[u8],
+        cols: u16,
+        skip: u32,
+        rows: u32,
+        out: &mut Vec<u8>,
+        limit: usize,
+    ) -> Result<(), crate::err::Error> {
+        let start = out.len();
+        let block = ((skip / self.stride) as usize).min(self.checkpoints.len());
+        self.sgr.clear();
+        let offset = block.checked_sub(1).map_or(0, |i| {
+            let (offset, sgr) = &self.checkpoints[i];
+            self.sgr.extend_from_slice(sgr);
+            *offset
         });
-        let base = u32::try_from(block).unwrap_or(0) * Self::STRIDE;
-        let mut next = (self.0.len() as u64 + 1) * u64::from(Self::STRIDE) - u64::from(base);
+        let base = u32::try_from(block).unwrap_or(0) * self.stride;
+        let mut next = (self.checkpoints.len() as u64 + 1) * u64::from(self.stride);
         scan(
             &src[offset..],
             cols,
             skip - base,
             rows,
             out,
-            sgr,
+            limit,
+            &mut self.sgr,
             |row, pos, state| {
-                if row == next && self.0.len() < Self::MAX_ENTRIES {
-                    self.0.push((offset + pos, state.into()));
-                    next += u64::from(Self::STRIDE);
+                if row + u64::from(base) != next {
+                    return;
                 }
+                self.checkpoints.push((offset + pos, state.into()));
+                if self.checkpoints.len() == Self::MAX_ENTRIES {
+                    let mut keep = true;
+                    self.checkpoints.retain(|_| {
+                        keep = !keep;
+                        keep
+                    });
+                    self.stride *= 2;
+                }
+                next += u64::from(self.stride);
             },
         );
+        if out.len() > limit {
+            out.truncate(start);
+            return Err(crate::err::Error::ResourceLimit);
+        }
+        Ok(())
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the viewport scanner also writes sparse checkpoints"
+)]
 fn scan(
     src: &[u8],
     cols: u16,
     skip: u32,
     max: u32,
     out: &mut Vec<u8>,
-    mut sgr: Vec<u8>,
+    limit: usize,
+    sgr: &mut Vec<u8>,
     mut checkpoint: impl FnMut(u64, usize, &[u8]),
 ) {
     let width = usize::from(cols.max(1));
@@ -63,7 +133,7 @@ fn scan(
     let mut pos = 0;
     let mut started = false;
     let mut graphic_left = 0;
-    while pos < src.len() && row < end {
+    while pos < src.len() && row < end && out.len() <= limit {
         if src[pos..].starts_with(b"\x1b[") {
             let tail = &src[pos + 2..];
             if let Some(len) = tail.iter().position(|b| (0x40..=0x7e).contains(b)) {
@@ -76,7 +146,7 @@ fn scan(
                         sgr.extend_from_slice(seq);
                     }
                 }
-                if row >= u64::from(skip) {
+                if started && row >= u64::from(skip) {
                     out.extend_from_slice(seq);
                 }
                 pos += seq.len();
@@ -95,7 +165,7 @@ fn scan(
                 }
                 row += 1;
                 col = 0;
-                checkpoint(row, pos, &sgr);
+                checkpoint(row, pos, sgr);
                 if row >= end {
                     break;
                 }
@@ -128,7 +198,7 @@ fn scan(
             }
             row += 1;
             col = 0;
-            checkpoint(row, pos, &sgr);
+            checkpoint(row, pos, sgr);
             if byte == b'\t' {
                 cells = 4;
             }
@@ -138,7 +208,7 @@ fn scan(
         }
         if row >= u64::from(skip) {
             if !started {
-                out.extend_from_slice(&sgr);
+                out.extend_from_slice(sgr);
                 started = true;
             }
             if byte == b'\t' {
@@ -150,7 +220,7 @@ fn scan(
         if byte == b'\n' {
             row += 1;
             col = 0;
-            checkpoint(row, pos + len, &sgr);
+            checkpoint(row, pos + len, sgr);
         } else {
             col += cells;
         }
@@ -218,7 +288,7 @@ mod tests {
     use super::{RowIndex, append};
 
     #[test]
-    fn indexed_scroll_matches_full_layout_in_both_directions() {
+    fn indexed_scroll_matches_full_layout_in_both_directions() -> Result<(), crate::err::Error> {
         let mut src = "abc界\t1234567890\n\x1b[1;32mcontinued αβγ "
             .repeat(63)
             .into_bytes();
@@ -230,9 +300,26 @@ mod tests {
                 let mut reference = Vec::new();
                 append(&src, cols, skip, 7, &mut reference);
                 let mut page = Vec::new();
-                index.page(&src, cols, skip, 7, &mut page);
+                index.page(&src, cols, skip, 7, &mut page, usize::MAX)?;
                 assert_eq!(page, reference, "width {cols}, skip {skip}");
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn row_index_keeps_checkpoints_after_reaching_capacity() -> Result<(), crate::err::Error> {
+        let src = b"\x1b[1mhello\x1b[0m\n".repeat(70_000);
+        let mut idx = RowIndex::default();
+        for row in [69_900, 33_999, 69_500, 2] {
+            let mut actual = Vec::new();
+            let mut expected = Vec::new();
+            idx.page(&src, 20, row, 8, &mut actual, usize::MAX)?;
+            append(&src, 20, row, 8, &mut expected);
+            assert_eq!(actual, expected);
+            assert!(idx.checkpoints.len() < RowIndex::MAX_ENTRIES);
+        }
+        assert!(idx.stride > RowIndex::STRIDE);
+        Ok(())
     }
 }

@@ -4,40 +4,65 @@
 local M = {}
 
 local emit = ya.mgr_emit or ya.emit or ya.manager_emit
-local REPLAY_BYTES = 8 * 1024 * 1024
+local REPLAY_BYTES = 1024 * 1024
+
+local function current(url, skip)
+  local tab = cx.active
+  local hovered = tab.current.hovered
+  if hovered and tostring(hovered.url) == url and tab.preview.skip == skip then
+    return cx.tabs.idx
+  end
+end
+
+local begin = ya.sync(function(state, url, skip)
+  local tab = current(url, skip)
+  if not tab then return end
+  local seek = state.pending_seek
+  state.pending_seek = nil
+  local from = seek and seek.tab == tab and seek.url == url and seek.target == skip and seek.from
+  state.request = (state.request or 0) + 1
+  return tab, state.request, from
+end)
 
 -- Commit graphics on Yazi's main loop, after rejecting superseded jobs. Writing
 -- from the CLI races Yazi's own terminal writer during rapid navigation.
-local publish_graphics = ya.sync(function(state, url, skip, geometry, packets, bytes)
-  local tab = cx.active
-  local hovered = tab.current.hovered
-  if not hovered or tostring(hovered.url) ~= url then return false end
+local publish_graphics = ya.sync(function(state, tab, request, url, skip, from, geometry, h, rows, packets)
+  if state.request ~= request or current(url, skip) ~= tab then return false end
+  if packets == false then state.page = nil; return true end
   local page = state.page
-  local same_context = page and page.url == url
-    and page.tab == tab.id and page.geometry == geometry
+  local same = page and page.tab == tab and page.url == url and page.geometry == geometry
+  if not packets then
+    return true, same and math.min(skip - 1, page.last) or math.max(0, skip - h)
+  end
+  local reuse = same and page.skip == from and math.abs(from - skip) < h
   state.page = nil
-  local sent = same_context and page.sent or {}
-  local sent_bytes = same_context and page.sent_bytes or 0
-  local tty = nil
+  local sent, sent_bytes, tty = {}, 0, nil
   for _, packet in ipairs(packets) do
-    if not sent[packet] then
-      tty = tty or io.open("/dev/tty", "wb")
-      if not tty then return false end
-      if not tty:write(packet) then tty:close(); return false end
-      if sent_bytes + #packet <= REPLAY_BYTES then
-        sent[packet] = true
-        sent_bytes = sent_bytes + #packet
+    if not (reuse and page.sent[packet]) then
+      tty = tty or io.open("/dev/tty", "wb") or io.stdout
+      if not tty:write(packet) then
+        if tty ~= io.stdout then tty:close() end
+        return false
       end
     end
+    if sent_bytes + #packet <= REPLAY_BYTES then
+      sent[packet] = true
+      sent_bytes = sent_bytes + #packet
+    end
   end
-  if tty and not tty:close() then return false end
+  if tty then
+    local ok
+    if tty == io.stdout then ok = tty:flush() else ok = tty:close() end
+    if not ok then return false end
+  end
   state.page = {
     url = url,
-    tab = tab.id,
+    tab = tab,
     skip = skip,
+    last = skip + math.max(0, rows - 1),
+    eof = rows < h,
     geometry = geometry,
     sent = sent,
-    sent_bytes = sent_bytes,
   }
   return true
 end)
@@ -60,6 +85,9 @@ local function path_of(job)
 end
 
 function M:peek(job)
+  local url, skip = tostring(job.file.url), job.skip
+  local tab, request, from = begin(url, skip)
+  if not tab then return end
   local path = path_of(job)
   local w = (job.area and job.area.w and job.area.w > 0) and job.area.w or 80
   local h = (job.area and job.area.h and job.area.h > 0) and job.area.h or 24
@@ -68,18 +96,25 @@ function M:peek(job)
   if rt and rt.term and rt.term.cell_size then
     cw, ch = rt.term.cell_size()
   end
-  local cell_size_arg = (cw and ch) and string.format("%dx%d", math.floor(cw), math.floor(ch)) or "18x36"
+  local cell_size_arg = (cw and ch and cw >= 1 and ch >= 1)
+    and string.format("%dx%d", math.floor(cw), math.floor(ch))
   local is_light = (rt and rt.term and rt.term.light and rt.term.light()) or false
   local theme_arg = is_light and "light" or "dark"
+  local geometry = table.concat({w, h, cell_size_arg or "default", theme_arg}, "/")
+  local function fail(message)
+    if publish_graphics(tab, request, url, skip, from, geometry, h, 0, false) then
+      ya.preview_widget(job, ui.Text("ii: " .. message):area(job.area))
+    end
+  end
 
-  local child, _ = Command("ii")
+  local command = Command("ii")
     :arg("--machine")
     :arg("--size")
     :arg(string.format("%dx%d", w, h))
-    :arg("--cell-size")
-    :arg(cell_size_arg)
+  if cell_size_arg then command:arg("--cell-size"):arg(cell_size_arg) end
+  local child, spawn_error = command
     :arg("--skip")
-    :arg(tostring(job.skip or 0))
+    :arg(tostring(skip))
     :arg("--theme")
     :arg(theme_arg)
     :arg("--")
@@ -89,22 +124,29 @@ function M:peek(job)
     :output()
 
   if not child or not child.status.success then
-    ya.preview_widget(job, ui.Text("ii: " .. (child and child.stderr or "failed to start")):area(job.area))
+    fail(child and child.stderr or tostring(spawn_error or "failed to start"))
     return
   end
 
   local raw = child.stdout
-  if #raw < 4 then return end
+  if #raw < 4 then fail("incomplete preview frame"); return end
   local a,b,c,d = raw:byte(1,4)
   local n = a+b*256+c*65536+d*16777216
-  if n > #raw-4 then return end
-  local geometry = table.concat({w, h, cell_size_arg, theme_arg}, "/")
-  if not publish_graphics(tostring(job.file.url), job.skip or 0, geometry, uploads(raw:sub(5,4+n)), n) then return end
+  if n > #raw-4 then fail("invalid preview frame"); return end
   local text = raw:sub(5+n)
-  if text == "" and (job.skip or 0) > 0 then
-    emit("peek", { math.max(0, job.skip - h), only_if = job.file.url, upper_bound = true })
+  if text == "" and skip > 0 then
+    local accepted, upper = publish_graphics(tab, request, url, skip, from, geometry, h)
+    if accepted then
+      emit("peek", { upper, only_if = job.file.url, upper_bound = true })
+    end
     return
   end
+  local rows = 0
+  for _ in text:gmatch("\n") do rows = rows + 1 end
+  if text ~= "" and text:sub(-1) ~= "\n" and text:sub(-5) ~= "\n\27[0m" then
+    rows = rows + 1
+  end
+  if not publish_graphics(tab, request, url, skip, from, geometry, h, rows, uploads(raw:sub(5,4+n))) then return end
   ya.preview_widget(job, ui.Text.parse(text):area(job.area))
 end
 
@@ -115,7 +157,13 @@ function M:seek(job)
   local from = tonumber(active.preview.skip) or 0
   local units = tonumber(job.units) or 0
   local target = math.max(0, from + units)
+  local page = self.page
+  if page and page.tab == cx.tabs.idx and page.url == tostring(job.file.url)
+      and page.skip == from and page.eof then
+    target = math.min(target, page.last)
+  end
   if target == from then return end
+  self.pending_seek = { tab = cx.tabs.idx, url = tostring(job.file.url), from = from, target = target }
   emit("peek", { target, only_if = job.file.url })
 end
 

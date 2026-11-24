@@ -2,7 +2,9 @@ vim.o.termguicolors=true
 vim.opt.rtp:append(vim.env.II_ROOT..'/plugins/ii.nvim')
 vim.cmd('runtime! ftdetect/ii.lua')
 vim.wo.number=true;vim.wo.relativenumber=true;vim.wo.signcolumn='yes:2';vim.wo.foldcolumn='2';vim.wo.winbar='source view';vim.wo.wrap=true
-vim.cmd('edit '..vim.env.II_ROOT..'/showcase/scenarios/incident.md')
+local showcase = vim.env.II_ROOT .. '/showcase'
+local scenarios = vim.env.II_SCENARIOS or showcase .. '/scenarios'
+vim.cmd.edit(scenarios .. '/incident.md')
 vim.o.mouse='a'
 local ii=require('ii');ii.setup({socket_path=vim.env.II_SOCKET})
 -- Compare the real editor grid with the independent PreviewFile path used by Yazi.
@@ -79,11 +81,29 @@ do
  vim.treesitter.stop(buf)
  vim.cmd('edit!')
 end
+do
+ local buf=vim.api.nvim_get_current_buf()
+ local name=vim.api.nvim_buf_get_name(buf)
+ vim.api.nvim_buf_set_name(buf,name..'.svg')
+ vim.api.nvim_buf_set_lines(buf,0,-1,false,{'<svg><g></svg>'})
+ ii.render(buf,nil,true)
+ assert(vim.wait(10000,function()return ii.status().last_error=='SVG parse failed' and not ii.status().pending end,10),vim.inspect(ii.status()))
+ assert(ii.status().blocks==0 and vim.wo.number,'failed preview concealed source')
+ vim.api.nvim_buf_set_lines(buf,0,-1,false,{
+  '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12"><rect width="12" height="12"/></svg>',
+ })
+ ii.render(buf,nil,true)
+ assert(vim.wait(10000,function()return ii.status().graphics_bytes>0 and not ii.status().pending end,10),vim.inspect(ii.status()))
+ assert(ii.status().last_error==nil,'successful render retained an old error')
+ ii.clear(buf)
+ vim.api.nvim_buf_set_name(buf,name)
+ vim.cmd('edit!')
+end
 for _,file in ipairs({'../01.md','../02.qmd','../03.ipynb','../04.tex','../11.mdx','../12.rmd','../13.latex','../14.typ','incident.md','incident.markdown','incident.mdx','incident.qmd','incident.rmd',
  'latency.plotly','latency.vl','latency.vega-lite','analysis.ipynb','telemetry.csv','telemetry.tsv',
  'kinetics.chem','equilibrium.mhchem','evidence.zip','evidence.tar','evidence.jar','evidence.tgz','evidence.tbz2','evidence.txz','evidence.tzst',
  'replicas.svg','incident-heatmap.png','rollout.dot','rollout.gv','checkout.mmd','checkout.mermaid','queueing.tex','queueing.latex','queueing.typ'}) do
- vim.cmd('edit '..vim.env.II_ROOT..'/showcase/scenarios/'..file)
+ vim.cmd.edit(file:sub(1,3) == '../' and showcase .. '/' .. file:sub(4) or scenarios .. '/' .. file)
  vim.wo.winbar='source view'
  local buf=vim.api.nvim_get_current_buf();local src=vim.api.nvim_buf_get_lines(buf,0,-1,false)
  local maps=vim.api.nvim_buf_get_keymap(buf,'n')
@@ -160,6 +180,13 @@ for _,file in ipairs({'../01.md','../02.qmd','../03.ipynb','../04.tex','../11.md
  if file=='../02.qmd' then
   for _,value in ipairs({'Parameter','0.452','1.91','3.18','Reporting rate','0.31'}) do
    assert(visible:find(value,1,true),'QMD table body missing: '..value)
+  end
+  for _,value in ipairs({'0.452','1.91','3.18','1.42'}) do
+   local rendered=false
+   for _,line in ipairs(screen) do
+    if line:find(value,1,true) and line:find('􎻮',1,true) then rendered=true end
+   end
+   assert(rendered,'QMD table equation missing for '..value)
   end
  elseif file=='../11.mdx' then
   assert(visible:find('Exoplanet Transit',1,true),'MDX body missing')

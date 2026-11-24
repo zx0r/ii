@@ -15,57 +15,51 @@ fn showcase_math_spans_compile_without_literal_fallback() -> Result<(), Box<dyn 
 {
     let mut failures = Vec::new();
     let mut count = 0;
-    for root in ["showcase", "showcase/scenarios"] {
-        for entry in std::fs::read_dir(root)? {
-            let path = entry?.path();
-            let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
-            let Some(kind) = fmt::kind_from_ext(ext) else {
-                continue;
-            };
+    for entry in std::fs::read_dir("showcase")? {
+        let path = entry?.path();
+        let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+        let Some(kind) = fmt::kind_from_ext(ext) else {
+            continue;
+        };
+        if !matches!(
+            kind,
+            fmt::Kind::Md | fmt::Kind::Mdx | fmt::Kind::Tex | fmt::Kind::Typst | fmt::Kind::Ipynb
+        ) {
+            continue;
+        }
+        let src = std::fs::read(&path)?;
+        let mut normalized = Vec::new();
+        match kind {
+            fmt::Kind::Tex => tex::document_to_markdown(&src, &mut normalized)?,
+            fmt::Kind::Typst => fmt::typst::to_markdown(&src, &mut normalized)?,
+            fmt::Kind::Ipynb => fmt::ipynb::to_markdown(&src, &mut normalized)?,
+            _ => normalized.extend_from_slice(&src),
+        }
+        let mut spans = Vec::new();
+        fmt::md::scan(&normalized, &mut spans);
+        for span in spans {
             if !matches!(
-                kind,
-                fmt::Kind::Md
-                    | fmt::Kind::Mdx
-                    | fmt::Kind::Tex
-                    | fmt::Kind::Typst
-                    | fmt::Kind::Ipynb
+                span.kind(),
+                fmt::Kind::Tex | fmt::Kind::TexInline | fmt::Kind::Chem
             ) {
                 continue;
             }
-            let src = std::fs::read(&path)?;
-            let mut normalized = Vec::new();
-            match kind {
-                fmt::Kind::Tex => tex::document_to_markdown(&src, &mut normalized)?,
-                fmt::Kind::Typst => fmt::typst::to_markdown(&src, &mut normalized)?,
-                fmt::Kind::Ipynb => fmt::ipynb::to_markdown(&src, &mut normalized)?,
-                _ => normalized.extend_from_slice(&src),
-            }
-            let mut spans = Vec::new();
-            fmt::md::scan(&normalized, &mut spans);
-            for span in spans {
-                if !matches!(
-                    span.kind(),
-                    fmt::Kind::Tex | fmt::Kind::TexInline | fmt::Kind::Chem
-                ) {
-                    continue;
-                }
-                let payload = &normalized[span.inner_start as usize..span.inner_end() as usize];
-                let mut scene = Scene::with_capacity(8, 1024);
-                tex::parse_with_palette(
-                    payload,
-                    span.kind() != fmt::Kind::TexInline,
-                    span.kind() == fmt::Kind::Chem,
-                    &DARK,
-                    &mut scene,
-                )?;
-                count += 1;
-                if scene.svgs.is_empty() {
-                    failures.push(format!(
-                        "{}: {}",
-                        path.display(),
-                        String::from_utf8_lossy(payload)
-                    ));
-                }
+            let payload = &normalized[span.inner_start as usize..span.inner_end() as usize];
+            let mut scene = Scene::with_capacity(8, 1024);
+            tex::parse_with_palette(
+                payload,
+                span.kind() != fmt::Kind::TexInline,
+                span.kind() == fmt::Kind::Chem,
+                &DARK,
+                &mut scene,
+            )?;
+            count += 1;
+            if scene.svgs.is_empty() {
+                failures.push(format!(
+                    "{}: {}",
+                    path.display(),
+                    String::from_utf8_lossy(payload)
+                ));
             }
         }
     }
@@ -329,6 +323,15 @@ fn vector_scale_matches_reference_dpi_and_fits_narrow_viewports() -> Result<(), 
     assert!(cols <= 12 && rows <= 4);
     let (narrow, _, _, _) = raster::rasterize_scene(&scene, &DARK, 18, 36, 90, &mut rgba)?;
     assert!(narrow <= 90);
+    for (width, height, expected) in [(1.0, 4000.0, (1, 10)), (4000.0, 1.0, (8, 1))] {
+        let layout = raster::scale_down_and_snap(width, height, 8, 10, 9, 18)?;
+        assert_eq!((layout.grid_cols, layout.grid_rows), expected);
+        assert_eq!(layout.snap_w, 9 * u32::from(expected.0));
+        assert_eq!(layout.snap_h, 18 * u32::from(expected.1));
+    }
+    let extreme = raster::scale_down_and_snap(f32::MAX, f32::MAX, 80, 10, 9, 18)?;
+    assert!(extreme.scale > 0.0);
+    assert_eq!((extreme.grid_cols, extreme.grid_rows), (20, 10));
     Ok(())
 }
 

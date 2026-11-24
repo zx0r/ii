@@ -34,8 +34,9 @@ ANSI is converted to virtual lines once per completed response. Decorations are 
 Mouse motion and scrolling perform no Lua redraw callbacks, parsing, compilation or IPC. Graphics use nvim_ui_send. Stale responses
 are rejected by source tick, request generation and window geometry.
 
-`require('ii').status(win)` returns pending, blocks, graphics_bytes, source,
-source_tick and cols. `python3 showcase/checks/nvim_ui.py --binary target/release/ii` runs a real TUI in a PTY
+`require('ii').status(win)` reports pending work, the current frame, and `last_error`
+for the current buffer. A successful render or `IiClear` clears the error.
+`python3 showcase/checks/nvim_ui.py --binary target/release/ii` runs a real TUI in a PTY
 and checks native buffers, unchanged keymaps, i/Esc editing, 80 native notebook
 scroll steps, redraws and format
 routing, including chemistry and archive trees.

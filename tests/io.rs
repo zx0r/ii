@@ -329,10 +329,20 @@ fn compressed_kitty_upload_reduces_repeated_pixel_payload() -> Result<(), Error>
     kitty::stage_png(&rgba, p, &mut apc, &mut b64)?;
     assert!(memchr::memmem::find(&apc, b"f=100").is_some());
     assert!(apc.len() < rgba.len());
+    assert!(b64.len() <= 3072);
+    let payload = memchr::memmem::find_iter(&apc, b"\x1b_G")
+        .filter_map(|start| {
+            let packet = &apc[start..];
+            let end = memchr::memmem::find(packet, b"\x1b\\")?;
+            let sep = memchr::memchr(b';', &packet[..end])?;
+            Some(&packet[sep + 1..end])
+        })
+        .flatten()
+        .copied();
     let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut png = Vec::new();
     let (mut bits, mut count) = (0u32, 0u32);
-    for byte in b64.into_iter().take_while(|&b| b != b'=') {
+    for byte in payload.take_while(|&b| b != b'=') {
         let value = alphabet
             .iter()
             .position(|&b| b == byte)

@@ -4,7 +4,6 @@ use std::{ffi::OsString, os::unix::ffi::OsStrExt, path::Path};
 
 use rustix::{
     fd::{AsFd, BorrowedFd},
-    fs::{AtFlags, CWD, FileType, Mode, OFlags, fstat, openat, statat},
     io::{Errno, read, write},
     process::getpid,
     termios::isatty,
@@ -13,7 +12,7 @@ use rustix::{
 use ii::{
     cache, compose, daemon,
     err::Error,
-    fmt,
+    file, fmt,
     ipc::{self, Cmd, MAX_PAYLOAD},
     style,
     theme::ThemeChoice,
@@ -273,39 +272,6 @@ fn read_stdin_bounded() -> Result<Vec<u8>, Error> {
     }
 }
 
-fn read_file_bounded(path: &Path) -> Result<Vec<u8>, Error> {
-    let metadata = statat(CWD, path, AtFlags::SYMLINK_NOFOLLOW)?;
-    if FileType::from_raw_mode(metadata.st_mode) != FileType::RegularFile {
-        return Err(Error::Io(Errno::INVAL));
-    }
-    let fd = openat(
-        CWD,
-        path,
-        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
-        Mode::empty(),
-    )?;
-    let st = fstat(&fd)?;
-    if FileType::from_raw_mode(st.st_mode) != FileType::RegularFile {
-        return Err(Error::Io(Errno::INVAL));
-    }
-    let size = usize::try_from(st.st_size).map_err(|_| Error::PayloadTooLarge(MAX_PAYLOAD))?;
-    if size > MAX_PAYLOAD as usize {
-        return Err(Error::PayloadTooLarge(MAX_PAYLOAD));
-    }
-    let mut buf = vec![0u8; size];
-    let mut pos = 0usize;
-    while pos < size {
-        match read(&fd, &mut buf[pos..]) {
-            Ok(0) => break,
-            Ok(n) => pos += n,
-            Err(Errno::INTR) => {}
-            Err(e) => return Err(Error::Io(e)),
-        }
-    }
-    buf.truncate(pos);
-    Ok(buf)
-}
-
 fn render_file_local(
     data: &[u8],
     ext: &str,
@@ -346,7 +312,7 @@ fn render_file_local(
         is_remote: metrics.is_remote != 0 || args.machine,
         skip_lines: args.skip,
         max_lines: args.size.map_or(0, |(_, h)| u32::from(h)),
-        explicit_graphics: false,
+        explicit_graphics: args.machine,
     };
     let mut seq = 0;
     compose::render_file(
@@ -360,7 +326,9 @@ fn render_file_local(
         &mut out,
     )?;
     if args.machine {
-        emit_dual_channel(stdout.as_fd(), &out.apc, &out.ansi)
+        let mut apc = Vec::new();
+        compose::append_visible_uploads(&out, &out.ansi, &mut apc);
+        emit_dual_channel(stdout.as_fd(), &apc, &out.ansi)
     } else {
         write_all(stdout.as_fd(), &out.apc)?;
         write_all(stdout.as_fd(), &out.ansi)
@@ -470,7 +438,14 @@ fn run_cli() -> Result<(), Error> {
             return render_preview(file_path, &args, is_interactive);
         }
         let ext = file_path.extension().and_then(|s| s.to_str()).unwrap_or("");
-        let data = read_file_bounded(file_path)?;
+        let mut data = Vec::new();
+        file::read_bounded(file_path, MAX_PAYLOAD as usize, &mut data).map_err(|err| {
+            if err == Errno::FBIG {
+                Error::PayloadTooLarge(MAX_PAYLOAD)
+            } else {
+                Error::Io(err)
+            }
+        })?;
         render_file_local(&data, ext, &args, is_interactive)
     } else if !isatty(&stdin) {
         let data = read_stdin_bounded()?;

@@ -393,18 +393,18 @@ fn historical_styles_use_catppuccin_markers_and_no_terminal_background() {
 #[test]
 fn archives_render_actual_tree_for_all_supported_compressions() -> Result<(), Error> {
     for data in [
-        include_bytes!("../showcase/scenarios/evidence.zip").as_slice(),
-        include_bytes!("../showcase/scenarios/evidence.tar"),
-        include_bytes!("../showcase/scenarios/evidence.tgz"),
-        include_bytes!("../showcase/scenarios/evidence.tbz2"),
-        include_bytes!("../showcase/scenarios/evidence.txz"),
-        include_bytes!("../showcase/scenarios/evidence.tzst"),
+        include_bytes!("../showcase/20.zip").as_slice(),
+        include_bytes!("../showcase/21.tar"),
+        include_bytes!("../showcase/22.tgz"),
+        include_bytes!("../showcase/23.tbz2"),
+        include_bytes!("../showcase/24.txz"),
+        include_bytes!("../showcase/25.tzst"),
     ] {
         let mut out = Vec::new();
         archive::to_tree(data, &mut out)?;
         let text = core::str::from_utf8(&out).unwrap_or("");
-        assert!(text.contains("incident"));
-        assert!(text.contains("report.md"));
+        assert!(text.contains("pixx-0.1.0"));
+        assert!(text.contains("README.md"));
         assert!(text.contains("├──") || text.contains("└──"));
         assert!(!text.contains("Container"));
     }
@@ -498,16 +498,8 @@ fn chart_reference_styles_preserve_titles_axes_and_independent_traces() -> Resul
 fn archive_theme_roles_are_applied_without_backgrounds() -> Result<(), Error> {
     let mut dark = Vec::new();
     let mut light = Vec::new();
-    archive::to_tree_with_palette(
-        include_bytes!("../showcase/scenarios/evidence.zip"),
-        &DARK,
-        &mut dark,
-    )?;
-    archive::to_tree_with_palette(
-        include_bytes!("../showcase/scenarios/evidence.zip"),
-        &LIGHT,
-        &mut light,
-    )?;
+    archive::to_tree_with_palette(include_bytes!("../showcase/20.zip"), &DARK, &mut dark)?;
+    archive::to_tree_with_palette(include_bytes!("../showcase/20.zip"), &LIGHT, &mut light)?;
     assert_ne!(dark, light);
     assert!(memchr::memmem::find(&dark, "󰉋 ".as_bytes()).is_some());
     assert!(memchr::memmem::find(&dark, "󰈙 ".as_bytes()).is_some());
@@ -538,10 +530,7 @@ fn typst_showcase_math_uses_glyphs_for_each_expression() -> Result<(), Error> {
 #[test]
 fn actual_vega_stand_has_plotted_curve_and_nonzero_axis_range() -> Result<(), Error> {
     let mut scene = Scene::with_capacity(4, 8192);
-    chart::parse_into_scene(
-        include_bytes!("../showcase/scenarios/latency.vl"),
-        &mut scene,
-    )?;
+    chart::parse_into_scene(include_bytes!("../showcase/32.vega-lite"), &mut scene)?;
     let svg = core::str::from_utf8(&scene.text_pool).map_err(|_| Error::SvgParse)?;
     assert!(svg.contains("<polyline"));
     assert!(

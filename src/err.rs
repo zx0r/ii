@@ -29,6 +29,7 @@ pub enum Error {
     InvalidCli,
     ResourceLimit,
     InvalidState,
+    Remote(u16),
 }
 
 const _: () = assert!(size_of::<Error>() <= 12);
@@ -58,6 +59,7 @@ impl fmt::Display for Error {
             Self::TooManyClients => f.write_str("max 32 concurrent clients"),
             Self::ResourceLimit => f.write_str("resource limit exceeded"),
             Self::InvalidState => f.write_str("invalid request state"),
+            Self::Remote(cmd) => write!(f, "daemon rejected IXPC command 0x{cmd:04x}"),
             Self::InvalidCli => f.write_str("invalid command line arguments"),
         }
     }

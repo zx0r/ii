@@ -8,7 +8,7 @@ readme = "README.md"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/zx0r/ii"
 categories = ["command-line-utilities", "graphics"]
-keywords = ["terminal", "kitty", "latex", "svg", "tui"]
+keywords = ["jupyter-notebook", "markdown", "latex", "svg", "mermaid"]
 description = "Terminal graphical coprocessor: math, diagrams and charts over the Kitty graphics protocol"
 
 

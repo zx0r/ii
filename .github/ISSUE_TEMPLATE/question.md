@@ -1,6 +1,6 @@
 ---
 name: Question
-about: Ask a question regarding ii architecture, telemetry widgets, or configuration.
+about: Ask a question regarding ii architecture, coprocessor rendering, or client integrations.
 title: "[QUESTION] "
 labels: ["question"]
 assignees: ''

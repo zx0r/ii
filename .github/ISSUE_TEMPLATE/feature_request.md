@@ -18,8 +18,8 @@ $ ii ...
 ## Architectural Considerations
 - [ ] Preserves sub-millisecond execution latency.
 - [ ] Strictly zero runtime dependencies (POSIX / Darwin C ABI).
-- [ ] Zero heap allocation on telemetry hot path.
-- [ ] Codebase remains strictly $\le 1000$ lines.
+- [ ] Zero heap allocation on rendering & rasterization hot path.
+- [ ] Compliant with Kitty Graphics Protocol & Sixel standards.
 
 ## Alternatives Considered
 <!-- Any alternative implementations or workarounds you've evaluated. -->

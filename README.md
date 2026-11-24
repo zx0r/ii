@@ -1,6 +1,6 @@
 <p align="center">
-  <a href="https://github.com/zx0r/xc/releases">
-    <img src="https://img.shields.io/github/v/release/zx0r/xc?color=4be1ff&label=RELEASE&style=flat-square&logo=github&labelColor=1a1a1a" alt="Release" />
+  <a href="https://github.com/zx0r/ii/releases">
+    <img src="https://img.shields.io/github/v/release/zx0r/ii?color=4be1ff&label=RELEASE&style=flat-square&logo=github&labelColor=1a1a1a" alt="Release" />
   </a>
   <a href="LICENSE-MIT">
     <img src="https://img.shields.io/badge/LICENSE-MIT%2FApache--2.0-9fef00?style=flat-square&logo=opensourceinitiative&logoColor=white&labelColor=1a1a1a" alt="License" />
@@ -13,26 +13,68 @@
   </a>
 </p>
 
-# ii — Terminal Graphical Coprocessor
+<p align="center">
+  <a href="assets/video/ii-demo.mp4">
+    <img src="assets/gif/ii-preview.gif" alt="ii preview demo" style="border-radius: 8px; max-width: 100%;" />
+  </a>
+</p>
 
-Terminal graphical coprocessor: renders math, diagrams, charts, and notebooks over the Kitty
-Graphics Protocol.
+<p align="center">
+  <img src="assets/images/fmt.webp" alt="ii formats preview" style="border-radius: 8px; max-width: 100%;" />
+</p>
+
+<p align="center">
+  <img src="assets/images/nvim.webp" alt="ii Neovim preview" style="border-radius: 8px; max-width: 100%;" />
+</p>
+
+<p align="center">
+  <img src="assets/images/tmux.webp" alt="ii tmux preview" style="border-radius: 8px; max-width: 100%;" />
+</p>
+
+# Terminal Graphical Coprocessor
 
 ---
 
+### Installation
+
+```bash
+# Cargo (crates.io)
+cargo install --locked ii
+
+# Homebrew (macOS / Linux)
+brew install zx0r/tap/ii
+
+# Build from source (LTO fat, stripped)
+gh repo clone zx0r/ii
+cd ii && just release
+```
+
+---
+
+### CLI Reference
+
+```bash
+# Render document to Kitty terminal
+ii README.md
+
+# Render specific size / cells
+ii --size <size> <target>
+
+# Pipe from stdin
+cat <target> | ii
+```
+
 ### Integrations
 
-#### Yazi (`ii.yazi`)
-
-Install using the Yazi package manager:
+**Yazi** (`ii.yazi`)
 
 ```sh
+# 1. Install
 ya pkg add zx0r/ii
 ```
 
-Configure `~/.config/yazi/yazi.toml`:
-
 ```toml
+# 2. Configure $HOME/.config/yazi/yazi.toml
 [plugin]
 # Background preloader: caches rendered frames before cursor navigation
 prepend_preloaders = [
@@ -51,9 +93,7 @@ prepend_previewers = [
 ]
 ```
 
-#### Neovim (`ii.nvim`)
-
-Install and configure with `lazy.nvim`:
+**Neovim** (`ii.nvim`)
 
 ```lua
 {
@@ -83,33 +123,22 @@ Install and configure with `lazy.nvim`:
 
 ---
 
-### Installation
+### [ i i ]
 
-```bash
-# Cargo (crates.io)
-cargo install --locked ii
+<p align="center">
+  <img src="./assets/gif/ii-crab.gif" width="360" height="" alt="ii" />
+</p>
 
-# Homebrew (macOS / Linux)
-brew install zx0r/tap/ii
+```shell
+ii [FILE]
 
-# Build from source (LTO fat, stripped)
-gh repo clone zx0r/ii
-cd ii && just release
-```
+[✓] zero-copy streaming pipeline
+[✓] hardware-accelerated Kitty graphics protocol
+[✓] sub-millisecond math, diagram, chart synthesis
+[✓] zero-allocation layout & terminal cell metrics
 
----
-
-### CLI Reference
-
-```bash
-# Render document to Kitty terminal
-ii README.md
-
-# Pipe from stdin
-cat <target> | ii
-
-# Render specific size / cells
-ii --size <size> <target>
+you open files → we render pixels instantly
+you navigate buffers → we decorate without stutter
 ```
 
 ---

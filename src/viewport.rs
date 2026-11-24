@@ -289,14 +289,17 @@ mod tests {
 
     #[test]
     fn indexed_scroll_matches_full_layout_in_both_directions() -> Result<(), crate::err::Error> {
+        let repeats = if cfg!(miri) { 8 } else { 63 };
         let mut src = "abc界\t1234567890\n\x1b[1;32mcontinued αβγ "
-            .repeat(63)
+            .repeat(repeats)
             .into_bytes();
         crate::kitty::emit_placeholder(42, 12, 7, &mut src);
         src.extend_from_slice(b"\x1b[0mend");
-        for cols in [3, 7, 13] {
+        let max_skip = if cfg!(miri) { 20 } else { 320 };
+        let widths = if cfg!(miri) { &[7][..] } else { &[3, 7, 13][..] };
+        for &cols in widths {
             let mut index = RowIndex::default();
-            for skip in (0..320).rev().chain(0..320) {
+            for skip in (0..max_skip).rev().chain(0..max_skip) {
                 let mut reference = Vec::new();
                 append(&src, cols, skip, 7, &mut reference);
                 let mut page = Vec::new();
@@ -308,6 +311,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "scale test with 70,000 rows exceeds CI execution budget under Miri interpreter"
+    )]
     fn row_index_keeps_checkpoints_after_reaching_capacity() -> Result<(), crate::err::Error> {
         let src = b"\x1b[1mhello\x1b[0m\n".repeat(70_000);
         let mut idx = RowIndex::default();
